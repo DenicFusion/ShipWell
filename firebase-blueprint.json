@@ -1,0 +1,53 @@
+{
+  "entities": {
+    "Shipment": {
+      "title": "Shipment",
+      "description": "A tracked shipment package.",
+      "type": "object",
+      "properties": {
+        "status": { "type": "string", "enum": ["PENDING", "IN_TRANSIT", "OUT_FOR_DELIVERY", "DELIVERED", "EXCEPTION", "RETURNED"] },
+        "carrier": { "type": "string" },
+        "trackingNumber": { "type": "string" },
+        "estimatedDelivery": { "type": "string" },
+        "originCity": { "type": "string" },
+        "originState": { "type": "string" },
+        "originZip": { "type": "string" },
+        "destinationCity": { "type": "string" },
+        "destinationState": { "type": "string" },
+        "destinationZip": { "type": "string" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      },
+      "required": ["status", "carrier", "trackingNumber", "originCity", "originState", "originZip", "destinationCity", "destinationState", "destinationZip", "createdAt", "updatedAt"]
+    },
+    "TrackingEvent": {
+      "title": "TrackingEvent",
+      "description": "An event in the shipment's timeline.",
+      "type": "object",
+      "properties": {
+        "isLogical": { "type": "boolean" },
+        "isLatest": { "type": "boolean" },
+        "statusColor": { "type": "string" },
+        "eventCode": { "type": "string" },
+        "label": { "type": "string" },
+        "description": { "type": "string" },
+        "facility": { "type": "string" },
+        "location": { "type": "string" },
+        "formattedDate": { "type": "string" },
+        "formattedTime": { "type": "string" },
+        "createdAt": { "type": "timestamp" }
+      },
+      "required": ["isLogical", "isLatest", "statusColor", "eventCode", "label", "description", "createdAt"]
+    }
+  },
+  "firestore": {
+    "shipments/{trackingId}": {
+      "schema": { "$ref": "Shipment" },
+      "description": "Stores individual shipments."
+    },
+    "shipments/{trackingId}/events/{eventId}": {
+      "schema": { "$ref": "TrackingEvent" },
+      "description": "Stores tracking events for a specific shipment."
+    }
+  }
+}

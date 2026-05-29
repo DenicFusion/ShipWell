@@ -1,0 +1,78 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isAdmin() {
+      return request.auth != null && request.auth.token.email == 'denic9426@gmail.com' && request.auth.token.email_verified == true;
+    }
+    
+    function isValidId(id) {
+       return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+
+    function isValidShipment(data) {
+      return data.keys().hasAll(['status', 'carrier', 'trackingNumber', 'originCity', 'originState', 'originZip', 'destinationCity', 'destinationState', 'destinationZip', 'createdAt', 'updatedAt'])
+        && data.status is string && data.status.size() <= 50
+        && data.carrier is string && data.carrier.size() <= 100
+        && data.trackingNumber is string && data.trackingNumber.size() <= 100
+        && data.originCity is string && data.originCity.size() <= 100
+        && data.originState is string && data.originState.size() <= 50
+        && data.originZip is string && data.originZip.size() <= 20
+        && data.destinationCity is string && data.destinationCity.size() <= 100
+        && data.destinationState is string && data.destinationState.size() <= 50
+        && data.destinationZip is string && data.destinationZip.size() <= 20
+        && (!data.keys().hasAny(['estimatedDelivery']) || (data.estimatedDelivery is string && data.estimatedDelivery.size() <= 50));
+    }
+
+    match /shipments/{trackingId} {
+      allow get: if isValidId(trackingId);
+      allow list: if isAdmin();
+      
+      allow create: if isAdmin() && isValidId(trackingId) && isValidShipment(incoming())
+                    && incoming().createdAt == request.time
+                    && incoming().updatedAt == request.time
+                    && incoming().trackingNumber == trackingId;
+
+      allow update: if isAdmin() && isValidId(trackingId) && isValidShipment(incoming())
+                    && incoming().updatedAt == request.time
+                    && incoming().createdAt == existing().createdAt
+                    && incoming().trackingNumber == existing().trackingNumber;
+                    
+      allow delete: if isAdmin();
+
+      match /events/{eventId} {
+        allow get: if isValidId(trackingId) && isValidId(eventId);
+        allow list: if isValidId(trackingId);
+        
+        function isValidEvent(data) {
+            return data.keys().hasAll(['isLogical', 'isLatest', 'statusColor', 'eventCode', 'label', 'description', 'createdAt'])
+              && data.isLogical is bool
+              && data.isLatest is bool
+              && data.statusColor is string && data.statusColor.size() <= 50
+              && data.eventCode is string && data.eventCode.size() <= 50
+              && data.label is string && data.label.size() <= 100
+              && data.description is string && data.description.size() <= 500
+              && (!data.keys().hasAny(['facility']) || (data.facility is string && data.facility.size() <= 100))
+              && (!data.keys().hasAny(['location']) || (data.location is string && data.location.size() <= 100))
+              && (!data.keys().hasAny(['formattedDate']) || (data.formattedDate is string && data.formattedDate.size() <= 50))
+              && (!data.keys().hasAny(['formattedTime']) || (data.formattedTime is string && data.formattedTime.size() <= 50));
+        }
+
+        allow create: if isAdmin() && isValidId(eventId) && isValidEvent(incoming())
+                      && incoming().createdAt == request.time
+                      && exists(/databases/$(database)/documents/shipments/$(trackingId));
+
+        allow update: if isAdmin() && isValidId(eventId) && isValidEvent(incoming())
+                      && incoming().createdAt == existing().createdAt;
+                      
+        allow delete: if isAdmin();
+      }
+    }
+  }
+}
