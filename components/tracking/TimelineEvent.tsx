@@ -1,14 +1,10 @@
-'use client';
-
 import { motion } from "motion/react"
 import { TrackingEventData } from "@/types/tracking"
 import { cn } from "@/lib/utils"
 
 export function TimelineEvent({ event }: { event: TrackingEventData }) {
-  const isException = event.eventCode === 'EXCEPTION' || event.eventCode === 'RETURN_TO_SENDER';
-
   return (
-    <motion.div 
+    <motion.div
       variants={{
         hidden: { opacity: 0, y: 20 },
         show: { opacity: 1, y: 0, transition: { type: "spring", stiffness: 300, damping: 24 } }
@@ -16,8 +12,8 @@ export function TimelineEvent({ event }: { event: TrackingEventData }) {
       className={`relative flex justify-between items-start ${event.isLogical ? 'opacity-80' : ''}`}
     >
       <div className={cn(
-         "absolute -left-[50px] w-[18px] h-[18px] rounded-full border-[3px] border-brand-primary top-[4px] box-border",
-         event.isLatest ? "bg-bg-base shadow-[0_0_15px_var(--brand-primary)]" : "bg-bg-base border-brand-primary/50"
+         "absolute -left-[50px] w-[18px] h-[18px] rounded-full border-[3px] border-brand-primary top-[4px] box-border bg-bg-base",
+         event.isLatest ? "shadow-[0_0_15px_var(--brand-primary)]" : "border-opacity-50"
       )}>
         {event.isLatest && (
           <div className="absolute -inset-[8px] border-[2px] border-brand-primary rounded-full opacity-40 pointer-events-none animate-ping" />

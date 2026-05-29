@@ -1,36 +1,20 @@
 'use client';
-
-import * as React from "react"
-import { Search, Loader2 } from "lucide-react"
+import { useState } from "react"
 import { cn } from "@/lib/utils"
 import { Button } from "./Button"
-import { useTrackingStore } from "@/store/trackingStore"
+import { Loader2 } from "lucide-react"
 import { useRouter } from "next/navigation"
-import { TrackingNumberSchema } from "@/types/tracking"
 
 export function SearchBar({ className }: { className?: string }) {
-  const [value, setValue] = React.useState("")
-  const [error, setError] = React.useState("")
-  const [isFocused, setIsFocused] = React.useState(false)
-  const [isLoading, setIsLoading] = React.useState(false)
-  const addSearch = useTrackingStore(state => state.addSearch)
+  const [value, setValue] = useState("")
+  const [isFocused, setIsFocused] = useState(false)
+  const [isLoading, setIsLoading] = useState(false)
   const router = useRouter()
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    setError("")
-    
-    const formattedVal = value.trim().toUpperCase()
-    const result = TrackingNumberSchema.safeParse(formattedVal)
-    
-    if (!result.success) {
-      setError("Tracking numbers must be 10–30 alphanumeric characters.")
-      return
-    }
-
     setIsLoading(true)
-    addSearch(formattedVal)
-    router.push(`/track/${formattedVal}`)
+    router.push("/track/" + value)
   }
 
   return (
@@ -61,11 +45,6 @@ export function SearchBar({ className }: { className?: string }) {
           </div>
         </div>
       </form>
-      {error && (
-        <div className="absolute -bottom-8 left-0 w-full text-center text-sm text-brand-danger animate-in fade-in slide-in-from-top-2">
-          {error}
-        </div>
-      )}
     </div>
   )
 }

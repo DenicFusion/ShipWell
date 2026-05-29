@@ -6,7 +6,7 @@ import Link from "next/link"
 export default function HomePage() {
   return (
     <main className="flex min-h-screen flex-col bg-bg-base transition-colors duration-300">
-      <header className="absolute top-0 z-50 w-full">
+      <header className="absolute top-0 z-50 w-full border-b border-border-line/50 bg-bg-base/80 backdrop-blur-md">
         <div className="mx-auto flex h-[80px] max-w-[1024px] items-center px-6 md:px-10 justify-between">
           <Link href="/">
              <ShipwellLogo />
@@ -18,7 +18,7 @@ export default function HomePage() {
       <TrackingHero />
       
       {/* Stats Section */}
-      <section className="w-full border-t border-border-line bg-bg-surface py-16">
+      <section className="w-full border-t border-border-line bg-bg-surface py-16 flex-1">
         <div className="mx-auto max-w-[1024px] px-6 md:px-10">
           <div className="grid grid-cols-1 gap-8 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-border-line">
             <div className="flex flex-col items-center text-center space-y-2 py-4">

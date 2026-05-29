@@ -1,6 +1,4 @@
-'use client';
-
-import { SearchBar } from "@/components/ui/SearchBar"
+import { SearchBar } from "../ui/SearchBar"
 
 export function TrackingHero() {
   return (

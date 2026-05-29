@@ -1,8 +1,6 @@
-'use client';
-
-import { motion } from "motion/react"
 import { ShipmentData } from "@/types/tracking"
 import { TimelineEvent } from "./TimelineEvent"
+import { motion } from "motion/react"
 
 export function TrackingTimeline({ shipment }: { shipment: ShipmentData }) {
   if (!shipment.events || shipment.events.length === 0) {
@@ -19,7 +17,7 @@ export function TrackingTimeline({ shipment }: { shipment: ShipmentData }) {
       <motion.div 
         variants={{
           hidden: { opacity: 0 },
-          show: { opacity: 1, transition: { staggerChildren: 0.08 } }
+          show: { opacity: 1, transition: { staggerChildren: 0.1 } }
         }}
         initial="hidden"
         animate="show"
