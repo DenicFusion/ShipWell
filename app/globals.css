@@ -1,0 +1,90 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@theme {
+  --color-bg-base: var(--bg-base);
+  --color-bg-surface: var(--bg-surface);
+  --color-bg-card: var(--bg-card);
+  --color-text-base: var(--text-base);
+  --color-text-muted: var(--text-muted);
+  --color-border-line: var(--border-line);
+  
+  --color-brand-primary: var(--brand-primary);
+  --color-brand-primary-hover: var(--brand-primary-hover);
+  --color-brand-secondary: var(--brand-secondary);
+
+  --color-brand-success: #10B981;
+  --color-brand-warning: #F59E0B;
+  --color-brand-danger: #EF4444;
+
+  --font-sans: var(--font-dm-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-display: var(--font-bebas-neue);
+}
+
+:root {
+  /* Light Theme */
+  --bg-base: #ECFDF5;
+  --bg-surface: #ffffff;
+  --bg-card: #ffffff;
+  --text-base: #052E16;
+  --text-muted: #059669;
+  --border-line: rgba(5, 150, 105, 0.2);
+  
+  --brand-primary: #059669;
+  --brand-primary-hover: #047857;
+  --brand-secondary: #052E16;
+  
+  /* Logo Colors */
+  --logo-bg: #059669;
+  --logo-box: #ECFDF5;
+  --logo-stripe: #A7F3D0;
+  --logo-path1: #6EE7B7;
+  --logo-path2: #D1FAE5;
+  --logo-path3: #ECFDF5;
+  --logo-accent: #059669;
+}
+
+.dark {
+  /* Dark Theme */
+  --bg-base: #020E06;
+  --bg-surface: #052E16;
+  --bg-card: rgba(255, 255, 255, 0.02);
+  --text-base: #ECFDF5;
+  --text-muted: #34D399;
+  --border-line: rgba(52, 211, 153, 0.2);
+  
+  --brand-primary: #10B981;
+  --brand-primary-hover: #34D399;
+  --brand-secondary: #059669;
+  
+  /* Logo Colors */
+  --logo-bg: #052E16;
+  --logo-box: #10B981;
+  --logo-stripe: #059669;
+  --logo-path1: #34D399;
+  --logo-path2: #34D399;
+  --logo-path3: #10B981;
+  --logo-accent: #ECFDF5;
+}
+
+body {
+  background-color: var(--bg-base);
+  color: var(--text-base);
+  font-family: var(--font-sans), sans-serif;
+}
+
+@keyframes pulse-ring {
+  0% { transform: scale(0.8); opacity: 0.5; }
+  100% { transform: scale(2.5); opacity: 0; }
+}
+
+.animate-pulse-ring {
+  animation: pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+}
+
+.hero-pattern {
+  background-image: linear-gradient(var(--border-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--border-line) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
