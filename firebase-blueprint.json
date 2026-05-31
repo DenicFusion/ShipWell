@@ -15,6 +15,7 @@
         "destinationCity": { "type": "string" },
         "destinationState": { "type": "string" },
         "destinationZip": { "type": "string" },
+        "userId": { "type": "string", "description": "The UID of the registered user owner" },
         "createdAt": { "type": "timestamp" },
         "updatedAt": { "type": "timestamp" }
       },
@@ -38,6 +39,38 @@
         "createdAt": { "type": "timestamp" }
       },
       "required": ["isLogical", "isLatest", "statusColor", "eventCode", "label", "description", "createdAt"]
+    },
+    "User": {
+      "title": "User",
+      "description": "Registered profile metadata of a customer.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "company": { "type": "string" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      },
+      "required": ["uid", "name", "email", "createdAt"]
+    },
+    "SupportTicket": {
+      "title": "SupportTicket",
+      "description": "Customer support requests and logs.",
+      "type": "object",
+      "properties": {
+        "ticketId": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "subject": { "type": "string" },
+        "category": { "type": "string" },
+        "message": { "type": "string" },
+        "status": { "type": "string", "enum": ["OPEN", "RESOLVED", "CLOSED"] },
+        "createdAt": { "type": "timestamp" }
+      },
+      "required": ["ticketId", "userId", "subject", "message", "status", "createdAt"]
     }
   },
   "firestore": {
@@ -48,6 +81,14 @@
     "shipments/{trackingId}/events/{eventId}": {
       "schema": { "$ref": "TrackingEvent" },
       "description": "Stores tracking events for a specific shipment."
+    },
+    "users/{uid}": {
+      "schema": { "$ref": "User" },
+      "description": "Stores customer account profiles."
+    },
+    "tickets/{ticketId}": {
+      "schema": { "$ref": "SupportTicket" },
+      "description": "Stores user lodged support help tickets."
     }
   }
 }

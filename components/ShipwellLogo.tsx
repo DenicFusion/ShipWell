@@ -2,8 +2,8 @@ import React from 'react';
 
 export function ShipwellLogo({ className = "" }: { className?: string }) {
   return (
-    <div className={`flex items-center gap-3 ${className}`}>
-      <svg width="46" height="46" viewBox="0 0 46 46" fill="none" xmlns="http://www.w3.org/2000/svg" className="shrink-0">
+    <div className={`flex items-center gap-3 group ${className}`}>
+      <svg width="46" height="46" viewBox="0 0 46 46" fill="none" xmlns="http://www.w3.org/2000/svg" className="shrink-0 transition-transform duration-300 group-hover:scale-105 group-active:scale-95 group-active:animate-wiggle">
         <rect width="46" height="46" rx="10" fill="var(--logo-bg)"/>
         <rect x="9" y="16" width="18" height="16" rx="2" fill="var(--logo-box)"/>
         <rect x="9" y="22" width="18" height="2.5" fill="var(--logo-stripe)"/>

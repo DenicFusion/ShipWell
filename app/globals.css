@@ -17,47 +17,48 @@
   --color-brand-danger: #EF4444;
 
   --font-sans: var(--font-dm-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-mono: var(--font-jetbrains-mono);
+  --font-display: var(--font-syne);
 }
 
 :root {
   /* Light Theme */
-  --bg-base: #ECFDF5;
+  --bg-base: #F8FAFC;
   --bg-surface: #ffffff;
   --bg-card: #ffffff;
-  --text-base: #052E16;
-  --text-muted: #059669;
-  --border-line: rgba(5, 150, 105, 0.2);
+  --text-base: #0F172A;
+  --text-muted: #475569;
+  --border-line: #E2E8F0;
   
-  --brand-primary: #059669;
-  --brand-primary-hover: #047857;
-  --brand-secondary: #052E16;
+  --brand-primary: #10B981;
+  --brand-primary-hover: #0EA572;
+  --brand-secondary: #0F172A;
   
   /* Logo Colors */
-  --logo-bg: #059669;
-  --logo-box: #ECFDF5;
-  --logo-stripe: #A7F3D0;
-  --logo-path1: #6EE7B7;
-  --logo-path2: #D1FAE5;
-  --logo-path3: #ECFDF5;
-  --logo-accent: #059669;
+  --logo-bg: #E6F4EA;
+  --logo-box: #10B981;
+  --logo-stripe: #059669;
+  --logo-path1: #34D399;
+  --logo-path2: #059669;
+  --logo-path3: #10B981;
+  --logo-accent: #0F172A;
 }
 
 .dark {
   /* Dark Theme */
-  --bg-base: #020E06;
-  --bg-surface: #052E16;
-  --bg-card: rgba(255, 255, 255, 0.02);
-  --text-base: #ECFDF5;
-  --text-muted: #34D399;
-  --border-line: rgba(52, 211, 153, 0.2);
+  --bg-base: #07090F;
+  --bg-surface: #080C12;
+  --bg-card: #0D1117;
+  --text-base: #F1F5F9;
+  --text-muted: #94A3B8;
+  --border-line: #1E293B;
   
   --brand-primary: #10B981;
-  --brand-primary-hover: #34D399;
-  --brand-secondary: #059669;
+  --brand-primary-hover: #0EA572;
+  --brand-secondary: #0D1117;
   
   /* Logo Colors */
-  --logo-bg: #052E16;
+  --logo-bg: #0D1117;
   --logo-box: #10B981;
   --logo-stripe: #059669;
   --logo-path1: #34D399;
@@ -73,8 +74,45 @@ body {
   min-height: 100vh;
 }
 
-.hero-pattern {
-  background-image: linear-gradient(var(--border-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--border-line) 1px, transparent 1px);
-  background-size: 40px 40px;
+/* Custom design utilities from the requested template */
+.dot-grid {
+  background-image: radial-gradient(circle, var(--border-line) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+@keyframes breathe {
+  0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 0.8; }
+  50%       { transform: translate(-50%, -50%) scale(1.12); opacity: 1; }
+}
+
+.animate-breathe {
+  animation: breathe 7s ease-in-out infinite;
+}
+
+@keyframes scroll-x {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+
+.animate-scroll-x {
+  animation: scroll-x 22s linear infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6); }
+  50%      { box-shadow: 0 0 0 5px rgba(16, 185, 129, 0); }
+}
+
+.animate-pulse-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+@keyframes wiggle {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-4px) rotate(-1deg); }
+  75% { transform: translateX(4px) rotate(1deg); }
+}
+
+.animate-wiggle {
+  animation: wiggle 0.2s ease-in-out 2;
 }

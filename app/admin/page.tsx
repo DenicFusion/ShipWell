@@ -11,8 +11,8 @@ import { ThemeSwitch } from "@/components/ThemeSwitch";
 import { ShipwellLogo } from "@/components/ShipwellLogo";
 
 export default function AdminPage() {
-  const [user, setUser] = useState<User | null>(null);
-  const [loadingText, setLoadingText] = useState("Loading...");
+  // Removed Firebase Auth logic, handled by layout
+  const [loadingText, setLoadingText] = useState("");
   const [shipments, setShipments] = useState<any[]>([]);
   const [creating, setCreating] = useState(false);
   const [activeTab, setActiveTab] = useState<'shipments'|'create'>('shipments');
@@ -26,33 +26,24 @@ export default function AdminPage() {
       const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       setShipments(data);
     } catch (error) {
-      handleFirestoreError(error, OperationType.LIST, 'shipments');
+      console.error("Failed to list shipments:", error);
+      setShipments([]);
+      try {
+        handleFirestoreError(error, OperationType.LIST, 'shipments');
+      } catch (err: any) {
+        console.warn("Firestore access error registered:", err.message);
+      }
     }
   };
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      setLoadingText("");
-      if (u) {
-        fetchShipments();
-      }
-    });
-    return unsub;
+    fetchShipments();
   }, []);
 
-  const login = async () => {
-    try {
-      const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
-    } catch (err) {
-      console.error(err);
-      alert("Login failed.");
-    }
-  };
-
-  const logout = async () => {
-    await signOut(auth);
+  const logout = () => {
+    localStorage.removeItem("sw_is_admin");
+    document.cookie = "sw_is_admin=; path=/; max-age=0";
+    window.location.href = "/";
   };
 
   const fetchEvents = async (trackingId: string) => {
@@ -61,7 +52,13 @@ export default function AdminPage() {
       const snap = await getDocs(q);
       setEvents(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     } catch (error) {
-      handleFirestoreError(error, OperationType.LIST, `shipments/${trackingId}/events`);
+      console.error("Failed to list shipment events:", error);
+      setEvents([]);
+      try {
+        handleFirestoreError(error, OperationType.LIST, `shipments/${trackingId}/events`);
+      } catch (err: any) {
+        console.warn("Firestore access error registered:", err.message);
+      }
     }
   };
 
@@ -91,7 +88,8 @@ export default function AdminPage() {
         destinationState: formData.destinationState,
         destinationZip: formData.destinationZip,
         createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp()
+        updatedAt: serverTimestamp(),
+        userId: "admin"
       };
       
       if (formData.estimatedDelivery) {
@@ -99,6 +97,21 @@ export default function AdminPage() {
       }
       
       await setDoc(docRef, shipmentPayload);
+      
+      // Create an initial timeline event under shipments/{trackingNumber}/events
+      const initialEventRef = doc(collection(db, `shipments/${formData.trackingNumber}/events`));
+      await setDoc(initialEventRef, {
+        isLogical: false,
+        statusColor: "bg-amber-500",
+        eventCode: formData.status,
+        label: "Shipment Registered",
+        description: `Shipment order registered. Status set to ${formData.status}.`,
+        facility: "Corporate Logistics Hub",
+        location: `${formData.originCity}, ${formData.originState}`,
+        formattedDate: "Today",
+        formattedTime: "Just Now",
+        createdAt: serverTimestamp()
+      });
       
       alert("Shipment created!");
       setActiveTab('shipments');
@@ -113,7 +126,7 @@ export default function AdminPage() {
   };
 
   const [eventData, setEventData] = useState({
-    isLogical: false, isLatest: true, statusColor: "bg-brand-primary",
+    isLogical: false, statusColor: "bg-brand-primary",
     eventCode: "IN_TRANSIT", label: "", description: "",
     facility: "", location: "", formattedDate: "", formattedTime: ""
   });
@@ -134,25 +147,198 @@ export default function AdminPage() {
     }
   };
 
-  if (loadingText) return <div className="p-10">{loadingText}</div>;
+  const handleSeedData = async () => {
+    setLoadingText("Seeding demo shipments...");
+    try {
+      const demoShipments = [
+        {
+          trackingNumber: "SW-20260530-ACC001",
+          userId: null,
+          status: "IN_TRANSIT",
+          serviceType: "EXPRESS",
+          originCity: "Accra", originCountry: "Ghana",
+          destinationCity: "London", destinationCountry: "United Kingdom",
+          recipientName: "James Mensah",
+          recipientAddress: "14 Baker Street, London EC1A 1BB",
+          weightKg: 3.2, declaredValue: 800, currency: "USD",
+          taxRate: 0.20, taxAmount: 160, baseShippingFee: 75, totalAmount: 235,
+          estimatedDelivery: new Date(Date.now() + 86400000 * 2),
+          events: [
+            {
+              eventCode: "IN_TRANSIT",
+              label: "In Transit — Air Freight",
+              description: "Cargo loaded and departed from Accra Kotoka International Airport.",
+              facilityName: "Kotoka International Airport",
+              city: "Accra", country: "Ghana",
+              occurredAt: new Date(Date.now() - 3600000 * 2)
+            },
+            {
+              eventCode: "ORIGIN_ACCEPTANCE",
+              label: "Accepted at Origin Facility",
+              description: "Package scanned and accepted at the ShipWell Accra hub.",
+              facilityName: "ShipWell Accra Hub",
+              city: "Accra", country: "Ghana",
+              occurredAt: new Date(Date.now() - 3600000 * 8)
+            },
+            {
+              eventCode: "LABEL_CREATED",
+              label: "Shipping Label Created",
+              description: "Shipment registered in the ShipWell system.",
+              facilityName: "ShipWell Portal",
+              city: "Accra", country: "Ghana",
+              occurredAt: new Date(Date.now() - 3600000 * 10)
+            }
+          ]
+        },
+        {
+          trackingNumber: "SW-20260528-LOS002",
+          userId: null,
+          status: "OUT_FOR_DELIVERY",
+          serviceType: "STANDARD",
+          originCity: "Lagos", originCountry: "Nigeria",
+          destinationCity: "New York", destinationCountry: "United States",
+          recipientName: "Sarah Williams",
+          recipientAddress: "55 Water Street, New York NY 10041",
+          weightKg: 1.5, declaredValue: 300, currency: "USD",
+          taxRate: 0.085, taxAmount: 25.5, baseShippingFee: 45, totalAmount: 70.5,
+          estimatedDelivery: new Date(Date.now() + 86400000 * 1),
+          events: [
+            {
+              eventCode: "OUT_FOR_DELIVERY",
+              label: "Out for Delivery",
+              description: "Package is with the delivery courier and will arrive today.",
+              facilityName: "ShipWell NYC Last-Mile Hub",
+              city: "New York", country: "United States",
+              occurredAt: new Date(Date.now() - 3600000 * 1)
+            },
+            {
+              eventCode: "ARRIVED_AT_UNIT",
+              label: "Arrived at Delivery Unit",
+              description: "Package arrived at local delivery unit for final dispatch.",
+              facilityName: "NYC Delivery Unit",
+              city: "New York", country: "United States",
+              occurredAt: new Date(Date.now() - 3600000 * 5)
+            },
+            {
+              eventCode: "IN_TRANSIT",
+              label: "In Transit",
+              description: "Package in transit from JFK sorting facility.",
+              facilityName: "JFK International Sorting",
+              city: "New York", country: "United States",
+              occurredAt: new Date(Date.now() - 3600000 * 12)
+            },
+            {
+              eventCode: "LABEL_CREATED",
+              label: "Shipping Label Created",
+              description: "Shipment registered in the ShipWell system.",
+              facilityName: "ShipWell Lagos Hub",
+              city: "Lagos", country: "Nigeria",
+              occurredAt: new Date(Date.now() - 86400000 * 3)
+            }
+          ]
+        },
+        {
+          trackingNumber: "SW-20260525-KUM003",
+          userId: null,
+          status: "DELIVERED",
+          serviceType: "ECONOMY",
+          originCity: "Kumasi", originCountry: "Ghana",
+          destinationCity: "Berlin", destinationCountry: "Germany",
+          recipientName: "Klaus Mueller",
+          recipientAddress: "Unter den Linden 1, 10117 Berlin",
+          weightKg: 5.0, declaredValue: 1200, currency: "EUR",
+          taxRate: 0.19, taxAmount: 228, baseShippingFee: 90, totalAmount: 318,
+          estimatedDelivery: new Date(Date.now() - 86400000 * 1),
+          events: [
+            {
+              eventCode: "DELIVERED",
+              label: "Delivered",
+              description: "Package successfully delivered to the recipient. Signed by: K. Mueller",
+              facilityName: null,
+              city: "Berlin", country: "Germany",
+              occurredAt: new Date(Date.now() - 86400000 * 1)
+            },
+            {
+              eventCode: "OUT_FOR_DELIVERY",
+              label: "Out for Delivery",
+              description: "Package is with the delivery courier.",
+              facilityName: "Berlin Last-Mile Hub",
+              city: "Berlin", country: "Germany",
+              occurredAt: new Date(Date.now() - 86400000 * 1 - 3600000 * 3)
+            },
+            {
+              eventCode: "ARRIVED_AT_FACILITY",
+              label: "Arrived at Facility",
+              description: "Package arrived at Berlin sorting facility.",
+              facilityName: "Berlin Air Cargo Center",
+              city: "Berlin", country: "Germany",
+              occurredAt: new Date(Date.now() - 86400000 * 2)
+            },
+            {
+              eventCode: "IN_TRANSIT",
+              label: "In Transit",
+              description: "Package in transit from Frankfurt hub.",
+              facilityName: "Frankfurt International Hub",
+              city: "Frankfurt", country: "Germany",
+              occurredAt: new Date(Date.now() - 86400000 * 3)
+            },
+            {
+              eventCode: "LABEL_CREATED",
+              label: "Shipping Label Created",
+              description: "Shipment registered in the ShipWell system.",
+              facilityName: "ShipWell Kumasi Hub",
+              city: "Kumasi", country: "Ghana",
+              occurredAt: new Date(Date.now() - 86400000 * 7)
+            }
+          ]
+        }
+      ];
 
-  if (!user) {
+      for (const shipment of demoShipments) {
+        const { events, ...shipmentData } = shipment;
+        
+        // Use addDoc for auto-ID — NEVER use trackingNumber as doc ID
+        const shipmentRef = await addDoc(collection(db, "shipments"), {
+          ...shipmentData,
+          estimatedDelivery: shipmentData.estimatedDelivery,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+
+        // Write events to subcollection using shipmentRef.id
+        for (const event of events) {
+          await addDoc(collection(db, "shipments", shipmentRef.id, "events"), {
+            ...event,
+            occurredAt: event.occurredAt,
+            createdAt: serverTimestamp(),
+            isLogical: false,
+          });
+        }
+      }
+
+      alert("✅ 3 demo shipments seeded! Tracking codes:\n• SW-20260530-ACC001\n• SW-20260528-LOS002\n• SW-20260525-KUM003");
+      fetchShipments();
+    } catch (error: any) {
+      console.error("Seed error:", error);
+      alert("❌ Seed failed: " + error.message);
+    } finally {
+      setLoadingText("");
+    }
+  };
+
+  if (loadingText) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-bg-base">
-        <div className="bg-bg-surface p-10 rounded-2xl border border-border-line text-center max-w-sm w-full">
-           <ShipwellLogo className="mx-auto mb-6" />
-           <h2 className="text-xl font-bold mb-2">Admin Portal</h2>
-           <p className="text-sm text-text-muted mb-8">Please sign in with your authorized admin account to continue.</p>
-           <button onClick={login} className="w-full bg-brand-primary text-white font-bold py-3 px-4 rounded-full hover:opacity-90">
-             Sign in with Google
-           </button>
+      <div className="flex min-h-screen items-center justify-center bg-bg-base text-text-base">
+        <div className="flex flex-col items-center gap-3 bg-bg-surface border border-border-line p-8 rounded-2xl max-w-sm text-center">
+          <div className="w-8 h-8 border-4 border-brand-primary border-t-transparent rounded-full animate-spin" />
+          <p className="text-sm font-semibold tracking-wide">{loadingText}</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-bg-base flex flex-col">
+    <div className="flex-1 bg-bg-base flex flex-col">
        <header className="border-b border-border-line/50 bg-bg-surface/80 backdrop-blur-md">
         <div className="flex h-16 items-center px-6 justify-between">
           <div className="flex items-center gap-4">
@@ -162,7 +348,7 @@ export default function AdminPage() {
              <span className="bg-red-500/10 text-red-500 text-xs font-bold px-2 py-0.5 rounded-full uppercase tracking-widest hidden sm:inline-block">Admin Mode</span>
           </div>
           <div className="flex items-center gap-6">
-            <span className="text-sm font-medium text-text-muted">{user.email}</span>
+            <span className="text-sm font-medium text-text-muted">admin@shipwell.com</span>
             <ThemeSwitch />
             <button onClick={logout} className="text-sm font-semibold text-text-muted hover:text-brand-primary">Logout</button>
           </div>
@@ -184,7 +370,15 @@ export default function AdminPage() {
         <main className="flex-1 p-6 md:p-10 overflow-auto">
            {activeTab === 'shipments' && !selectedShipment && (
              <div>
-               <h1 className="text-2xl font-bold mb-6">Manage Shipments</h1>
+               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+                 <h1 className="text-2xl font-bold">Manage Shipments</h1>
+                 <button 
+                   onClick={handleSeedData} 
+                   className="px-4 py-2 border border-brand-primary/30 bg-brand-primary/10 text-brand-primary text-xs font-bold rounded-lg hover:bg-brand-primary/20 transition-all flex items-center gap-1.5 cursor-pointer text-center"
+                 >
+                   Seed Demo Shipments
+                 </button>
+               </div>
                <div className="grid gap-4">
                  {shipments.map(s => (
                    <div key={s.id} className="bg-bg-surface border border-border-line rounded-xl p-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">

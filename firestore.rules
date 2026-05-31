@@ -27,21 +27,48 @@ service cloud.firestore {
         && data.destinationCity is string && data.destinationCity.size() <= 100
         && data.destinationState is string && data.destinationState.size() <= 50
         && data.destinationZip is string && data.destinationZip.size() <= 20
+        && (!data.keys().hasAny(['userId']) || (data.userId is string && data.userId.size() <= 128))
         && (!data.keys().hasAny(['estimatedDelivery']) || (data.estimatedDelivery is string && data.estimatedDelivery.size() <= 50));
+    }
+
+    match /users/{uid} {
+      allow get: if request.auth != null && (request.auth.uid == uid || isAdmin());
+      allow create, update: if request.auth != null && request.auth.uid == uid;
+      allow delete: if isAdmin();
+    }
+
+    match /tickets/{ticketId} {
+      allow get: if request.auth != null && (resource.data.userId == request.auth.uid || isAdmin());
+      allow list: if request.auth != null && (resource.data.userId == request.auth.uid || isAdmin());
+      
+      function isValidTicket(data) {
+        return data.keys().hasAll(['ticketId', 'userId', 'userName', 'userEmail', 'subject', 'category', 'message', 'status', 'createdAt'])
+          && data.ticketId is string && data.ticketId.size() <= 100
+          && data.userId is string && data.userId.size() <= 128
+          && data.userName is string && data.userName.size() <= 150
+          && data.userEmail is string && data.userEmail.size() <= 150
+          && data.subject is string && data.subject.size() <= 200
+          && data.category is string && data.category.size() <= 100
+          && data.message is string && data.message.size() <= 2000
+          && data.status is string && data.status.size() <= 50;
+      }
+
+      allow create: if request.auth != null && incoming().userId == request.auth.uid && isValidId(ticketId) && isValidTicket(incoming())
+                    && incoming().createdAt == request.time;
+      allow update: if request.auth != null && (resource.data.userId == request.auth.uid || isAdmin()) && isValidTicket(incoming());
+      allow delete: if isAdmin();
     }
 
     match /shipments/{trackingId} {
       allow get: if isValidId(trackingId);
-      allow list: if isAdmin();
+      allow list: if isAdmin() || (request.auth != null && resource.data.userId == request.auth.uid);
       
-      allow create: if isAdmin() && isValidId(trackingId) && isValidShipment(incoming())
-                    && incoming().createdAt == request.time
-                    && incoming().updatedAt == request.time
+      allow create: if (isAdmin() || (request.auth != null && incoming().userId == request.auth.uid)) 
+                    && isValidId(trackingId) && isValidShipment(incoming())
                     && incoming().trackingNumber == trackingId;
 
-      allow update: if isAdmin() && isValidId(trackingId) && isValidShipment(incoming())
-                    && incoming().updatedAt == request.time
-                    && incoming().createdAt == existing().createdAt
+      allow update: if (isAdmin() || (request.auth != null && existing().userId == request.auth.uid)) 
+                    && isValidId(trackingId) && isValidShipment(incoming())
                     && incoming().trackingNumber == existing().trackingNumber;
                     
       allow delete: if isAdmin();
@@ -51,11 +78,10 @@ service cloud.firestore {
         allow list: if isValidId(trackingId);
         
         function isValidEvent(data) {
-            return data.keys().hasAll(['isLogical', 'isLatest', 'statusColor', 'eventCode', 'label', 'description', 'createdAt'])
+            return data.keys().hasAll(['isLogical', 'statusColor', 'eventCode', 'label', 'description', 'createdAt'])
               && data.isLogical is bool
-              && data.isLatest is bool
               && data.statusColor is string && data.statusColor.size() <= 50
-              && data.eventCode is string && data.eventCode.size() <= 50
+              && data.eventCode is string && data.eventCode.size() <= 60
               && data.label is string && data.label.size() <= 100
               && data.description is string && data.description.size() <= 500
               && (!data.keys().hasAny(['facility']) || (data.facility is string && data.facility.size() <= 100))
@@ -64,12 +90,11 @@ service cloud.firestore {
               && (!data.keys().hasAny(['formattedTime']) || (data.formattedTime is string && data.formattedTime.size() <= 50));
         }
 
-        allow create: if isAdmin() && isValidId(eventId) && isValidEvent(incoming())
-                      && incoming().createdAt == request.time
-                      && exists(/databases/$(database)/documents/shipments/$(trackingId));
+        allow create: if (isAdmin() || (request.auth != null && get(/databases/$(database)/documents/shipments/$(trackingId)).data.userId == request.auth.uid)) 
+                      && isValidId(eventId) && isValidEvent(incoming());
 
-        allow update: if isAdmin() && isValidId(eventId) && isValidEvent(incoming())
-                      && incoming().createdAt == existing().createdAt;
+        allow update: if (isAdmin() || (request.auth != null && get(/databases/$(database)/documents/shipments/$(trackingId)).data.userId == request.auth.uid)) 
+                      && isValidId(eventId) && isValidEvent(incoming());
                       
         allow delete: if isAdmin();
       }
