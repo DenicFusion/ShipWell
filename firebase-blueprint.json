@@ -1,94 +1,256 @@
 {
   "entities": {
-    "Shipment": {
-      "title": "Shipment",
-      "description": "A tracked shipment package.",
+    "User": {
+      "title": "User",
+      "description": "Registered customer profile metadata (strictly PII-isolated).",
       "type": "object",
       "properties": {
-        "status": { "type": "string", "enum": ["PENDING", "IN_TRANSIT", "OUT_FOR_DELIVERY", "DELIVERED", "EXCEPTION", "RETURNED"] },
-        "carrier": { "type": "string" },
-        "trackingNumber": { "type": "string" },
-        "estimatedDelivery": { "type": "string" },
-        "originCity": { "type": "string" },
-        "originState": { "type": "string" },
-        "originZip": { "type": "string" },
-        "destinationCity": { "type": "string" },
-        "destinationState": { "type": "string" },
-        "destinationZip": { "type": "string" },
-        "userId": { "type": "string", "description": "The UID of the registered user owner" },
+        "uid": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 120 },
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "phone": { "type": "string", "maxLength": 40 },
+        "company": { "type": "string", "maxLength": 160 },
         "createdAt": { "type": "timestamp" },
         "updatedAt": { "type": "timestamp" }
       },
-      "required": ["status", "carrier", "trackingNumber", "originCity", "originState", "originZip", "destinationCity", "destinationState", "destinationZip", "createdAt", "updatedAt"]
+      "required": ["uid", "name", "email", "createdAt", "updatedAt"]
+    },
+    "AccountStatus": {
+      "title": "AccountStatus",
+      "description": "Non-PII existence flag keyed by SHA-256 hash of lowercase email.",
+      "type": "object",
+      "properties": {
+        "exists": { "type": "boolean" },
+        "updatedAt": { "type": "timestamp" }
+      },
+      "required": ["exists", "updatedAt"]
+    },
+    "TrackingTeaser": {
+      "title": "TrackingTeaser",
+      "description": "Public non-PII tracking summary for the pre-login gate.",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "pattern": "^SW-\\d{8}-[A-F0-9]{8}$", "maxLength": 20 },
+        "senderId": { "type": "string", "maxLength": 128 },
+        "status": {
+          "type": "string",
+          "enum": ["Booked", "Picked Up", "In Transit", "At Hub", "Customs", "Out for Delivery", "Delivered"]
+        },
+        "holdType": { "type": "string", "maxLength": 30 },
+        "originCity": { "type": "string", "maxLength": 100 },
+        "originCountry": { "type": "string", "maxLength": 100 },
+        "destinationCity": { "type": "string", "maxLength": 100 },
+        "destinationCountry": { "type": "string", "maxLength": 100 },
+        "service": { "type": "string", "enum": ["economy", "standard", "express"] },
+        "weightKg": { "type": "number" },
+        "contents": { "type": "string", "maxLength": 240 },
+        "eta": { "type": "number" },
+        "deliveredAt": { "type": "number" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      },
+      "required": [
+        "code", "senderId", "status", "originCity", "originCountry",
+        "destinationCity", "destinationCountry", "service", "weightKg",
+        "contents", "eta", "createdAt", "updatedAt"
+      ]
+    },
+    "Shipment": {
+      "title": "Shipment",
+      "description": "Full shipment record restricted to sender, verified receiver, and admins.",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "pattern": "^SW-\\d{8}-[A-F0-9]{8}$", "maxLength": 20 },
+        "senderId": { "type": "string", "maxLength": 128 },
+        "senderEmail": { "type": "string", "format": "email", "maxLength": 160 },
+        "receiverEmail": { "type": "string", "format": "email", "maxLength": 160 },
+        "sender": { "type": "object" },
+        "receiver": { "type": "object" },
+        "service": { "type": "string", "enum": ["economy", "standard", "express"] },
+        "weightKg": { "type": "number" },
+        "packageType": { "type": "string", "maxLength": 60 },
+        "contents": { "type": "string", "maxLength": 240 },
+        "declaredValue": { "type": "number" },
+        "priceTotal": { "type": "number" },
+        "paymentMethod": { "type": "string", "maxLength": 40 },
+        "status": {
+          "type": "string",
+          "enum": ["Booked", "Picked Up", "In Transit", "At Hub", "Customs", "Out for Delivery", "Delivered"]
+        },
+        "eta": { "type": "number" },
+        "photos": { "type": "array" },
+        "hold": { "type": "object" },
+        "nextStop": { "type": "object" },
+        "review": { "type": "object" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      },
+      "required": [
+        "code", "senderId", "senderEmail", "receiverEmail", "sender", "receiver",
+        "service", "weightKg", "packageType", "contents", "declaredValue",
+        "priceTotal", "paymentMethod", "status", "eta", "photos", "review",
+        "createdAt", "updatedAt"
+      ]
     },
     "TrackingEvent": {
       "title": "TrackingEvent",
-      "description": "An event in the shipment's timeline.",
+      "description": "Chronological milestone event on a shipment.",
       "type": "object",
       "properties": {
-        "isLogical": { "type": "boolean" },
-        "isLatest": { "type": "boolean" },
-        "statusColor": { "type": "string" },
-        "eventCode": { "type": "string" },
-        "label": { "type": "string" },
-        "description": { "type": "string" },
-        "facility": { "type": "string" },
-        "location": { "type": "string" },
-        "formattedDate": { "type": "string" },
-        "formattedTime": { "type": "string" },
+        "stage": {
+          "type": "string",
+          "enum": ["Booked", "Picked Up", "In Transit", "At Hub", "Customs", "Out for Delivery", "Delivered"]
+        },
+        "label": { "type": "string", "maxLength": 160 },
+        "loc": { "type": "string", "maxLength": 160 },
+        "note": { "type": "string", "maxLength": 500 },
+        "kind": { "type": "string", "enum": ["scan", "delay", "action", "review", "info"] },
+        "ts": { "type": "number" },
+        "createdBy": { "type": "string", "maxLength": 128 },
         "createdAt": { "type": "timestamp" }
       },
-      "required": ["isLogical", "isLatest", "statusColor", "eventCode", "label", "description", "createdAt"]
+      "required": ["stage", "label", "loc", "note", "kind", "ts", "createdBy", "createdAt"]
     },
-    "User": {
-      "title": "User",
-      "description": "Registered profile metadata of a customer.",
+    "ShipmentAlert": {
+      "title": "ShipmentAlert",
+      "description": "Action request sent to the receiver or sender.",
       "type": "object",
       "properties": {
-        "uid": { "type": "string" },
-        "name": { "type": "string" },
-        "email": { "type": "string" },
-        "phone": { "type": "string" },
-        "company": { "type": "string" },
+        "to": { "type": "string", "enum": ["receiver", "sender"] },
+        "kind": { "type": "string", "enum": ["duty", "address", "id", "reschedule", "custom", "item"] },
+        "title": { "type": "string", "maxLength": 160 },
+        "message": { "type": "string", "maxLength": 600 },
+        "amount": { "type": "number" },
+        "status": { "type": "string", "enum": ["open", "resolved"] },
+        "response": { "type": "string", "maxLength": 600 },
+        "attachmentName": { "type": "string", "maxLength": 160 },
         "createdAt": { "type": "timestamp" },
-        "updatedAt": { "type": "timestamp" }
+        "resolvedAt": { "type": "timestamp" }
       },
-      "required": ["uid", "name", "email", "createdAt"]
+      "required": ["to", "kind", "title", "message", "amount", "status", "createdAt"]
     },
-    "SupportTicket": {
-      "title": "SupportTicket",
-      "description": "Customer support requests and logs.",
+    "ShipmentInvite": {
+      "title": "ShipmentInvite",
+      "description": "Receiver invite and reminder dispatch history.",
       "type": "object",
       "properties": {
-        "ticketId": { "type": "string" },
-        "userId": { "type": "string" },
-        "userName": { "type": "string" },
-        "userEmail": { "type": "string" },
-        "subject": { "type": "string" },
-        "category": { "type": "string" },
-        "message": { "type": "string" },
-        "status": { "type": "string", "enum": ["OPEN", "RESOLVED", "CLOSED"] },
+        "tokenHash": { "type": "string", "maxLength": 128 },
+        "receiverEmail": { "type": "string", "format": "email", "maxLength": 160 },
+        "template": { "type": "string", "enum": ["invite", "on_its_way", "reminder"] },
+        "status": { "type": "string", "enum": ["sent", "queued_preview", "opened", "completed", "flagged_unknown", "unsubscribed"] },
+        "emailCount": { "type": "number" },
+        "sentAt": { "type": "number" },
+        "openedAt": { "type": "number" },
+        "completedAt": { "type": "number" },
+        "createdBy": { "type": "string", "maxLength": 128 },
         "createdAt": { "type": "timestamp" }
       },
-      "required": ["ticketId", "userId", "subject", "message", "status", "createdAt"]
+      "required": ["tokenHash", "receiverEmail", "template", "status", "emailCount", "sentAt", "createdBy", "createdAt"]
+    },
+    "InviteAction": {
+      "title": "InviteAction",
+      "description": "Signed footer action records (unknown sender flag or reminder unsubscribe).",
+      "type": "object",
+      "properties": {
+        "tokenHash": { "type": "string", "maxLength": 128 },
+        "code": { "type": "string", "pattern": "^SW-\\d{8}-[A-F0-9]{8}$", "maxLength": 20 },
+        "action": { "type": "string", "enum": ["unknown_sender", "unsubscribe"] },
+        "createdAt": { "type": "timestamp" }
+      },
+      "required": ["tokenHash", "code", "action", "createdAt"]
+    },
+    "BusinessLead": {
+      "title": "BusinessLead",
+      "description": "Enterprise shipping account enquiry.",
+      "type": "object",
+      "properties": {
+        "ref": { "type": "string", "maxLength": 24 },
+        "company": { "type": "string", "maxLength": 160 },
+        "name": { "type": "string", "maxLength": 120 },
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "plan": { "type": "string", "enum": ["Starter", "Growth", "Enterprise"] },
+        "volume": { "type": "string", "maxLength": 80 },
+        "message": { "type": "string", "maxLength": 1500 },
+        "status": { "type": "string", "enum": ["new", "contacted"] },
+        "createdAt": { "type": "timestamp" }
+      },
+      "required": ["ref", "company", "name", "email", "plan", "volume", "message", "status", "createdAt"]
+    },
+    "EmailLog": {
+      "title": "EmailLog",
+      "description": "Audit log of transactional emails sent or queued.",
+      "type": "object",
+      "properties": {
+        "to": { "type": "string", "maxLength": 160 },
+        "code": { "type": "string", "maxLength": 24 },
+        "template": { "type": "string", "maxLength": 60 },
+        "subject": { "type": "string", "maxLength": 240 },
+        "status": { "type": "string", "enum": ["sent", "queued_preview", "failed"] },
+        "providerId": { "type": "string", "maxLength": 128 },
+        "createdBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "timestamp" }
+      },
+      "required": ["to", "template", "subject", "status", "createdBy", "createdAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Admin operations audit trail.",
+      "type": "object",
+      "properties": {
+        "actorUid": { "type": "string", "maxLength": 128 },
+        "actorEmail": { "type": "string", "maxLength": 160 },
+        "action": { "type": "string", "maxLength": 80 },
+        "code": { "type": "string", "maxLength": 24 },
+        "detail": { "type": "string", "maxLength": 400 },
+        "createdAt": { "type": "timestamp" }
+      },
+      "required": ["actorUid", "actorEmail", "action", "detail", "createdAt"]
     }
   },
   "firestore": {
-    "shipments/{trackingId}": {
-      "schema": { "$ref": "Shipment" },
-      "description": "Stores individual shipments."
-    },
-    "shipments/{trackingId}/events/{eventId}": {
-      "schema": { "$ref": "TrackingEvent" },
-      "description": "Stores tracking events for a specific shipment."
-    },
     "users/{uid}": {
       "schema": { "$ref": "User" },
-      "description": "Stores customer account profiles."
+      "description": "Registered customer profiles (no self-assigned roles)."
     },
-    "tickets/{ticketId}": {
-      "schema": { "$ref": "SupportTicket" },
-      "description": "Stores user lodged support help tickets."
+    "accountStatus/{emailHash}": {
+      "schema": { "$ref": "AccountStatus" },
+      "description": "Zero-PII existence flag keyed by SHA-256 of lowercase email."
+    },
+    "trackingTeasers/{code}": {
+      "schema": { "$ref": "TrackingTeaser" },
+      "description": "Public non-PII summary for the tracking gate."
+    },
+    "shipments/{code}": {
+      "schema": { "$ref": "Shipment" },
+      "description": "Private shipment details restricted to sender, verified receiver, and admins."
+    },
+    "shipments/{code}/events/{eventId}": {
+      "schema": { "$ref": "TrackingEvent" },
+      "description": "Shipment milestone events."
+    },
+    "shipments/{code}/alerts/{alertId}": {
+      "schema": { "$ref": "ShipmentAlert" },
+      "description": "Receiver/sender action alerts."
+    },
+    "shipments/{code}/invites/{inviteId}": {
+      "schema": { "$ref": "ShipmentInvite" },
+      "description": "Receiver email invite & reminder logs."
+    },
+    "inviteActions/{actionId}": {
+      "schema": { "$ref": "InviteAction" },
+      "description": "Signed email action records (unknown sender / unsubscribe)."
+    },
+    "leads/{leadId}": {
+      "schema": { "$ref": "BusinessLead" },
+      "description": "Enterprise business leads."
+    },
+    "emailLogs/{logId}": {
+      "schema": { "$ref": "EmailLog" },
+      "description": "Transactional email dispatch logs."
+    },
+    "auditLogs/{logId}": {
+      "schema": { "$ref": "AuditLog" },
+      "description": "Admin operations audit logs."
     }
   }
 }

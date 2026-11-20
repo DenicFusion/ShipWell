@@ -5,99 +5,440 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    function isAdmin() {
-      return request.auth != null && request.auth.token.email == 'denic9426@gmail.com' && request.auth.token.email_verified == true;
-    }
-    
-    function isValidId(id) {
-       return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
-    }
-    
     function incoming() { return request.resource.data; }
     function existing() { return resource.data; }
+    function isSignedIn() { return request.auth != null; }
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    function isValidTrackingCode(code) {
+      return code is string && code.size() == 20 && code.matches('^SW-[0-9]{8}-[A-F0-9]{8}$');
+    }
+    function isValidEmailHash(h) {
+      return h is string && h.size() == 64 && h.matches('^[a-f0-9]{64}$');
+    }
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (request.auth.token.email == 'denic9426@gmail.com' && request.auth.token.email_verified == true)
+      );
+    }
 
-    function isValidShipment(data) {
-      return data.keys().hasAll(['status', 'carrier', 'trackingNumber', 'originCity', 'originState', 'originZip', 'destinationCity', 'destinationState', 'destinationZip', 'createdAt', 'updatedAt'])
-        && data.status is string && data.status.size() <= 50
-        && data.carrier is string && data.carrier.size() <= 100
-        && data.trackingNumber is string && data.trackingNumber.size() <= 100
-        && data.originCity is string && data.originCity.size() <= 100
-        && data.originState is string && data.originState.size() <= 50
-        && data.originZip is string && data.originZip.size() <= 20
-        && data.destinationCity is string && data.destinationCity.size() <= 100
-        && data.destinationState is string && data.destinationState.size() <= 50
-        && data.destinationZip is string && data.destinationZip.size() <= 20
-        && (!data.keys().hasAny(['userId']) || (data.userId is string && data.userId.size() <= 128))
-        && (!data.keys().hasAny(['estimatedDelivery']) || (data.estimatedDelivery is string && data.estimatedDelivery.size() <= 50));
+    function isShipmentSender(data) {
+      return isSignedIn() && data.senderId == request.auth.uid;
+    }
+    function isShipmentReceiver(data) {
+      return isVerified()
+        && request.auth.token.email is string
+        && data.receiverEmail == request.auth.token.email.lower();
+    }
+    function isShipmentParty(data) {
+      return isAdmin() || isShipmentSender(data) || isShipmentReceiver(data);
+    }
+    function parentShipment(code) {
+      return get(/databases/$(database)/documents/shipments/$(code)).data;
+    }
+    function isValidStage(st) {
+      return st in ['Booked', 'Picked Up', 'In Transit', 'At Hub', 'Customs', 'Out for Delivery', 'Delivered'];
+    }
+    function isValidService(svc) {
+      return svc in ['economy', 'standard', 'express'];
+    }
+    function isValidPartyMap(p) {
+      return p is map
+        && p.keys().hasAll(['name', 'email', 'phone', 'address', 'city', 'country'])
+        && p.keys().hasOnly(['name', 'email', 'phone', 'address', 'city', 'postal', 'country'])
+        && p.name is string && p.name.size() > 0 && p.name.size() <= 120
+        && p.email is string && p.email.size() >= 3 && p.email.size() <= 160
+        && p.phone is string && p.phone.size() <= 40
+        && p.address is string && p.address.size() <= 240
+        && p.city is string && p.city.size() > 0 && p.city.size() <= 100
+        && p.country is string && p.country.size() > 0 && p.country.size() <= 100
+        && (!p.keys().hasAny(['postal']) || (p.postal is string && p.postal.size() <= 30));
+    }
+    function isValidReviewMap(r) {
+      return r is map
+        && r.keys().hasAll(['state', 'note'])
+        && r.keys().hasOnly(['state', 'note', 'at', 'by'])
+        && r.state in ['pending', 'approved', 'flagged']
+        && r.note is string && r.note.size() <= 400
+        && (!r.keys().hasAny(['at']) || r.at == null || r.at is number)
+        && (!r.keys().hasAny(['by']) || r.by == null || (r.by is string && r.by.size() <= 160));
+    }
+    function isValidHold(h) {
+      return h == null || (
+        h is map
+        && h.keys().hasAll(['type', 'reason', 'at'])
+        && h.keys().hasOnly(['type', 'reason', 'at', 'alertId'])
+        && h.type in ['Delayed', 'On Hold']
+        && h.reason is string && h.reason.size() > 0 && h.reason.size() <= 400
+        && h.at is number
+        && (!h.keys().hasAny(['alertId']) || h.alertId == null || (h.alertId is string && h.alertId.size() <= 128))
+      );
+    }
+    function isValidNextStop(n) {
+      return n == null || (
+        n is map
+        && n.keys().hasAll(['label', 'loc'])
+        && n.keys().hasOnly(['label', 'loc', 'eta'])
+        && n.label is string && n.label.size() <= 160
+        && n.loc is string && n.loc.size() <= 160
+        && (!n.keys().hasAny(['eta']) || n.eta == null || n.eta is number)
+      );
+    }
+
+    function isValidUser(data, uid) {
+      return data.keys().hasAll(['uid', 'name', 'email', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'name', 'email', 'phone', 'company', 'createdAt', 'updatedAt'])
+        && data.uid == uid
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 120
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+        && (!data.keys().hasAny(['phone']) || (data.phone is string && data.phone.size() <= 40))
+        && (!data.keys().hasAny(['company']) || (data.company is string && data.company.size() <= 160));
+    }
+
+    function isValidAccountStatus(data) {
+      return data.keys().hasAll(['exists', 'updatedAt'])
+        && data.keys().hasOnly(['exists', 'updatedAt'])
+        && data.exists == true
+        && data.updatedAt == request.time;
+    }
+
+    function isValidTeaser(data, code) {
+      return data.keys().hasAll([
+          'code', 'senderId', 'status', 'originCity', 'originCountry',
+          'destinationCity', 'destinationCountry', 'service', 'weightKg',
+          'contents', 'eta', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'code', 'senderId', 'status', 'holdType', 'originCity', 'originCountry',
+          'destinationCity', 'destinationCountry', 'service', 'weightKg',
+          'contents', 'eta', 'deliveredAt', 'createdAt', 'updatedAt'
+        ])
+        && data.code == code
+        && isValidTrackingCode(data.code)
+        && data.senderId is string && data.senderId.size() > 0 && data.senderId.size() <= 128
+        && isValidStage(data.status)
+        && (!data.keys().hasAny(['holdType']) || data.holdType == null || (data.holdType is string && data.holdType.size() <= 30))
+        && data.originCity is string && data.originCity.size() > 0 && data.originCity.size() <= 100
+        && data.originCountry is string && data.originCountry.size() > 0 && data.originCountry.size() <= 100
+        && data.destinationCity is string && data.destinationCity.size() > 0 && data.destinationCity.size() <= 100
+        && data.destinationCountry is string && data.destinationCountry.size() > 0 && data.destinationCountry.size() <= 100
+        && isValidService(data['service'])
+        && data.weightKg is number && data.weightKg > 0 && data.weightKg <= 50000
+        && data.contents is string && data.contents.size() > 0 && data.contents.size() <= 240
+        && data.eta is number
+        && (!data.keys().hasAny(['deliveredAt']) || data.deliveredAt == null || data.deliveredAt is number);
+    }
+
+    function isValidShipment(data, code) {
+      return data.keys().hasAll([
+          'code', 'senderId', 'senderEmail', 'receiverEmail', 'sender', 'receiver',
+          'service', 'weightKg', 'packageType', 'contents', 'declaredValue',
+          'priceTotal', 'paymentMethod', 'status', 'eta', 'photos', 'review',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'code', 'senderId', 'senderEmail', 'receiverEmail', 'sender', 'receiver',
+          'service', 'weightKg', 'packageType', 'contents', 'declaredValue',
+          'priceTotal', 'paymentMethod', 'status', 'eta', 'photos', 'hold',
+          'nextStop', 'review', 'deliveredAt', 'createdAt', 'updatedAt'
+        ])
+        && data.code == code
+        && isValidTrackingCode(data.code)
+        && data.senderId is string && data.senderId.size() > 0 && data.senderId.size() <= 128
+        && data.senderEmail is string && data.senderEmail == data.senderEmail.lower() && data.senderEmail.size() <= 160
+        && data.receiverEmail is string && data.receiverEmail == data.receiverEmail.lower() && data.receiverEmail.size() <= 160
+        && isValidPartyMap(data.sender)
+        && isValidPartyMap(data.receiver)
+        && isValidService(data['service'])
+        && data.weightKg is number && data.weightKg > 0 && data.weightKg <= 50000
+        && data.packageType is string && data.packageType.size() > 0 && data.packageType.size() <= 60
+        && data.contents is string && data.contents.size() > 0 && data.contents.size() <= 240
+        && data.declaredValue is number && data.declaredValue >= 0
+        && data.priceTotal is number && data.priceTotal >= 0
+        && data.paymentMethod is string && data.paymentMethod.size() > 0 && data.paymentMethod.size() <= 40
+        && isValidStage(data.status)
+        && data.eta is number
+        && data.photos is list && data.photos.size() >= 1 && data.photos.size() <= 4
+        && data.photos[0] is string && data.photos[0].size() <= 350000
+        && (!data.keys().hasAny(['hold']) || isValidHold(data.hold))
+        && (!data.keys().hasAny(['nextStop']) || isValidNextStop(data.nextStop))
+        && isValidReviewMap(data.review)
+        && (!data.keys().hasAny(['deliveredAt']) || data.deliveredAt == null || data.deliveredAt is number);
+    }
+
+    function isValidEvent(data) {
+      return data.keys().hasAll(['stage', 'label', 'loc', 'note', 'kind', 'ts', 'createdBy', 'createdAt'])
+        && data.keys().hasOnly(['stage', 'label', 'loc', 'note', 'kind', 'ts', 'createdBy', 'createdAt'])
+        && isValidStage(data.stage)
+        && data.label is string && data.label.size() > 0 && data.label.size() <= 160
+        && data.loc is string && data.loc.size() <= 160
+        && data.note is string && data.note.size() <= 500
+        && data.kind in ['scan', 'delay', 'action', 'review', 'info']
+        && data.ts is number
+        && data.createdBy is string && data.createdBy.size() > 0 && data.createdBy.size() <= 128
+        && data.createdAt == request.time;
+    }
+
+    function isValidAlert(data) {
+      return data.keys().hasAll(['to', 'kind', 'title', 'message', 'amount', 'status', 'createdAt'])
+        && data.keys().hasOnly(['to', 'kind', 'title', 'message', 'amount', 'status', 'response', 'attachmentName', 'createdAt', 'resolvedAt'])
+        && data.to in ['receiver', 'sender']
+        && data.kind in ['duty', 'address', 'id', 'reschedule', 'custom', 'item']
+        && data.title is string && data.title.size() > 0 && data.title.size() <= 160
+        && data.message is string && data.message.size() > 0 && data.message.size() <= 600
+        && data.amount is number && data.amount >= 0
+        && data.status in ['open', 'resolved']
+        && (!data.keys().hasAny(['response']) || (data.response is string && data.response.size() <= 600))
+        && (!data.keys().hasAny(['attachmentName']) || (data.attachmentName is string && data.attachmentName.size() <= 160));
+    }
+
+    function isValidInvite(data) {
+      return data.keys().hasAll(['tokenHash', 'receiverEmail', 'template', 'status', 'emailCount', 'sentAt', 'createdBy', 'createdAt'])
+        && data.keys().hasOnly(['tokenHash', 'receiverEmail', 'template', 'status', 'emailCount', 'sentAt', 'openedAt', 'completedAt', 'createdBy', 'createdAt'])
+        && data.tokenHash is string && data.tokenHash.size() > 0 && data.tokenHash.size() <= 128
+        && data.receiverEmail is string && data.receiverEmail.size() <= 160
+        && data.template in ['invite', 'on_its_way', 'reminder']
+        && data.status in ['sent', 'queued_preview', 'opened', 'completed', 'flagged_unknown', 'unsubscribed']
+        && data.emailCount is number && data.emailCount >= 1 && data.emailCount <= 10
+        && data.sentAt is number
+        && (!data.keys().hasAny(['openedAt']) || data.openedAt == null || data.openedAt is number)
+        && (!data.keys().hasAny(['completedAt']) || data.completedAt == null || data.completedAt is number)
+        && data.createdBy is string && data.createdBy.size() <= 128;
+    }
+
+    function isValidLead(data) {
+      return data.keys().hasAll(['ref', 'company', 'name', 'email', 'plan', 'volume', 'message', 'status', 'createdAt'])
+        && data.keys().hasOnly(['ref', 'company', 'name', 'email', 'plan', 'volume', 'message', 'status', 'createdAt'])
+        && data.ref is string && data.ref.size() > 0 && data.ref.size() <= 24
+        && data.company is string && data.company.size() > 0 && data.company.size() <= 160
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 120
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+        && data.plan in ['Starter', 'Growth', 'Enterprise']
+        && data.volume is string && data.volume.size() > 0 && data.volume.size() <= 80
+        && data.message is string && data.message.size() <= 1500
+        && data.status == 'new'
+        && data.createdAt == request.time;
+    }
+
+    function isValidEmailLog(data) {
+      return data.keys().hasAll(['to', 'template', 'subject', 'status', 'createdBy', 'createdAt'])
+        && data.keys().hasOnly(['to', 'code', 'template', 'subject', 'status', 'providerId', 'createdBy', 'createdAt'])
+        && data.to is string && data.to.size() <= 160
+        && (!data.keys().hasAny(['code']) || (data.code is string && data.code.size() <= 24))
+        && data.template is string && data.template.size() <= 60
+        && data.subject is string && data.subject.size() <= 240
+        && data.status in ['sent', 'queued_preview', 'failed']
+        && (!data.keys().hasAny(['providerId']) || (data.providerId is string && data.providerId.size() <= 128))
+        && data.createdBy is string && data.createdBy.size() <= 128
+        && data.createdAt == request.time;
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['actorUid', 'actorEmail', 'action', 'detail', 'createdAt'])
+        && data.keys().hasOnly(['actorUid', 'actorEmail', 'action', 'code', 'detail', 'createdAt'])
+        && data.actorUid == request.auth.uid
+        && data.actorEmail is string && data.actorEmail.size() <= 160
+        && data.action is string && data.action.size() <= 80
+        && (!data.keys().hasAny(['code']) || (data.code is string && data.code.size() <= 24))
+        && data.detail is string && data.detail.size() <= 400
+        && data.createdAt == request.time;
+    }
+
+    function isValidInviteAction(data) {
+      return data.keys().hasAll(['tokenHash', 'code', 'action', 'createdAt'])
+        && data.keys().hasOnly(['tokenHash', 'code', 'action', 'createdAt'])
+        && data.tokenHash is string && data.tokenHash.size() == 64
+        && isValidTrackingCode(data.code)
+        && data.action in ['unknown_sender', 'unsubscribe']
+        && data.createdAt == request.time;
+    }
+
+    match /admins/{uid} {
+      allow get: if isSignedIn() && isValidId(uid) && (request.auth.uid == uid || isAdmin());
+      allow list, create, update, delete: if false;
     }
 
     match /users/{uid} {
-      allow get: if request.auth != null && (request.auth.uid == uid || isAdmin());
-      allow create, update: if request.auth != null && request.auth.uid == uid;
+      allow get: if isSignedIn() && isValidId(uid) && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isSignedIn() && isValidId(uid) && request.auth.uid == uid
+                    && isValidUser(incoming(), uid)
+                    && incoming().createdAt == request.time
+                    && incoming().updatedAt == request.time;
+      allow update: if isSignedIn() && isValidId(uid)
+                    && (request.auth.uid == uid || isAdmin())
+                    && isValidUser(incoming(), uid)
+                    && incoming().createdAt == existing().createdAt
+                    && incoming().updatedAt == request.time
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'company', 'updatedAt']);
       allow delete: if isAdmin();
     }
 
-    match /tickets/{ticketId} {
-      allow get: if request.auth != null && (resource.data.userId == request.auth.uid || isAdmin());
-      allow list: if request.auth != null && (resource.data.userId == request.auth.uid || isAdmin());
-      
-      function isValidTicket(data) {
-        return data.keys().hasAll(['ticketId', 'userId', 'userName', 'userEmail', 'subject', 'category', 'message', 'status', 'createdAt'])
-          && data.ticketId is string && data.ticketId.size() <= 100
-          && data.userId is string && data.userId.size() <= 128
-          && data.userName is string && data.userName.size() <= 150
-          && data.userEmail is string && data.userEmail.size() <= 150
-          && data.subject is string && data.subject.size() <= 200
-          && data.category is string && data.category.size() <= 100
-          && data.message is string && data.message.size() <= 2000
-          && data.status is string && data.status.size() <= 50;
-      }
-
-      allow create: if request.auth != null && incoming().userId == request.auth.uid && isValidId(ticketId) && isValidTicket(incoming())
-                    && incoming().createdAt == request.time;
-      allow update: if request.auth != null && (resource.data.userId == request.auth.uid || isAdmin()) && isValidTicket(incoming());
+    match /accountStatus/{emailHash} {
+      allow get: if isSignedIn() && isValidEmailHash(emailHash);
+      allow list: if false;
+      allow create, update: if isSignedIn() && isValidEmailHash(emailHash) && isValidAccountStatus(incoming());
       allow delete: if isAdmin();
     }
 
-    match /shipments/{trackingId} {
-      allow get: if isValidId(trackingId);
-      allow list: if isAdmin() || (request.auth != null && resource.data.userId == request.auth.uid);
-      
-      allow create: if (isAdmin() || (request.auth != null && incoming().userId == request.auth.uid)) 
-                    && isValidId(trackingId) && isValidShipment(incoming())
-                    && incoming().trackingNumber == trackingId;
+    match /trackingTeasers/{code} {
+      allow get: if isValidTrackingCode(code);
+      allow list: if false;
+      allow create: if isSignedIn()
+                    && isValidTrackingCode(code)
+                    && isValidTeaser(incoming(), code)
+                    && (incoming().senderId == request.auth.uid || isAdmin())
+                    && incoming().createdAt == request.time
+                    && incoming().updatedAt == request.time
+                    && existsAfter(/databases/$(database)/documents/shipments/$(code));
+      allow update: if isSignedIn()
+                    && isValidTrackingCode(code)
+                    && isValidTeaser(incoming(), code)
+                    && incoming().createdAt == existing().createdAt
+                    && incoming().senderId == existing().senderId
+                    && incoming().updatedAt == request.time
+                    && (
+                      isAdmin() ||
+                      (
+                        isShipmentParty(parentShipment(code)) &&
+                        incoming().holdType == null &&
+                        incoming().diff(existing()).affectedKeys().hasOnly(['holdType', 'updatedAt'])
+                      )
+                    );
+      allow delete: if isAdmin();
+    }
 
-      allow update: if (isAdmin() || (request.auth != null && existing().userId == request.auth.uid)) 
-                    && isValidId(trackingId) && isValidShipment(incoming())
-                    && incoming().trackingNumber == existing().trackingNumber;
-                    
+    match /shipments/{code} {
+      allow get: if isValidTrackingCode(code) && isShipmentParty(existing());
+      allow list: if isAdmin()
+                  || (isSignedIn() && existing().senderId == request.auth.uid)
+                  || (isVerified() && request.auth.token.email is string && existing().receiverEmail == request.auth.token.email.lower());
+
+      allow create: if isSignedIn()
+                    && isValidTrackingCode(code)
+                    && isValidShipment(incoming(), code)
+                    && (incoming().senderId == request.auth.uid || isAdmin())
+                    && incoming().status == 'Booked'
+                    && incoming().review.state == 'pending'
+                    && incoming().createdAt == request.time
+                    && incoming().updatedAt == request.time;
+
+      allow update: if isSignedIn()
+                    && isValidTrackingCode(code)
+                    && isValidShipment(incoming(), code)
+                    && incoming().code == existing().code
+                    && incoming().senderId == existing().senderId
+                    && incoming().createdAt == existing().createdAt
+                    && incoming().updatedAt == request.time
+                    && (
+                      isAdmin() ||
+                      (
+                        existing().status != 'Delivered' && (
+                          (isShipmentReceiver(existing()) && incoming().hold == null && incoming().diff(existing()).affectedKeys().hasOnly(['hold', 'receiver', 'updatedAt'])) ||
+                          (isShipmentSender(existing()) && incoming().hold == null && incoming().diff(existing()).affectedKeys().hasOnly(['hold', 'photos', 'updatedAt']))
+                        )
+                      )
+                    );
+
       allow delete: if isAdmin();
 
       match /events/{eventId} {
-        allow get: if isValidId(trackingId) && isValidId(eventId);
-        allow list: if isValidId(trackingId);
-        
-        function isValidEvent(data) {
-            return data.keys().hasAll(['isLogical', 'statusColor', 'eventCode', 'label', 'description', 'createdAt'])
-              && data.isLogical is bool
-              && data.statusColor is string && data.statusColor.size() <= 50
-              && data.eventCode is string && data.eventCode.size() <= 60
-              && data.label is string && data.label.size() <= 100
-              && data.description is string && data.description.size() <= 500
-              && (!data.keys().hasAny(['facility']) || (data.facility is string && data.facility.size() <= 100))
-              && (!data.keys().hasAny(['location']) || (data.location is string && data.location.size() <= 100))
-              && (!data.keys().hasAny(['formattedDate']) || (data.formattedDate is string && data.formattedDate.size() <= 50))
-              && (!data.keys().hasAny(['formattedTime']) || (data.formattedTime is string && data.formattedTime.size() <= 50));
-        }
-
-        allow create: if (isAdmin() || (request.auth != null && get(/databases/$(database)/documents/shipments/$(trackingId)).data.userId == request.auth.uid)) 
-                      && isValidId(eventId) && isValidEvent(incoming());
-
-        allow update: if (isAdmin() || (request.auth != null && get(/databases/$(database)/documents/shipments/$(trackingId)).data.userId == request.auth.uid)) 
-                      && isValidId(eventId) && isValidEvent(incoming());
-                      
+        allow get: if isValidTrackingCode(code) && isValidId(eventId) && isShipmentParty(parentShipment(code));
+        allow list: if isValidTrackingCode(code) && isShipmentParty(parentShipment(code));
+        allow create: if isSignedIn()
+                      && isValidTrackingCode(code)
+                      && isValidId(eventId)
+                      && isValidEvent(incoming())
+                      && isShipmentParty(parentShipment(code))
+                      && (
+                        isAdmin() ||
+                        incoming().createdBy == request.auth.uid
+                      );
+        allow update: if false;
         allow delete: if isAdmin();
       }
+
+      match /alerts/{alertId} {
+        allow get: if isValidTrackingCode(code) && isValidId(alertId) && isShipmentParty(parentShipment(code));
+        allow list: if isValidTrackingCode(code) && isShipmentParty(parentShipment(code));
+        allow create: if isAdmin()
+                      && isValidTrackingCode(code)
+                      && isValidId(alertId)
+                      && isValidAlert(incoming())
+                      && incoming().status == 'open'
+                      && incoming().createdAt == request.time;
+        allow update: if isSignedIn()
+                      && isValidTrackingCode(code)
+                      && isValidId(alertId)
+                      && isValidAlert(incoming())
+                      && incoming().createdAt == existing().createdAt
+                      && (
+                        isAdmin() ||
+                        (
+                          existing().status == 'open' &&
+                          incoming().status == 'resolved' &&
+                          incoming().resolvedAt == request.time &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'resolvedAt', 'response', 'attachmentName']) &&
+                          (
+                            (existing().to == 'receiver' && isShipmentReceiver(parentShipment(code))) ||
+                            (existing().to == 'sender' && isShipmentSender(parentShipment(code)))
+                          )
+                        )
+                      );
+        allow delete: if isAdmin();
+      }
+
+      match /invites/{inviteId} {
+        allow get: if isValidTrackingCode(code) && isValidId(inviteId) && isShipmentParty(parentShipment(code));
+        allow list: if isValidTrackingCode(code) && isShipmentParty(parentShipment(code));
+        allow create: if isSignedIn()
+                      && isValidTrackingCode(code)
+                      && isValidId(inviteId)
+                      && isValidInvite(incoming())
+                      && incoming().createdAt == request.time
+                      && (isAdmin() || isShipmentSender(parentShipment(code)));
+        allow update: if isSignedIn()
+                      && isValidTrackingCode(code)
+                      && isValidId(inviteId)
+                      && isValidInvite(incoming())
+                      && incoming().createdAt == existing().createdAt
+                      && (
+                        isAdmin() ||
+                        (
+                          isShipmentReceiver(parentShipment(code)) &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'openedAt', 'completedAt'])
+                        )
+                      );
+        allow delete: if isAdmin();
+      }
+    }
+
+    match /inviteActions/{actionId} {
+      allow get, list: if isAdmin();
+      allow create: if isValidId(actionId) && isValidInviteAction(incoming());
+      allow update, delete: if isAdmin();
+    }
+
+    match /leads/{leadId} {
+      allow get, list, update, delete: if isAdmin();
+      allow create: if isValidId(leadId) && isValidLead(incoming());
+    }
+
+    match /emailLogs/{logId} {
+      allow get, list: if isAdmin() || (isSignedIn() && existing().createdBy == request.auth.uid);
+      allow create: if isSignedIn() && isValidId(logId) && isValidEmailLog(incoming()) && (isAdmin() || incoming().createdBy == request.auth.uid);
+      allow update, delete: if isAdmin();
+    }
+
+    match /auditLogs/{logId} {
+      allow get, list: if isAdmin();
+      allow create: if isAdmin() && isValidId(logId) && isValidAuditLog(incoming());
+      allow update, delete: if false;
     }
   }
 }

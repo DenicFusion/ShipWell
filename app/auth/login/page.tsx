@@ -1,232 +1,221 @@
-'use client';
+"use client";
 
-import { useState, useEffect } from "react";
-import { auth, db } from "@/lib/firebase";
-import { 
-  signInWithEmailAndPassword, 
-  signInWithPopup, 
-  GoogleAuthProvider, 
-  onAuthStateChanged 
-} from "firebase/auth";
-import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
+import React, { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { ShipwellLogo } from "@/components/ShipwellLogo";
-import { ThemeSwitch } from "@/components/ThemeSwitch";
-import { Truck, Mail, Lock, Shield, ArrowRight, Loader2, AlertCircle } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
+import {
+  GoogleAuthProvider,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
+  signInWithPopup,
+} from "firebase/auth";
+import { Loader2, Lock } from "lucide-react";
+import { auth } from "@/lib/firebase";
+import { syncUserProfileDoc } from "@/lib/firestore-shipments";
+import { useShipWell } from "@/components/providers/ShipWellProvider";
+import { Navbar } from "@/components/Navbar";
+import { Footer } from "@/components/Footer";
+import { normalizeEmail } from "@/types/tracking";
+import toast from "react-hot-toast";
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
-  const [email, setEmail] = useState("");
+  const params = useSearchParams();
+  const redirect = params.get("redirect") || "/dashboard";
+  const { user, authReady } = useShipWell();
+
+  const [email, setEmail] = useState(params.get("email") || "");
   const [password, setPassword] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [googleLoading, setGoogleLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [forgotSent, setForgotSent] = useState("");
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (user) {
-        // Check if developer admin or standard user
-        if (user.email === "denic9426@gmail.com" || user.email === "admin@shipwell.com") {
-          router.push("/admin");
-        } else {
-          router.push("/dashboard");
-        }
-      }
-    });
-    return unsubscribe;
-  }, [router]);
+    if (authReady && user) {
+      router.replace(redirect);
+    }
+  }, [authReady, user, router, redirect]);
 
-  const handleEmailLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleGoogle = async () => {
     setError("");
-    setLoading(true);
-
+    setBusy(true);
     try {
-      // Direct hardcoded simulation fallback check for the exact credentials from prompt
-      if (email.trim() === "admin@shipwell.com" && password === "Admin123") {
-        // We can sign in using Firebase, or simply set simulated session or redirect
-        // For security, if this fails on a clean Firebase tenant we can handle it gracefully.
-        // Let's attempt standard Firebase authentication first
-        try {
-          await signInWithEmailAndPassword(auth, email, password);
-        } catch (fbErr: any) {
-          // If the auth provider email method isn't provisioned yet in Firebase console, 
-          // let's direct link authorized flow to keep everything completely live and working seamlessly!
-          console.warn("Direct administrative override auth used.", fbErr);
-          // Let's create a simulated user object or just redirect
-          router.push("/admin");
-          return;
-        }
-      } else {
-        await signInWithEmailAndPassword(auth, email, password);
-      }
-      
-      router.push("/dashboard");
-    } catch (err: any) {
-      console.error(err);
-      if (err.code === "auth/user-not-found" || err.code === "auth/wrong-password" || err.code === "auth/invalid-credential") {
-        setError("Invalid email or password. Please try again.");
-      } else {
-        setError(err.message || "Authentication failed. Please verify status.");
-      }
+      const provider = new GoogleAuthProvider();
+      if (email) provider.setCustomParameters({ login_hint: email });
+      const cred = await signInWithPopup(auth, provider);
+      await syncUserProfileDoc({
+        uid: cred.user.uid,
+        name: cred.user.displayName || "ShipWell Customer",
+        email: cred.user.email || "",
+      });
+      toast.success("Signed in");
+      router.replace(redirect);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Google sign-in failed.");
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   };
 
-  const handleGoogleLogin = async () => {
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
     setError("");
-    setGoogleLoading(true);
+    const clean = normalizeEmail(email);
+    if (!clean || !password) {
+      setError("Enter your email and password.");
+      return;
+    }
+    setBusy(true);
     try {
-      const provider = new GoogleAuthProvider();
-      const result = await signInWithPopup(auth, provider);
-      const user = result.user;
-
-      // Register or update user record in firestore
-      const userRef = doc(db, "users", user.uid);
-      const userSnap = await getDoc(userRef);
-      if (!userSnap.exists()) {
-        await setDoc(userRef, {
-          uid: user.uid,
-          name: user.displayName || "Shipwell Customer",
-          email: user.email,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
-        });
-      }
-
-      if (user.email === "denic9426@gmail.com" || user.email === "admin@shipwell.com") {
-        router.push("/admin");
-      } else {
-        router.push("/dashboard");
-      }
-    } catch (err: any) {
-      console.error(err);
-      setError("Google Login was unsuccessful or aborted.");
+      const cred = await signInWithEmailAndPassword(auth, clean, password);
+      await syncUserProfileDoc({
+        uid: cred.user.uid,
+        name: cred.user.displayName || "ShipWell Customer",
+        email: clean,
+      });
+      toast.success("Signed in");
+      router.replace(redirect);
+    } catch (err) {
+      const code = (err as { code?: string })?.code || "";
+      setError(
+        code === "auth/operation-not-allowed"
+          ? "Email/password sign-in isn't enabled in Firebase Authentication yet. Please use Google Sign-In below."
+          : "That email and password don't match."
+      );
     } finally {
-      setGoogleLoading(false);
+      setBusy(false);
+    }
+  };
+
+  const handleForgot = async () => {
+    const clean = normalizeEmail(email);
+    if (!clean || !clean.includes("@")) {
+      setError("Enter your email address above first.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await sendPasswordResetEmail(auth, clean);
+      setForgotSent(clean);
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not send reset email.");
+    } finally {
+      setBusy(false);
     }
   };
 
   return (
-    <main className="min-h-screen bg-bg-base flex flex-col relative overflow-hidden font-sans select-none">
-      {/* Background dot-grid & ambient glows */}
-      <div className="absolute inset-0 dot-grid opacity-[0.35] pointer-events-none" />
-      <div className="absolute top-[20%] left-[50%] -translate-x-1/2 w-[400px] h-[400px] bg-brand-primary/10 rounded-full blur-[100px] pointer-events-none" />
-
-      {/* Floating Header */}
-      <header className="w-full h-16 flex items-center justify-between px-6 border-b border-border-line/40 backdrop-blur-md relative z-20">
-        <Link href="/" className="flex items-center gap-2 decoration-transparent">
-          <div className="w-[34px] h-[34px] rounded-lg bg-emerald-950/20 border border-brand-primary/20 flex items-center justify-center">
-            <Truck className="w-[18px] h-[18px] text-brand-primary" />
-          </div>
-          <span className="font-display font-extrabold text-lg text-text-base tracking-tight">Shipwell</span>
-        </Link>
-        <div className="flex items-center gap-4">
-          <ThemeSwitch />
-          <Link href="/" className="text-xs font-semibold text-text-muted hover:text-text-base transition-colors">
-            Back to Home
-          </Link>
+    <div className="wrap" style={{ padding: "64px 18px 96px" }}>
+      <div className="panel" style={{ maxWidth: 440, margin: "0 auto", padding: "30px 26px" }}>
+        <div className="au-ic">
+          <Lock className="w-6 h-6" />
         </div>
-      </header>
+        <div className="au-t">WELCOME BACK</div>
+        <p className="au-r">
+          Sign in to see shipments on their way to you and bookings you sent.
+        </p>
 
-      {/* Core Auth Panel */}
-      <div className="flex-1 flex items-center justify-center p-6 relative z-10">
-        <div className="w-full max-w-md bg-bg-card border border-border-line/75 rounded-2xl p-8 md:p-10 shadow-2xl relative">
-          <div className="text-center mb-8">
-            <h1 className="font-display font-[800] text-3xl tracking-tight text-text-base mb-2 uppercase">
-              Welcome Back
-            </h1>
-            <p className="text-xs text-text-muted">
-              Enter your credentials to control your shipment tracking workspace.
-            </p>
+        <button
+          type="button"
+          onClick={handleGoogle}
+          disabled={busy}
+          className="sw-btn sw-btn-ghost sw-btn-block"
+          style={{ marginBottom: 16, color: "var(--text)" }}
+        >
+          {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <span className="font-bold text-emerald-400">G</span>}
+          Continue with Google
+        </button>
+
+        <form className="au-f" onSubmit={handleSubmit} noValidate>
+          <div className="fw">
+            <label className="lbl" htmlFor="login-email">
+              Email
+            </label>
+            <input
+              id="login-email"
+              className="field"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@company.com"
+              required
+            />
           </div>
-
-          {error && (
-            <div className="bg-brand-danger/10 border border-brand-danger/20 text-brand-danger text-xs px-4 py-3 rounded-lg flex items-center gap-2 mb-6">
-              <AlertCircle className="w-4 h-4 shrink-0" />
-              <span>{error}</span>
-            </div>
-          )}
-
-          <form onSubmit={handleEmailLogin} className="space-y-4">
-            <div className="flex flex-col gap-1.5">
-              <label className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Email Address</label>
-              <div className="relative flex items-center">
-                <Mail className="absolute left-3 w-4 h-4 text-text-muted/60" />
-                <input 
-                  type="email" 
-                  required
-                  placeholder="name@company.com" 
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full bg-bg-base border border-border-line pl-10 pr-4 py-3 rounded-xl text-sm focus:outline-none focus:border-brand-primary text-text-base"
-                />
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <div className="flex justify-between items-center">
-                <label className="text-[10px] font-bold uppercase tracking-wider text-text-muted">Password</label>
-                <span className="text-[10px] font-semibold text-brand-primary hover:underline cursor-pointer">
-                  Forgot Password?
-                </span>
-              </div>
-              <div className="relative flex items-center">
-                <Lock className="absolute left-3 w-4 h-4 text-text-muted/60" />
-                <input 
-                  type="password" 
-                  required
-                  placeholder="••••••••" 
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full bg-bg-base border border-border-line pl-10 pr-4 py-3 rounded-xl text-sm focus:outline-none focus:border-brand-primary text-text-base"
-                />
-              </div>
-            </div>
-
-            <button 
-              type="submit"
-              disabled={loading || googleLoading}
-              className="w-full bg-brand-primary hover:bg-brand-primary-hover text-white text-xs font-bold tracking-wider uppercase py-4 rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-brand-primary/10 transition-colors cursor-pointer mt-6"
-            >
-              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Shield className="w-4 h-4" />}
-              <span>Verify credentials</span>
-            </button>
-          </form>
-
-          {/* Social Divider */}
-          <div className="flex items-center gap-4 my-6">
-            <div className="flex-1 h-px bg-border-line/40" />
-            <span className="text-[10px] font-bold text-text-muted uppercase tracking-wider shrink-0">Or federated</span>
-            <div className="flex-1 h-px bg-border-line/40" />
+          <div className="fw">
+            <label className="lbl" htmlFor="login-pw">
+              Password
+            </label>
+            <input
+              id="login-pw"
+              className="field"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Your password"
+              required
+            />
           </div>
-
-          <button 
-            type="button"
-            onClick={handleGoogleLogin}
-            disabled={loading || googleLoading}
-            className="w-full bg-bg-base hover:bg-bg-card text-text-base border border-border-line font-bold text-xs py-3.5 rounded-xl flex items-center justify-center gap-2.5 transition-colors cursor-pointer"
-          >
-            {googleLoading ? (
-              <Loader2 className="w-4 h-4 animate-spin text-brand-primary" />
-            ) : (
-              <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12.24 10.285V13.4h6.887c-.275 1.565-1.88 4.604-6.887 4.604-4.33 0-7.866-3.577-7.866-8s3.536-8 7.866-8c2.46 0 4.105 1.025 5.047 1.926l2.427-2.334C18.155 1.485 15.42 0 12.24 0 5.58 0 0 5.37 0 12s5.58 12 12.24 12c6.96 0 11.57-4.814 11.57-11.79 0-.79-.085-1.39-.188-1.925H12.24z"/>
-              </svg>
-            )}
-            <span>Sign in with Google Secure</span>
+          <button type="button" className="au-link" onClick={handleForgot}>
+            Forgot password?
           </button>
 
-          <p className="text-center text-xs text-text-muted mt-8">
-            Do not have an account?{" "}
-            <Link href="/auth/signup" className="text-brand-primary font-bold hover:underline">
-              Register now &rarr;
-            </Link>
-          </p>
-        </div>
+          {forgotSent && (
+            <div
+              style={{
+                fontSize: 12.5,
+                color: "var(--em2)",
+                background: "rgba(16,185,129,0.08)",
+                border: "1px solid rgba(16,185,129,0.25)",
+                padding: "10px 12px",
+                borderRadius: 10,
+              }}
+            >
+              Reset link sent to {forgotSent}.
+            </div>
+          )}
+          {error && <div className="au-err">{error}</div>}
+
+          <button
+            type="submit"
+            disabled={busy}
+            className="sw-btn sw-btn-em sw-btn-lg sw-btn-block"
+          >
+            {busy && <Loader2 className="w-4 h-4 animate-spin" />}
+            Log in
+          </button>
+        </form>
+
+        <p style={{ textAlign: "center", fontSize: 13, color: "var(--muted)", marginTop: 18 }}>
+          New to ShipWell?{" "}
+          <Link
+            href={`/auth/signup?redirect=${encodeURIComponent(redirect)}`}
+            style={{ color: "var(--em)", fontWeight: 600 }}
+          >
+            Create free account
+          </Link>
+        </p>
       </div>
-    </main>
+    </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <div className="min-h-screen flex flex-col">
+      <Navbar />
+      <main className="sw-main flex-1">
+        <Suspense
+          fallback={
+            <div className="wrap py-24 text-center text-[var(--muted)]">
+              Loading...
+            </div>
+          }
+        >
+          <LoginForm />
+        </Suspense>
+      </main>
+      <Footer />
+    </div>
   );
 }

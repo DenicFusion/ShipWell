@@ -1,6 +1,6 @@
 {
-  "name": "Shipwell",
-  "description": "Premium dark logistics and shipment tracking command center platform.",
+  "name": "ShipWell",
+  "description": "Global luxury logistics platform with live tracking, instant quotes, dual sender/receiver dashboards, and automated parcel alerts.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
