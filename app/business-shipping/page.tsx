@@ -55,6 +55,19 @@ export default function BusinessShippingPage() {
         volume,
         message,
       });
+      await fetch("/api/leads/notify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ref,
+          company,
+          name,
+          email,
+          plan,
+          volume,
+          message,
+        }),
+      }).catch(() => null);
       setSubmittedRef(ref);
       toast.success("Rate card request submitted!");
     } catch (err) {

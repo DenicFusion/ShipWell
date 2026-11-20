@@ -2,6 +2,7 @@
 
 import React, { use, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { collection, doc, onSnapshot, orderBy, query } from "firebase/firestore";
 import {
   AlertCircle,
   AlertTriangle,
@@ -16,6 +17,7 @@ import {
   Undo2,
   X,
 } from "lucide-react";
+import { db } from "@/lib/firebase";
 import { AdminShell } from "@/components/admin/AdminShell";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
 import {
@@ -38,12 +40,15 @@ import {
   SERVICES,
 } from "@/lib/quote-engine";
 import {
+  firestoreTimeToMs,
   getShipmentChip,
   STAGES,
   type AlertKind,
   type AlertTarget,
+  type ShipmentAlert,
   type ShipmentRecord,
   type ShipmentStage,
+  type TrackingEvent,
 } from "@/types/tracking";
 import toast from "react-hot-toast";
 
@@ -171,10 +176,58 @@ export default function AdminShipmentDetailPage({
   }, [cleanCode]);
 
   useEffect(() => {
-    if (isAdmin) {
-      loadDetail();
-    }
-  }, [isAdmin, loadDetail]);
+    if (!isAdmin) return;
+    loadDetail();
+
+    const unsubShip = onSnapshot(
+      doc(db, "shipments", cleanCode),
+      (snap) => {
+        if (snap.exists()) {
+          setShipment((prev) =>
+            prev ? { ...prev, ...(snap.data() as ShipmentRecord) } : null
+          );
+        }
+      },
+      () => undefined
+    );
+
+    const unsubEv = onSnapshot(
+      query(
+        collection(db, "shipments", cleanCode, "events"),
+        orderBy("ts", "asc")
+      ),
+      (snap) => {
+        const events: TrackingEvent[] = snap.docs.map((d) => ({
+          ...(d.data() as Omit<TrackingEvent, "id">),
+          id: d.id,
+        }));
+        setShipment((prev) => (prev ? { ...prev, events } : null));
+      },
+      () => undefined
+    );
+
+    const unsubAl = onSnapshot(
+      collection(db, "shipments", cleanCode, "alerts"),
+      (snap) => {
+        const alerts: ShipmentAlert[] = snap.docs.map((d) => ({
+          ...(d.data() as Omit<ShipmentAlert, "id">),
+          id: d.id,
+          createdAtMs: firestoreTimeToMs(d.data().createdAt),
+          resolvedAtMs: d.data().resolvedAt
+            ? firestoreTimeToMs(d.data().resolvedAt)
+            : undefined,
+        }));
+        setShipment((prev) => (prev ? { ...prev, alerts } : null));
+      },
+      () => undefined
+    );
+
+    return () => {
+      unsubShip();
+      unsubEv();
+      unsubAl();
+    };
+  }, [isAdmin, cleanCode, loadDetail]);
 
   const applyTemplate = (kind: AlertKind) => {
     setAlKind(kind);
@@ -853,6 +906,22 @@ export default function AdminShipmentDetailPage({
                           }}
                         >
                           Response: {al.response}
+                        </div>
+                      )}
+                      {al.attachmentUrl && (
+                        <div style={{ marginTop: 6 }}>
+                          <a
+                            href={al.attachmentUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{
+                              color: "var(--blue)",
+                              fontWeight: 600,
+                              textDecoration: "underline",
+                            }}
+                          >
+                            View uploaded document ({al.attachmentName || "file"})
+                          </a>
                         </div>
                       )}
                     </div>

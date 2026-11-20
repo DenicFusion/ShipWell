@@ -2,16 +2,10 @@
 
 import React from "react";
 import Link from "next/link";
-import { Globe, Mail, MessageSquare, Share2 } from "lucide-react";
+import { Globe, Mail, MapPin, Shield } from "lucide-react";
 import { ShipwellLogo } from "@/components/ShipwellLogo";
-import toast from "react-hot-toast";
 
 export function Footer() {
-  const handleComingSoon = (e: React.MouseEvent) => {
-    e.preventDefault();
-    toast("Documentation & support pages are handled through our operations desk.");
-  };
-
   return (
     <footer className="sw-footer">
       <div className="wrap">
@@ -51,25 +45,16 @@ export function Footer() {
             <h5>Company</h5>
             <ul>
               <li>
-                <a href="#about" onClick={handleComingSoon}>
-                  About Us
-                </a>
+                <Link href="/#two-sides">How ShipWell Works</Link>
               </li>
               <li>
-                <a href="#careers" onClick={handleComingSoon}>
-                  Careers
-                </a>
+                <Link href="/#how-it-works">4-Step Process</Link>
               </li>
               <li>
-                <a href="#sustainability" onClick={handleComingSoon}>
-                  Sustainability
-                </a>
+                <Link href="/#testimonials">Customer Stories</Link>
               </li>
               <li>
                 <Link href="/business-shipping">Business</Link>
-              </li>
-              <li>
-                <Link href="/admin">Admin Portal</Link>
               </li>
             </ul>
           </div>
@@ -81,17 +66,13 @@ export function Footer() {
                 <Link href="/track">Track Package</Link>
               </li>
               <li>
-                <Link href="/dashboard">Customer Dashboard</Link>
+                <Link href="/quote">Cost Calculator</Link>
               </li>
               <li>
-                <a href="#help" onClick={handleComingSoon}>
-                  Help Center
-                </a>
+                <Link href="/business-shipping#bizForm">Contact Sales</Link>
               </li>
               <li>
-                <a href="#locations" onClick={handleComingSoon}>
-                  Find a Location
-                </a>
+                <a href="mailto:support@shipwell.example">Email Operations</a>
               </li>
             </ul>
           </div>
@@ -100,24 +81,16 @@ export function Footer() {
             <h5>Legal</h5>
             <ul>
               <li>
-                <a href="#terms" onClick={handleComingSoon}>
-                  Terms of Use
-                </a>
+                <Link href="/legal#terms">Terms of Use</Link>
               </li>
               <li>
-                <a href="#privacy" onClick={handleComingSoon}>
-                  Privacy Policy
-                </a>
+                <Link href="/legal#privacy">Privacy Policy</Link>
               </li>
               <li>
-                <a href="#cookies" onClick={handleComingSoon}>
-                  Cookie Policy
-                </a>
+                <Link href="/legal#cookies">Cookie Policy</Link>
               </li>
               <li>
-                <a href="#fraud" onClick={handleComingSoon}>
-                  Fraud Awareness
-                </a>
+                <Link href="/legal#fraud">Fraud Awareness</Link>
               </li>
             </ul>
           </div>
@@ -126,16 +99,16 @@ export function Footer() {
         <div className="fb">
           <span>© 2026 ShipWell Logistics Ltd. All rights reserved.</span>
           <div className="soc">
-            <a href="#globe" onClick={handleComingSoon} aria-label="Global Network">
+            <Link href="/track" aria-label="Global Network Tracking">
               <Globe className="w-4 h-4" />
-            </a>
-            <a href="#share" onClick={handleComingSoon} aria-label="Share">
-              <Share2 className="w-4 h-4" />
-            </a>
-            <a href="#support" onClick={handleComingSoon} aria-label="Messages">
-              <MessageSquare className="w-4 h-4" />
-            </a>
-            <a href="#email" onClick={handleComingSoon} aria-label="Email Support">
+            </Link>
+            <Link href="/quote" aria-label="Route Coverage">
+              <MapPin className="w-4 h-4" />
+            </Link>
+            <Link href="/legal#fraud" aria-label="Security & Compliance">
+              <Shield className="w-4 h-4" />
+            </Link>
+            <a href="mailto:support@shipwell.example" aria-label="Email Support">
               <Mail className="w-4 h-4" />
             </a>
           </div>

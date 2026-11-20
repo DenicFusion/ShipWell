@@ -10,9 +10,18 @@ import {
   dispatchTransactionalEmail,
 } from "@/lib/email/sender";
 import { isValidTrackingCode } from "@/types/tracking";
+import { verifyFirebaseIdTokenFromRequest } from "@/lib/server-auth";
 
 export async function POST(req: NextRequest) {
   try {
+    const authUser = await verifyFirebaseIdTokenFromRequest(req);
+    if (!authUser) {
+      return NextResponse.json(
+        { error: "Authentication required." },
+        { status: 401 }
+      );
+    }
+
     const ip =
       req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
     if (!checkRateLimit(`ip:${ip}`, 30, 60 * 60 * 1000)) {
@@ -115,6 +124,7 @@ export async function POST(req: NextRequest) {
     );
 
     let senderDispatch = null;
+    let senderSubject = "";
     if (body.sendSenderReceipt && senderEmail.includes("@")) {
       const routeLabel = `${body.originCity || "Origin"} → ${body.destinationCity || "Destination"}`;
       const senderPayload = buildSenderBookingEmail({
@@ -127,6 +137,7 @@ export async function POST(req: NextRequest) {
         etaLabel: String(body.etaLabel || "scheduled"),
         totalFormatted: String(body.totalFormatted || "$0.00"),
       });
+      senderSubject = senderPayload.subject;
       senderDispatch = await dispatchTransactionalEmail(senderEmail, senderPayload);
     }
 
@@ -150,6 +161,7 @@ export async function POST(req: NextRequest) {
         ? {
             status: senderDispatch.status,
             providerId: senderDispatch.providerId,
+            subject: senderSubject,
           }
         : null,
     });

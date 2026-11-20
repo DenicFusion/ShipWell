@@ -18,6 +18,8 @@ import {
   type ShipmentRecord,
 } from "@/types/tracking";
 import { resolveShipmentAlert } from "@/lib/firestore-shipments";
+import { uploadIdAttachment } from "@/lib/storage";
+import { auth } from "@/lib/firebase";
 import { formatMoney, formatShortDay } from "@/lib/quote-engine";
 import toast from "react-hot-toast";
 
@@ -36,7 +38,10 @@ export function ActionModal({
 }) {
   const [address, setAddress] = useState(shipment.receiver.address || "");
   const [city, setCity] = useState(shipment.receiver.city || "");
-  const [cardNumber, setCardNumber] = useState("4242 •••• •••• 4242");
+  const [cardNumber, setCardNumber] = useState("");
+  const [cardExpiry, setCardExpiry] = useState("");
+  const [cardCvc, setCardCvc] = useState("");
+  const [idFile, setIdFile] = useState<File | null>(null);
   const [fileName, setFileName] = useState("");
   const [dateOptions] = useState<{ value: string; label: string }[]>(() => {
     const out: { value: string; label: string }[] = [];
@@ -78,11 +83,16 @@ export function ActionModal({
     let updatedAddress: string | undefined;
 
     if (alert.kind === "duty") {
-      if (cardNumber.replace(/\D/g, "").length < 8) {
-        setError("Enter valid payment card details to settle import duty.");
+      const digits = cardNumber.replace(/\D/g, "");
+      if (digits.length < 12) {
+        setError("Enter a valid card number to settle import duty.");
         return;
       }
-      response = `Paid ${formatMoney(alert.amount || 0)} import duty`;
+      if (!/^\d{2}\s*\/\s*\d{2}$/.test(cardExpiry.trim()) || cardCvc.replace(/\D/g, "").length < 3) {
+        setError("Enter valid expiry (MM/YY) and security code.");
+        return;
+      }
+      response = `Paid ${formatMoney(alert.amount || 0)} import duty (card ending ${digits.slice(-4)})`;
     } else if (alert.kind === "address") {
       if (!address.trim() || !city.trim()) {
         setError("Please enter both street address and city.");
@@ -91,8 +101,8 @@ export function ActionModal({
       updatedAddress = address.trim();
       response = `Confirmed address: ${address.trim()}, ${city.trim()}`;
     } else if (alert.kind === "id") {
-      if (!fileName) {
-        setError("Please choose an ID document photo to upload.");
+      if (!idFile || !fileName) {
+        setError("Please choose an ID document photo or PDF to upload.");
         return;
       }
       response = `ID uploaded (${fileName})`;
@@ -108,18 +118,35 @@ export function ActionModal({
 
     setBusy(true);
     try {
+      let attachmentName: string | undefined = fileName || undefined;
+      let attachmentUrl: string | undefined;
+      if (alert.kind === "id" && idFile) {
+        const uploaded = await uploadIdAttachment({
+          code: shipment.code,
+          alertId: alert.id,
+          file: idFile,
+        });
+        attachmentName = uploaded.name;
+        attachmentUrl = uploaded.url;
+      }
+
       await resolveShipmentAlert({
         shipment,
         alert,
         actorUid,
         response,
         updatedAddress,
-        attachmentName: fileName || undefined,
+        attachmentName,
+        attachmentUrl,
       });
 
+      const idToken = await auth.currentUser?.getIdToken().catch(() => null);
       await fetch("/api/shipments/notify", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+        },
         body: JSON.stringify({
           code: shipment.code,
           toEmail: ADMIN_EMAIL,
@@ -203,15 +230,50 @@ export function ActionModal({
               </div>
               <div className="fw">
                 <label className="lbl" htmlFor="act-card">
-                  Card details
+                  Card number
                 </label>
                 <input
                   id="act-card"
                   className="field mono"
+                  inputMode="numeric"
+                  autoComplete="cc-number"
                   value={cardNumber}
                   onChange={(e) => setCardNumber(e.target.value)}
+                  placeholder="0000 0000 0000 0000"
                   required
                 />
+              </div>
+              <div className="g2 keep">
+                <div className="fw">
+                  <label className="lbl" htmlFor="act-exp">
+                    Expiry (MM/YY)
+                  </label>
+                  <input
+                    id="act-exp"
+                    className="field mono"
+                    inputMode="numeric"
+                    autoComplete="cc-exp"
+                    value={cardExpiry}
+                    onChange={(e) => setCardExpiry(e.target.value)}
+                    placeholder="MM/YY"
+                    required
+                  />
+                </div>
+                <div className="fw">
+                  <label className="lbl" htmlFor="act-cvc">
+                    CVC
+                  </label>
+                  <input
+                    id="act-cvc"
+                    className="field mono"
+                    inputMode="numeric"
+                    autoComplete="cc-csc"
+                    value={cardCvc}
+                    onChange={(e) => setCardCvc(e.target.value)}
+                    placeholder="123"
+                    required
+                  />
+                </div>
               </div>
             </>
           )}
@@ -252,14 +314,17 @@ export function ActionModal({
               <label className="pf-zone">
                 <Upload className="w-6 h-6 text-emerald-400" />
                 <b>{fileName || "Tap to select ID document"}</b>
-                <small>JPG or PNG · verified for customs release</small>
+                <small>JPG, PNG or PDF · max 5 MB · uploaded securely</small>
                 <input
                   type="file"
                   accept="image/*,.pdf"
                   hidden
                   onChange={(e) => {
                     const f = e.target.files?.[0];
-                    if (f) setFileName(f.name);
+                    if (f) {
+                      setIdFile(f);
+                      setFileName(f.name);
+                    }
                   }}
                 />
               </label>

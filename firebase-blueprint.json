@@ -46,6 +46,7 @@
         "contents": { "type": "string", "maxLength": 240 },
         "eta": { "type": "number" },
         "deliveredAt": { "type": "number" },
+        "latestEvent": { "type": "object" },
         "createdAt": { "type": "timestamp" },
         "updatedAt": { "type": "timestamp" }
       },
@@ -124,6 +125,7 @@
         "status": { "type": "string", "enum": ["open", "resolved"] },
         "response": { "type": "string", "maxLength": 600 },
         "attachmentName": { "type": "string", "maxLength": 160 },
+        "attachmentUrl": { "type": "string", "maxLength": 1024 },
         "createdAt": { "type": "timestamp" },
         "resolvedAt": { "type": "timestamp" }
       },

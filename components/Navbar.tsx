@@ -25,6 +25,8 @@ export function Navbar() {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
+  const burgerTapRef = useRef(0);
+
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 24);
     onScroll();
@@ -33,13 +35,13 @@ export function Navbar() {
   }, []);
 
   useEffect(() => {
-    const onClickOutside = (e: MouseEvent) => {
+    const onPointerDown = (e: PointerEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setMenuOpen(false);
       }
     };
-    document.addEventListener("click", onClickOutside);
-    return () => document.removeEventListener("click", onClickOutside);
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
   }, []);
 
   useEffect(() => {
@@ -63,6 +65,14 @@ export function Navbar() {
     if (pathname.startsWith("/dashboard")) {
       router.push("/");
     }
+  };
+
+  const toggleBurger = () => {
+    const now = Date.now();
+    if (now - burgerTapRef.current < 280) return;
+    burgerTapRef.current = now;
+    setMenuOpen(false);
+    setDrawerOpen((p) => !p);
   };
 
   return (
@@ -129,6 +139,7 @@ export function Navbar() {
                     aria-expanded={menuOpen}
                     onClick={(e) => {
                       e.stopPropagation();
+                      setDrawerOpen(false);
                       setMenuOpen((p) => !p);
                     }}
                   >
@@ -181,14 +192,20 @@ export function Navbar() {
                 <button
                   type="button"
                   className="sw-btn sw-btn-ghost"
-                  onClick={() => openAuth({ mode: "login" })}
+                  onClick={() => {
+                    setDrawerOpen(false);
+                    openAuth({ mode: "login" });
+                  }}
                 >
                   Log In
                 </button>
                 <button
                   type="button"
                   className="sw-btn sw-btn-em"
-                  onClick={() => openAuth({ mode: "signup" })}
+                  onClick={() => {
+                    setDrawerOpen(false);
+                    openAuth({ mode: "signup" });
+                  }}
                 >
                   Sign Up
                 </button>
@@ -201,7 +218,7 @@ export function Navbar() {
             className={`burger ${drawerOpen ? "open" : ""}`}
             aria-label="Menu"
             aria-expanded={drawerOpen}
-            onClick={() => setDrawerOpen((p) => !p)}
+            onClick={toggleBurger}
           >
             <i />
             <i />

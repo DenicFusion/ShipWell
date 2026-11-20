@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { sendEmailVerification } from "firebase/auth";
+import { collection, onSnapshot, query, where } from "firebase/firestore";
 import {
   AlertCircle,
   Calendar,
@@ -16,6 +17,7 @@ import {
   RefreshCw,
   Shield,
 } from "lucide-react";
+import { db } from "@/lib/firebase";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
 import {
   checkAccountExists,
@@ -25,6 +27,7 @@ import { formatShortDay, SERVICES } from "@/lib/quote-engine";
 import {
   getShipmentChip,
   getStagePercent,
+  normalizeEmail,
   type ShipmentAlert,
   type ShipmentRecord,
 } from "@/types/tracking";
@@ -74,10 +77,39 @@ export default function DashboardPage() {
   }, [user]);
 
   useEffect(() => {
-    if (authReady && user) {
-      loadData();
-    }
-  }, [authReady, user, loadData]);
+    if (!authReady || !user || !user.email) return;
+    loadData();
+
+    const cleanEmail = normalizeEmail(user.email);
+    const unsubSent = onSnapshot(
+      query(collection(db, "shipments"), where("senderId", "==", user.uid)),
+      () => {
+        loadData();
+        refreshOpenAlerts();
+      },
+      () => undefined
+    );
+
+    const unsubIncoming =
+      user.emailVerified && cleanEmail
+        ? onSnapshot(
+            query(
+              collection(db, "shipments"),
+              where("receiverEmail", "==", cleanEmail)
+            ),
+            () => {
+              loadData();
+              refreshOpenAlerts();
+            },
+            () => undefined
+          )
+        : () => undefined;
+
+    return () => {
+      unsubSent();
+      unsubIncoming();
+    };
+  }, [authReady, user, loadData, refreshOpenAlerts]);
 
   if (!authReady) {
     return (

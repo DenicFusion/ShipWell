@@ -1,0 +1,42 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.admin == true ||
+        (request.auth.token.email == 'denic9426@gmail.com' && request.auth.token.email_verified == true)
+      );
+    }
+
+    match /shipments/{code}/photos/{fileName} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+                    && code.matches('^SW-[0-9]{8}-[A-F0-9]{8}$')
+                    && request.resource != null
+                    && request.resource.size <= 5 * 1024 * 1024
+                    && request.resource.contentType.matches('image/.*');
+      allow delete: if isAdmin();
+    }
+
+    match /shipments/{code}/ids/{fileName} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+                    && code.matches('^SW-[0-9]{8}-[A-F0-9]{8}$')
+                    && request.resource != null
+                    && request.resource.size <= 5 * 1024 * 1024
+                    && (
+                      request.resource.contentType.matches('image/.*') ||
+                      request.resource.contentType == 'application/pdf'
+                    );
+      allow delete: if isAdmin();
+    }
+  }
+}

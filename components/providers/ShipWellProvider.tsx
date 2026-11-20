@@ -56,6 +56,7 @@ const ShipWellContext = createContext<ShipWellContextValue | null>(null);
 
 export function ShipWellProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [hasAdminClaim, setHasAdminClaim] = useState(false);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [openAlertsCount, setOpenAlertsCount] = useState(0);
@@ -74,8 +75,9 @@ export function ShipWellProvider({ children }: { children: React.ReactNode }) {
   } | null>(null);
 
   const isAdmin =
-    Boolean(user?.emailVerified) &&
-    normalizeEmail(user?.email || "") === ADMIN_EMAIL;
+    hasAdminClaim ||
+    (Boolean(user?.emailVerified) &&
+      normalizeEmail(user?.email || "") === ADMIN_EMAIL);
 
   const refreshProfile = useCallback(async (u?: User | null) => {
     const active = u ?? auth.currentUser;
@@ -149,15 +151,41 @@ export function ShipWellProvider({ children }: { children: React.ReactNode }) {
       setUser(u);
       setAuthReady(true);
       if (u) {
+        try {
+          const tokenRes = await u.getIdTokenResult();
+          setHasAdminClaim(tokenRes.claims?.admin === true);
+        } catch {
+          setHasAdminClaim(false);
+        }
         await refreshProfile(u);
         await refreshOpenAlerts(u);
       } else {
+        setHasAdminClaim(false);
         setProfile(null);
         setOpenAlertsCount(0);
       }
     });
     return () => unsub();
   }, [refreshProfile, refreshOpenAlerts]);
+
+  // Re-check email verification when customer returns from verification link tab
+  useEffect(() => {
+    if (!user || user.emailVerified) return;
+    const onFocus = async () => {
+      try {
+        await user.reload();
+        if (user.emailVerified) {
+          const tokenRes = await user.getIdTokenResult(true);
+          setHasAdminClaim(tokenRes.claims?.admin === true);
+          await refreshOpenAlerts(user);
+        }
+      } catch {
+        // ignore transient errors
+      }
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [user, refreshOpenAlerts]);
 
   const openAuth = useCallback((opts: AuthModalOptions = {}) => {
     setAuthModalOpts({ mode: "login", ...opts });

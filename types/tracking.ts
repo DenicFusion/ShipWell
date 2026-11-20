@@ -77,6 +77,7 @@ export interface ShipmentAlert {
   status: AlertStatus;
   response?: string;
   attachmentName?: string;
+  attachmentUrl?: string;
   createdAt?: unknown;
   resolvedAt?: unknown;
   createdAtMs?: number;
@@ -102,6 +103,12 @@ export interface ShipmentInviteRecord {
   createdBy: string;
 }
 
+export interface LatestTrackingUpdate {
+  label: string;
+  loc: string;
+  ts: number;
+}
+
 export interface TrackingTeaser {
   code: string;
   senderId: string;
@@ -116,6 +123,7 @@ export interface TrackingTeaser {
   contents: string;
   eta: number;
   deliveredAt?: number | null;
+  latestEvent?: LatestTrackingUpdate | null;
 }
 
 export interface ShipmentRecord {

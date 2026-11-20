@@ -25,7 +25,13 @@ import { useShipWell } from "@/components/providers/ShipWellProvider";
 import {
   checkAccountExists,
   createShipmentBooking,
+  reserveTrackingCode,
 } from "@/lib/firestore-shipments";
+import {
+  prepareShipmentPhoto,
+  uploadShipmentPhotoBlob,
+  type PreparedPhoto,
+} from "@/lib/storage";
 import {
   addBusinessDays,
   calculateShippingPricing,
@@ -37,44 +43,6 @@ import {
 } from "@/lib/quote-engine";
 import { normalizeEmail, type ServiceTier, type ShipmentRecord } from "@/types/tracking";
 import toast from "react-hot-toast";
-
-async function compressImageToJpeg(file: File): Promise<string> {
-  if (!file.type.startsWith("image/")) {
-    throw new Error("Only image files (JPG, PNG, WebP) are allowed.");
-  }
-  if (file.size > 5 * 1024 * 1024) {
-    throw new Error("Each photo must be under 5 MB.");
-  }
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = () => {
-      try {
-        const maxSide = 900;
-        const ratio = Math.min(1, maxSide / Math.max(img.width, img.height));
-        const w = Math.max(1, Math.round(img.width * ratio));
-        const h = Math.max(1, Math.round(img.height * ratio));
-        const canvas = document.createElement("canvas");
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) throw new Error("Canvas unavailable");
-        ctx.drawImage(img, 0, 0, w, h);
-        const dataUrl = canvas.toDataURL("image/jpeg", 0.72);
-        URL.revokeObjectURL(url);
-        resolve(dataUrl);
-      } catch (err) {
-        URL.revokeObjectURL(url);
-        reject(err);
-      }
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error("Could not process image."));
-    };
-    img.src = url;
-  });
-}
 
 function ShipWizardContent() {
   const searchParams = useSearchParams();
@@ -119,7 +87,7 @@ function ShipWizardContent() {
   const [pL, setPL] = useState("30");
   const [pW, setPW] = useState("20");
   const [pH, setPH] = useState("15");
-  const [photos, setPhotos] = useState<string[]>([]);
+  const [photos, setPhotos] = useState<PreparedPhoto[]>([]);
   const [pDesc, setPDesc] = useState("");
   const [pVal, setPVal] = useState(qVal || "250");
   const [dragOver, setDragOver] = useState(false);
@@ -180,8 +148,8 @@ function ShipWizardContent() {
     }
     const chosen = Array.from(fileList).slice(0, slotsLeft);
     try {
-      const compressed = await Promise.all(chosen.map(compressImageToJpeg));
-      setPhotos((prev) => [...prev, ...compressed].slice(0, 4));
+      const prepared = await Promise.all(chosen.map(prepareShipmentPhoto));
+      setPhotos((prev) => [...prev, ...prepared].slice(0, 4));
       setErrors((prev) => {
         const next = { ...prev };
         delete next.photos;
@@ -222,7 +190,20 @@ function ShipWizardContent() {
   const executeBooking = async (uid: string) => {
     setSubmitting(true);
     try {
+      const code = await reserveTrackingCode();
+      const uploadedPhotoUrls = await Promise.all(
+        photos.map((photo, index) =>
+          uploadShipmentPhotoBlob({
+            code,
+            index,
+            blob: photo.blob,
+            fallbackDataUrl: photo.fallbackDataUrl,
+          })
+        )
+      );
+
       const result = await createShipmentBooking({
+        code,
         senderId: uid,
         sender: {
           name: sName,
@@ -248,8 +229,9 @@ function ShipWizardContent() {
         contents: pDesc,
         declaredValue: declaredNum,
         paymentMethod,
-        photos,
+        photos: uploadedPhotoUrls,
       });
+      photos.forEach((p) => URL.revokeObjectURL(p.previewUrl));
       await refreshOpenAlerts();
       setCompleted(result);
       window.scrollTo({ top: 0, behavior: "smooth" });
@@ -893,18 +875,19 @@ function ShipWizardContent() {
 
                     {photos.length > 0 && (
                       <div className="pf-grid">
-                        {photos.map((src, idx) => (
-                          <div key={idx} className="pf-th">
+                        {photos.map((item, idx) => (
+                          <div key={item.previewUrl} className="pf-th">
                             {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img src={src} alt={`Uploaded item ${idx + 1}`} />
+                            <img src={item.previewUrl} alt={`Uploaded item ${idx + 1}`} />
                             <button
                               type="button"
                               aria-label="Remove photo"
-                              onClick={() =>
+                              onClick={() => {
+                                URL.revokeObjectURL(item.previewUrl);
                                 setPhotos((prev) =>
                                   prev.filter((_, i) => i !== idx)
-                                )
-                              }
+                                );
+                              }}
                             >
                               <X className="w-3.5 h-3.5" />
                             </button>
@@ -1119,11 +1102,11 @@ function ShipWizardContent() {
                     <div className="r">
                       <span>Item photos ({photos.length})</span>
                       <div className="flex gap-2 justify-end flex-wrap">
-                        {photos.map((src, i) => (
+                        {photos.map((item, i) => (
                           /* eslint-disable-next-line @next/next/no-img-element */
                           <img
-                            key={i}
-                            src={src}
+                            key={item.previewUrl}
+                            src={item.previewUrl}
                             alt={`Item ${i + 1}`}
                             style={{
                               width: 44,

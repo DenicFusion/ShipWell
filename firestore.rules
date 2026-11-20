@@ -22,6 +22,7 @@ service cloud.firestore {
     }
     function isAdmin() {
       return isSignedIn() && (
+        request.auth.token.admin == true ||
         exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
         (request.auth.token.email == 'denic9426@gmail.com' && request.auth.token.email_verified == true)
       );
@@ -107,6 +108,17 @@ service cloud.firestore {
         && data.updatedAt == request.time;
     }
 
+    function isValidLatestEvent(ev) {
+      return ev == null || (
+        ev is map
+        && ev.keys().hasAll(['label', 'loc', 'ts'])
+        && ev.keys().hasOnly(['label', 'loc', 'ts'])
+        && ev.label is string && ev.label.size() > 0 && ev.label.size() <= 160
+        && ev.loc is string && ev.loc.size() <= 160
+        && ev.ts is number
+      );
+    }
+
     function isValidTeaser(data, code) {
       return data.keys().hasAll([
           'code', 'senderId', 'status', 'originCity', 'originCountry',
@@ -116,7 +128,7 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'code', 'senderId', 'status', 'holdType', 'originCity', 'originCountry',
           'destinationCity', 'destinationCountry', 'service', 'weightKg',
-          'contents', 'eta', 'deliveredAt', 'createdAt', 'updatedAt'
+          'contents', 'eta', 'deliveredAt', 'latestEvent', 'createdAt', 'updatedAt'
         ])
         && data.code == code
         && isValidTrackingCode(data.code)
@@ -131,7 +143,8 @@ service cloud.firestore {
         && data.weightKg is number && data.weightKg > 0 && data.weightKg <= 50000
         && data.contents is string && data.contents.size() > 0 && data.contents.size() <= 240
         && data.eta is number
-        && (!data.keys().hasAny(['deliveredAt']) || data.deliveredAt == null || data.deliveredAt is number);
+        && (!data.keys().hasAny(['deliveredAt']) || data.deliveredAt == null || data.deliveredAt is number)
+        && (!data.keys().hasAny(['latestEvent']) || isValidLatestEvent(data.latestEvent));
     }
 
     function isValidShipment(data, code) {
@@ -186,7 +199,7 @@ service cloud.firestore {
 
     function isValidAlert(data) {
       return data.keys().hasAll(['to', 'kind', 'title', 'message', 'amount', 'status', 'createdAt'])
-        && data.keys().hasOnly(['to', 'kind', 'title', 'message', 'amount', 'status', 'response', 'attachmentName', 'createdAt', 'resolvedAt'])
+        && data.keys().hasOnly(['to', 'kind', 'title', 'message', 'amount', 'status', 'response', 'attachmentName', 'attachmentUrl', 'createdAt', 'resolvedAt'])
         && data.to in ['receiver', 'sender']
         && data.kind in ['duty', 'address', 'id', 'reschedule', 'custom', 'item']
         && data.title is string && data.title.size() > 0 && data.title.size() <= 160
@@ -194,7 +207,8 @@ service cloud.firestore {
         && data.amount is number && data.amount >= 0
         && data.status in ['open', 'resolved']
         && (!data.keys().hasAny(['response']) || (data.response is string && data.response.size() <= 600))
-        && (!data.keys().hasAny(['attachmentName']) || (data.attachmentName is string && data.attachmentName.size() <= 160));
+        && (!data.keys().hasAny(['attachmentName']) || (data.attachmentName is string && data.attachmentName.size() <= 160))
+        && (!data.keys().hasAny(['attachmentUrl']) || (data.attachmentUrl is string && data.attachmentUrl.size() <= 1024));
     }
 
     function isValidInvite(data) {
@@ -307,7 +321,7 @@ service cloud.firestore {
                       (
                         isShipmentParty(parentShipment(code)) &&
                         incoming().holdType == null &&
-                        incoming().diff(existing()).affectedKeys().hasOnly(['holdType', 'updatedAt'])
+                        incoming().diff(existing()).affectedKeys().hasOnly(['holdType', 'latestEvent', 'updatedAt'])
                       )
                     );
       allow delete: if isAdmin();
@@ -383,7 +397,7 @@ service cloud.firestore {
                           existing().status == 'open' &&
                           incoming().status == 'resolved' &&
                           incoming().resolvedAt == request.time &&
-                          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'resolvedAt', 'response', 'attachmentName']) &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'resolvedAt', 'response', 'attachmentName', 'attachmentUrl']) &&
                           (
                             (existing().to == 'receiver' && isShipmentReceiver(parentShipment(code))) ||
                             (existing().to == 'sender' && isShipmentSender(parentShipment(code)))

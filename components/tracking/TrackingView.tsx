@@ -101,13 +101,13 @@ export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
     }
   }, [initialCode, normalizedInitial, inviteToken, router]);
 
-  // Load recent local searches asynchronously to preserve SSR hydration & satisfy hooks lint
+  // Load recent session searches asynchronously to preserve SSR hydration & satisfy hooks lint
   useEffect(() => {
     let active = true;
     Promise.resolve().then(() => {
       if (!active) return;
       try {
-        const saved = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
+        const saved = JSON.parse(sessionStorage.getItem(RECENT_KEY) || "[]");
         if (Array.isArray(saved)) {
           setRecentCodes(saved.filter((x) => typeof x === "string").slice(0, 5));
         }
@@ -123,10 +123,10 @@ export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
   const saveRecent = useCallback((code: string) => {
     if (!isValidTrackingCode(code)) return;
     try {
-      const saved = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
+      const saved = JSON.parse(sessionStorage.getItem(RECENT_KEY) || "[]");
       const list = Array.isArray(saved) ? saved : [];
       const next = [code, ...list.filter((c: string) => c !== code)].slice(0, 5);
-      localStorage.setItem(RECENT_KEY, JSON.stringify(next));
+      sessionStorage.setItem(RECENT_KEY, JSON.stringify(next));
       setRecentCodes(next);
     } catch {
       // ignore storage failure
@@ -195,6 +195,24 @@ export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
       loadTrackingData();
     }
   }, [authReady, loadTrackingData]);
+
+  // Refresh verification state if user returns after clicking verification email
+  useEffect(() => {
+    if (!user || user.emailVerified) return;
+    const onFocus = async () => {
+      try {
+        await user.reload();
+        if (user.emailVerified) {
+          await user.getIdToken(true);
+          await loadTrackingData();
+        }
+      } catch {
+        // ignore transient network errors
+      }
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [user, loadTrackingData]);
 
   // Live Firestore subscription when user has access to full shipment
   useEffect(() => {
@@ -339,12 +357,17 @@ export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
     if (!user) {
       const validInvite = Boolean(inviteInfo?.valid && inviteInfo.receiverEmail);
       const expiredInvite = Boolean(inviteInfo?.expired);
+      const delivered = teaser.status === "Delivered";
+      const latestLabel = teaser.latestEvent?.label || chip.label;
+      const latestLoc =
+        teaser.latestEvent?.loc || `${originCity}, ${originCountry}`;
+      const latestTs = teaser.latestEvent?.ts;
 
       return (
         <div className="tcard">
           <div className="tc-h">
             <div>
-              <small>Tracking Number</small>
+              <small>Tracking number</small>
               <div className="tcode">
                 {normalizedInitial}
                 <button
@@ -371,7 +394,11 @@ export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
             <div className="rt">
               <i style={{ width: `${pct}%` }} />
               <b style={{ left: `${pct}%` }}>
-                <Plane className="w-4 h-4" />
+                {delivered ? (
+                  <Check className="w-4 h-4" />
+                ) : (
+                  <Plane className="w-4 h-4" />
+                )}
               </b>
             </div>
             <div className="rc r">
@@ -380,134 +407,168 @@ export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
             </div>
           </div>
 
-          <div className="gt">
-            <div className="gt-blur" aria-hidden="true">
-              {[1, 2, 3].map((row) => (
-                <div className="r1" key={row}>
-                  <i />
-                  <div>
-                    <b />
-                    <span />
-                  </div>
-                </div>
-              ))}
+          <div className="tm">
+            <div>
+              <small>Service</small>
+              <b>{SERVICES[teaser.service]?.name}</b>
             </div>
+            <div>
+              <small>Weight</small>
+              <b>{teaser.weightKg.toFixed(1)} kg</b>
+            </div>
+            <div>
+              <small>Status</small>
+              <b>{chip.label}</b>
+            </div>
+            <div>
+              <small>{delivered ? "Delivered" : "Est. delivery"}</small>
+              <b style={{ color: "var(--em)" }}>
+                {delivered && teaser.deliveredAt
+                  ? formatShortDay(teaser.deliveredAt)
+                  : `by ${formatShortDay(teaser.eta)}`}
+              </b>
+            </div>
+          </div>
 
-            <div className="gt-ov">
-              <div className="gt-box">
-                <div className="au-ic">
-                  <Lock className="w-6 h-6" />
-                </div>
-
-                {expiredInvite ? (
-                  <>
-                    <h3>THIS LINK HAS EXPIRED</h3>
-                    <p>
-                      This link has expired — enter your email and we&apos;ll
-                      send a new one or open your sign-up right away.
-                    </p>
-                    <form
-                      onSubmit={handleExpiredResend}
-                      style={{ display: "grid", gap: 10 }}
-                    >
-                      <input
-                        className="field"
-                        type="email"
-                        value={resendEmail}
-                        onChange={(e) => setResendEmail(e.target.value)}
-                        placeholder="you@email.com"
-                        required
-                      />
-                      <button type="submit" className="sw-btn sw-btn-em">
-                        <Mail className="w-4 h-4" />
-                        {resendSent ? "Continue to sign up" : "Send new link & continue"}
-                      </button>
-                    </form>
-                  </>
-                ) : validInvite ? (
-                  <>
-                    <h3>
-                      WELCOME,{" "}
-                      {(inviteInfo?.receiverFirstName || "FRIEND").toUpperCase()}
-                    </h3>
-                    <p>
-                      Welcome, {inviteInfo?.receiverFirstName} — create your
-                      account to see <b>{normalizedInitial}</b> (
-                      {teaser.contents} from {inviteInfo?.senderFullName}).
-                    </p>
-                    <div className="row2">
-                      <button
-                        type="button"
-                        className="sw-btn sw-btn-em"
-                        onClick={() =>
-                          openAuth({
-                            mode: "signup",
-                            prefillEmail: inviteInfo?.receiverEmail,
-                            prefillName: inviteInfo?.receiverFirstName,
-                            lockEmail: true,
-                            trackingCode: normalizedInitial,
-                            prompt: `Welcome, ${inviteInfo?.receiverFirstName} — create your account to see ${normalizedInitial}.`,
-                          })
-                        }
-                      >
-                        Create free account
-                      </button>
-                      <button
-                        type="button"
-                        className="sw-btn sw-btn-ghost"
-                        onClick={() =>
-                          openAuth({
-                            mode: "login",
-                            prefillEmail: inviteInfo?.receiverEmail,
-                            lockEmail: true,
-                            trackingCode: normalizedInitial,
-                            prompt: `Sign in with ${inviteInfo?.receiverEmail} to view ${normalizedInitial}.`,
-                          })
-                        }
-                      >
-                        Log in
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <h3>SIGN UP TO SEE LIVE PROGRESS</h3>
-                    <p>
-                      Create a free account to see the live progress of{" "}
-                      <b>{normalizedInitial}</b>, item photos, hub scans and
-                      delivery alerts.
-                    </p>
-                    <div className="row2">
-                      <button
-                        type="button"
-                        className="sw-btn sw-btn-em"
-                        onClick={() =>
-                          openAuth({
-                            mode: "signup",
-                            trackingCode: normalizedInitial,
-                            prompt: `Create a free account to see the live progress of ${normalizedInitial}.`,
-                          })
-                        }
-                      >
-                        Create free account
-                      </button>
-                      <button
-                        type="button"
-                        className="sw-btn sw-btn-ghost"
-                        onClick={() =>
-                          openAuth({
-                            mode: "login",
-                            trackingCode: normalizedInitial,
-                            prompt: `Sign in to see the live progress of ${normalizedInitial}.`,
-                          })
-                        }
-                      >
-                        Log in
-                      </button>
-                    </div>
-                  </>
-                )}
+          <div className="tk-sec">
+            <h6>Latest update</h6>
+            <div className="ev active">
+              <div className="dot">
+                <span
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
+                    background: "#04120C",
+                  }}
+                />
               </div>
+              <div className="evc">
+                <div className="evt">
+                  <b>{latestLabel}</b>
+                  {latestTs ? <time>{formatDateTime(latestTs)}</time> : null}
+                </div>
+                <small>{latestLoc}</small>
+              </div>
+            </div>
+          </div>
+
+          <div className="tk-sec">
+            <div
+              className="gt-box"
+              style={{ margin: "6px 0 4px", position: "static", maxWidth: "none" }}
+            >
+              <div className="au-ic">
+                <Lock className="w-6 h-6" />
+              </div>
+
+              {expiredInvite ? (
+                <>
+                  <h3>THIS LINK HAS EXPIRED</h3>
+                  <p>
+                    This link has expired — enter your email and we&apos;ll send
+                    a new one or open your sign-up right away.
+                  </p>
+                  <form
+                    onSubmit={handleExpiredResend}
+                    style={{ display: "grid", gap: 10 }}
+                  >
+                    <input
+                      className="field"
+                      type="email"
+                      value={resendEmail}
+                      onChange={(e) => setResendEmail(e.target.value)}
+                      placeholder="you@email.com"
+                      required
+                    />
+                    <button type="submit" className="sw-btn sw-btn-em">
+                      <Mail className="w-4 h-4" />
+                      {resendSent ? "Continue to sign up" : "Send new link & continue"}
+                    </button>
+                  </form>
+                </>
+              ) : validInvite ? (
+                <>
+                  <h3>
+                    WELCOME,{" "}
+                    {(inviteInfo?.receiverFirstName || "FRIEND").toUpperCase()}
+                  </h3>
+                  <p>
+                    Welcome, {inviteInfo?.receiverFirstName} — create your
+                    account to see <b>{normalizedInitial}</b> ({teaser.contents}{" "}
+                    from {inviteInfo?.senderFullName}).
+                  </p>
+                  <div className="row2">
+                    <button
+                      type="button"
+                      className="sw-btn sw-btn-em sw-btn-lg"
+                      onClick={() =>
+                        openAuth({
+                          mode: "signup",
+                          prefillEmail: inviteInfo?.receiverEmail,
+                          prefillName: inviteInfo?.receiverFirstName,
+                          lockEmail: true,
+                          trackingCode: normalizedInitial,
+                          prompt: `Welcome, ${inviteInfo?.receiverFirstName} — create your account to see ${normalizedInitial}.`,
+                        })
+                      }
+                    >
+                      Create free account
+                    </button>
+                    <button
+                      type="button"
+                      className="sw-btn sw-btn-ghost sw-btn-lg"
+                      onClick={() =>
+                        openAuth({
+                          mode: "login",
+                          prefillEmail: inviteInfo?.receiverEmail,
+                          lockEmail: true,
+                          trackingCode: normalizedInitial,
+                          prompt: `Sign in with ${inviteInfo?.receiverEmail} to view ${normalizedInitial}.`,
+                        })
+                      }
+                    >
+                      Log in
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <h3>LOG IN FOR MORE UPDATES</h3>
+                  <p>
+                    Every checkpoint, item photos and delivery alerts are
+                    available to registered users. It&apos;s free.
+                  </p>
+                  <div className="row2">
+                    <button
+                      type="button"
+                      className="sw-btn sw-btn-em sw-btn-lg"
+                      onClick={() =>
+                        openAuth({
+                          mode: "login",
+                          trackingCode: normalizedInitial,
+                          prompt: `Log in or create a free account to see the full progress of ${normalizedInitial}.`,
+                        })
+                      }
+                    >
+                      Log in
+                    </button>
+                    <button
+                      type="button"
+                      className="sw-btn sw-btn-ghost sw-btn-lg"
+                      onClick={() =>
+                        openAuth({
+                          mode: "signup",
+                          trackingCode: normalizedInitial,
+                          prompt: `Log in or create a free account to see the full progress of ${normalizedInitial}.`,
+                        })
+                      }
+                    >
+                      Create free account
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>

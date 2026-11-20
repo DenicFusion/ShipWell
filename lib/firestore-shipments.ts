@@ -13,7 +13,7 @@ import {
   where,
   writeBatch,
 } from "firebase/firestore";
-import { db, sha256Hex } from "@/lib/firebase";
+import { auth, db, sha256Hex } from "@/lib/firebase";
 import { handleFirestoreError, OperationType } from "@/lib/firebase-errors";
 import {
   addBusinessDays,
@@ -102,7 +102,26 @@ export async function syncUserProfileDoc(params: {
   }
 }
 
+async function getAuthHeaders(): Promise<Record<string, string>> {
+  const token = await auth.currentUser?.getIdToken().catch(() => null);
+  return {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
+export async function reserveTrackingCode(): Promise<string> {
+  let code = generateTrackingCode();
+  for (let i = 0; i < 4; i++) {
+    const existingTeaser = await getDoc(doc(db, "trackingTeasers", code));
+    if (!existingTeaser.exists()) return code;
+    code = generateTrackingCode();
+  }
+  return code;
+}
+
 export interface CreateShipmentInput {
+  code?: string;
   senderId: string;
   sender: PartyInfo;
   receiver: PartyInfo;
@@ -122,12 +141,7 @@ export async function createShipmentBooking(
   receiverHasAccount: boolean;
   invitePreview?: { subject: string; html: string; invitePath: string };
 }> {
-  let code = generateTrackingCode();
-  for (let i = 0; i < 4; i++) {
-    const existingTeaser = await getDoc(doc(db, "trackingTeasers", code));
-    if (!existingTeaser.exists()) break;
-    code = generateTrackingCode();
-  }
+  const code = input.code || (await reserveTrackingCode());
 
   const quote = calculateShippingPricing(
     input.sender.country,
@@ -200,6 +214,18 @@ export async function createShipmentBooking(
     updatedAt: serverTimestamp(),
   };
 
+  const initialTs = Date.now();
+  const initialEvent = {
+    stage: "Booked" as ShipmentStage,
+    label: "Booking received",
+    loc: `${originCity}, ${input.sender.country}`,
+    note: "Awaiting item review by ShipWell operations",
+    kind: "scan" as const,
+    ts: initialTs,
+    createdBy: input.senderId,
+    createdAt: serverTimestamp(),
+  };
+
   const teaserPayload = {
     code,
     senderId: input.senderId,
@@ -213,19 +239,13 @@ export async function createShipmentBooking(
     weightKg: Number(input.weightKg.toFixed(2)),
     contents: input.contents.trim(),
     eta: etaMs,
+    latestEvent: {
+      label: initialEvent.label,
+      loc: initialEvent.loc,
+      ts: initialTs,
+    },
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
-  };
-
-  const initialEvent = {
-    stage: "Booked" as ShipmentStage,
-    label: "Booking received",
-    loc: `${originCity}, ${input.sender.country}`,
-    note: "Awaiting item review by ShipWell operations",
-    kind: "scan" as const,
-    ts: Date.now(),
-    createdBy: input.senderId,
-    createdAt: serverTimestamp(),
   };
 
   try {
@@ -243,9 +263,10 @@ export async function createShipmentBooking(
     | undefined;
 
   try {
+    const headers = await getAuthHeaders();
     const res = await fetch("/api/invites/create", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({
         code,
         senderFullName: senderClean.name,
@@ -278,7 +299,7 @@ export async function createShipmentBooking(
         createdAt: serverTimestamp(),
       });
 
-      await setDoc(doc(db, "emailLogs", `em_${Date.now().toString(36)}`), {
+      await setDoc(doc(db, "emailLogs", `em_${Date.now().toString(36)}_rcv`), {
         to: receiverEmail,
         code,
         template: data.template,
@@ -288,6 +309,21 @@ export async function createShipmentBooking(
         createdBy: input.senderId,
         createdAt: serverTimestamp(),
       });
+
+      if (data.senderEmailResult && senderEmail) {
+        await setDoc(doc(db, "emailLogs", `em_${Date.now().toString(36)}_snd`), {
+          to: senderEmail,
+          code,
+          template: "sender_booking_confirmation",
+          subject:
+            data.senderEmailResult.subject ||
+            `Booking confirmed — ${code} is on ShipWell`,
+          status: data.senderEmailResult.status,
+          providerId: data.senderEmailResult.providerId || "",
+          createdBy: input.senderId,
+          createdAt: serverTimestamp(),
+        });
+      }
 
       invitePreview = {
         subject: data.receiverEmailResult.subject,
@@ -444,9 +480,17 @@ export async function resolveShipmentAlert(params: {
   response: string;
   updatedAddress?: string;
   attachmentName?: string;
+  attachmentUrl?: string;
 }): Promise<void> {
-  const { shipment, alert, actorUid, response, updatedAddress, attachmentName } =
-    params;
+  const {
+    shipment,
+    alert,
+    actorUid,
+    response,
+    updatedAddress,
+    attachmentName,
+    attachmentUrl,
+  } = params;
   const code = shipment.code;
 
   try {
@@ -457,16 +501,19 @@ export async function resolveShipmentAlert(params: {
       resolvedAt: serverTimestamp(),
       response: response.trim(),
       ...(attachmentName ? { attachmentName } : {}),
+      ...(attachmentUrl ? { attachmentUrl } : {}),
     });
 
-    const evId = `ev_${Date.now().toString(36)}_res`;
+    const nowTs = Date.now();
+    const evId = `ev_${nowTs.toString(36)}_res`;
+    const actionLabel = `Action completed by ${alert.to}`;
     batch.set(doc(db, "shipments", code, "events", evId), {
       stage: shipment.status,
-      label: `Action completed by ${alert.to}`,
+      label: actionLabel,
       loc: "",
       note: `${alert.title} — ${response.trim()}`,
       kind: "action",
-      ts: Date.now(),
+      ts: nowTs,
       createdBy: actorUid,
       createdAt: serverTimestamp(),
     });
@@ -477,19 +524,34 @@ export async function resolveShipmentAlert(params: {
     const isLinkedHold = shipment.hold && shipment.hold.alertId === alert.id;
     if (isLinkedHold) {
       shipUpdates.hold = null;
-      const relId = `ev_${(Date.now() + 1).toString(36)}_rel`;
+      const relId = `ev_${(nowTs + 1).toString(36)}_rel`;
       batch.set(doc(db, "shipments", code, "events", relId), {
         stage: shipment.status,
         label: "Hold released",
         loc: "",
         note: "Shipment is moving again",
         kind: "info",
-        ts: Date.now() + 1,
+        ts: nowTs + 1,
         createdBy: actorUid,
         createdAt: serverTimestamp(),
       });
       batch.update(doc(db, "trackingTeasers", code), {
         holdType: null,
+        latestEvent: {
+          label: "Hold released",
+          loc: "",
+          ts: nowTs + 1,
+        },
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      batch.update(doc(db, "trackingTeasers", code), {
+        holdType: shipment.hold?.type || null,
+        latestEvent: {
+          label: actionLabel,
+          loc: "",
+          ts: nowTs,
+        },
         updatedAt: serverTimestamp(),
       });
     }
@@ -717,17 +779,23 @@ export async function adminFlagShipmentItem(params: {
       },
       updatedAt: serverTimestamp(),
     });
+    const nowTs = Date.now();
     batch.update(doc(db, "trackingTeasers", code), {
       holdType: "On Hold",
+      latestEvent: {
+        label: "Item flagged during review",
+        loc: "",
+        ts: nowTs,
+      },
       updatedAt: serverTimestamp(),
     });
-    batch.set(doc(db, "shipments", code, "events", `ev_${Date.now().toString(36)}`), {
+    batch.set(doc(db, "shipments", code, "events", `ev_${nowTs.toString(36)}`), {
       stage: shipment.status,
       label: "Item flagged during review",
       loc: "",
       note: reason.trim(),
       kind: "delay",
-      ts: Date.now(),
+      ts: nowTs,
       createdBy: actorUid,
       createdAt: serverTimestamp(),
     });
@@ -740,9 +808,10 @@ export async function adminFlagShipmentItem(params: {
       detail: reason.trim(),
     });
 
+    const headers = await getAuthHeaders();
     await fetch("/api/shipments/notify", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({
         code,
         toEmail: shipment.senderEmail,
@@ -793,6 +862,11 @@ export async function adminAddCheckpoint(params: {
     batch.update(doc(db, "trackingTeasers", code), {
       status: stage,
       ...(stage === "Delivered" ? { deliveredAt: ts, holdType: null } : {}),
+      latestEvent: {
+        label: label.trim(),
+        loc: loc.trim(),
+        ts,
+      },
       updatedAt: serverTimestamp(),
     });
     await batch.commit();
@@ -805,9 +879,10 @@ export async function adminAddCheckpoint(params: {
     });
 
     const receiverHasAccount = await checkAccountExists(shipment.receiverEmail);
+    const headers = await getAuthHeaders();
     await fetch("/api/shipments/notify", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({
         code,
         toEmail: shipment.receiverEmail,
@@ -873,22 +948,29 @@ export async function adminSetHold(params: {
   const { shipment, type, reason, actorUid, actorEmail } = params;
   const code = shipment.code;
   try {
+    const nowTs = Date.now();
+    const holdLabel = type === "Delayed" ? "Shipment delayed" : "Shipment on hold";
     const batch = writeBatch(db);
     batch.update(doc(db, "shipments", code), {
-      hold: { type, reason: reason.trim(), at: Date.now() },
+      hold: { type, reason: reason.trim(), at: nowTs },
       updatedAt: serverTimestamp(),
     });
     batch.update(doc(db, "trackingTeasers", code), {
       holdType: type,
+      latestEvent: {
+        label: holdLabel,
+        loc: "",
+        ts: nowTs,
+      },
       updatedAt: serverTimestamp(),
     });
-    batch.set(doc(db, "shipments", code, "events", `ev_${Date.now().toString(36)}`), {
+    batch.set(doc(db, "shipments", code, "events", `ev_${nowTs.toString(36)}`), {
       stage: shipment.status,
-      label: type === "Delayed" ? "Shipment delayed" : "Shipment on hold",
+      label: holdLabel,
       loc: "",
       note: reason.trim(),
       kind: "delay",
-      ts: Date.now(),
+      ts: nowTs,
       createdBy: actorUid,
       createdAt: serverTimestamp(),
     });
@@ -902,16 +984,17 @@ export async function adminSetHold(params: {
     });
 
     const receiverHasAccount = await checkAccountExists(shipment.receiverEmail);
+    const headers = await getAuthHeaders();
     await fetch("/api/shipments/notify", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({
         code,
         toEmail: shipment.receiverEmail,
         recipientName: shipment.receiver.name,
         senderFullName: shipment.sender.name,
         updateType: "delay",
-        headline: type === "Delayed" ? "Shipment delayed" : "Shipment on hold",
+        headline: holdLabel,
         details: reason.trim(),
         hasAccount: receiverHasAccount,
       }),
@@ -929,6 +1012,7 @@ export async function adminClearHold(params: {
   const { shipment, actorUid, actorEmail } = params;
   const code = shipment.code;
   try {
+    const nowTs = Date.now();
     const batch = writeBatch(db);
     batch.update(doc(db, "shipments", code), {
       hold: null,
@@ -936,15 +1020,20 @@ export async function adminClearHold(params: {
     });
     batch.update(doc(db, "trackingTeasers", code), {
       holdType: null,
+      latestEvent: {
+        label: "Hold cleared",
+        loc: "",
+        ts: nowTs,
+      },
       updatedAt: serverTimestamp(),
     });
-    batch.set(doc(db, "shipments", code, "events", `ev_${Date.now().toString(36)}`), {
+    batch.set(doc(db, "shipments", code, "events", `ev_${nowTs.toString(36)}`), {
       stage: shipment.status,
       label: "Hold cleared",
       loc: "",
       note: "Shipment is moving again",
       kind: "info",
-      ts: Date.now(),
+      ts: nowTs,
       createdBy: actorUid,
       createdAt: serverTimestamp(),
     });
@@ -984,7 +1073,9 @@ export async function adminSendAlert(params: {
     actorEmail,
   } = params;
   const code = shipment.code;
-  const alertId = `al_${Date.now().toString(36)}`;
+  const nowTs = Date.now();
+  const alertId = `al_${nowTs.toString(36)}`;
+  const evLabel = `Action requested from ${to}`;
   try {
     const batch = writeBatch(db);
     batch.set(doc(db, "shipments", code, "alerts", alertId), {
@@ -996,13 +1087,13 @@ export async function adminSendAlert(params: {
       status: "open",
       createdAt: serverTimestamp(),
     });
-    batch.set(doc(db, "shipments", code, "events", `ev_${Date.now().toString(36)}`), {
+    batch.set(doc(db, "shipments", code, "events", `ev_${nowTs.toString(36)}`), {
       stage: shipment.status,
-      label: `Action requested from ${to}`,
+      label: evLabel,
       loc: "",
       note: title.trim(),
       kind: "action",
-      ts: Date.now(),
+      ts: nowTs,
       createdBy: actorUid,
       createdAt: serverTimestamp(),
     });
@@ -1011,13 +1102,27 @@ export async function adminSendAlert(params: {
         hold: {
           type: "On Hold",
           reason: `Waiting for ${to}: ${title.trim()}`,
-          at: Date.now(),
+          at: nowTs,
           alertId,
         },
         updatedAt: serverTimestamp(),
       });
       batch.update(doc(db, "trackingTeasers", code), {
         holdType: "On Hold",
+        latestEvent: {
+          label: evLabel,
+          loc: "",
+          ts: nowTs,
+        },
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      batch.update(doc(db, "trackingTeasers", code), {
+        latestEvent: {
+          label: evLabel,
+          loc: "",
+          ts: nowTs,
+        },
         updatedAt: serverTimestamp(),
       });
     }
@@ -1037,9 +1142,10 @@ export async function adminSendAlert(params: {
     const hasAccount =
       to === "sender" ? true : await checkAccountExists(targetEmail);
 
+    const headers = await getAuthHeaders();
     await fetch("/api/shipments/notify", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify({
         code,
         toEmail: targetEmail,
@@ -1078,6 +1184,11 @@ export async function adminUndoLastEvent(params: {
     });
     batch.update(doc(db, "trackingTeasers", shipment.code), {
       status: nextStatus,
+      latestEvent: {
+        label: prev.label,
+        loc: prev.loc || "",
+        ts: prev.ts,
+      },
       updatedAt: serverTimestamp(),
     });
     await batch.commit();
@@ -1107,9 +1218,10 @@ export async function adminResendReceiverInvite(params: {
 }): Promise<{ status: string; subject?: string }> {
   const { shipment, actorUid, actorEmail, isReminder } = params;
   const receiverHasAccount = await checkAccountExists(shipment.receiverEmail);
+  const headers = await getAuthHeaders();
   const res = await fetch("/api/invites/create", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({
       code: shipment.code,
       senderFullName: shipment.sender.name,

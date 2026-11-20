@@ -3,9 +3,18 @@ import { createSignedInviteToken } from "@/lib/invites";
 import { buildShipmentUpdateEmail } from "@/lib/email/templates";
 import { dispatchTransactionalEmail } from "@/lib/email/sender";
 import { isValidTrackingCode } from "@/types/tracking";
+import { verifyFirebaseIdTokenFromRequest } from "@/lib/server-auth";
 
 export async function POST(req: NextRequest) {
   try {
+    const authUser = await verifyFirebaseIdTokenFromRequest(req);
+    if (!authUser) {
+      return NextResponse.json(
+        { error: "Authentication required." },
+        { status: 401 }
+      );
+    }
+
     const body = (await req.json()) as {
       code?: string;
       toEmail?: string;
@@ -16,6 +25,14 @@ export async function POST(req: NextRequest) {
       details?: string;
       hasAccount?: boolean;
     };
+
+    const updateType = body.updateType || "checkpoint";
+    if ((updateType === "delay" || updateType === "delivered") && !authUser.isAdmin) {
+      return NextResponse.json(
+        { error: "Operations authorization required." },
+        { status: 403 }
+      );
+    }
 
     const code = String(body.code || "").trim().toUpperCase();
     const toEmail = String(body.toEmail || "").trim().toLowerCase();
