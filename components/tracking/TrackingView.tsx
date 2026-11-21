@@ -1,8 +1,5 @@
-"use client";
-
 import React, { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   collection,
   doc,
@@ -61,8 +58,8 @@ interface InviteVerification {
 const RECENT_KEY = "sw_recent_tracks";
 
 export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
-  const router = useRouter();
-  const searchParams = useSearchParams();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const inviteToken = searchParams.get("invite") || "";
 
   const {
@@ -97,9 +94,9 @@ export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
   useEffect(() => {
     if (initialCode && normalizedInitial && initialCode !== normalizedInitial) {
       const qs = inviteToken ? `?invite=${encodeURIComponent(inviteToken)}` : "";
-      router.replace(`/track/${normalizedInitial}${qs}`);
+      navigate(`/track/${normalizedInitial}${qs}`, { replace: true });
     }
-  }, [initialCode, normalizedInitial, inviteToken, router]);
+  }, [initialCode, normalizedInitial, inviteToken, navigate]);
 
   // Load recent session searches asynchronously to preserve SSR hydration & satisfy hooks lint
   useEffect(() => {
@@ -269,7 +266,7 @@ export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
       toast("Enter a ShipWell tracking number (e.g. SW-20260531-A8F4B2C1)");
       return;
     }
-    router.push(`/track/${formatted}`);
+    navigate(`/track/${formatted}`);
   };
 
   const handleExpiredResend = (e: React.FormEvent) => {
@@ -695,7 +692,7 @@ export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
                 <b>Admin view</b> — operations access enabled
               </span>
               <Link
-                href={`/admin/shipment/${normalizedInitial}`}
+                to={`/admin/shipment/${normalizedInitial}`}
                 style={{
                   marginLeft: "auto",
                   color: "var(--em)",
@@ -831,7 +828,6 @@ export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
                     aria-label={`Zoom item photo ${idx + 1}`}
                     onClick={() => openPhotoZoom(src, `${shipment.contents} (${idx + 1})`)}
                   >
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={src} alt={`Item ${idx + 1}`} />
                   </button>
                 ))}
@@ -966,7 +962,7 @@ export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
             <div className="chips">
               <small>Recent searches</small>
               {recentCodes.map((c) => (
-                <Link key={c} href={`/track/${c}`} className="chipb">
+                <Link key={c} to={`/track/${c}`} className="chipb">
                   {c}
                 </Link>
               ))}

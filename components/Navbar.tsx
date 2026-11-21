@@ -1,8 +1,5 @@
-"use client";
-
 import React, { useEffect, useRef, useState } from "react";
-import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard,
   LogOut,
@@ -16,16 +13,15 @@ import { getInitials } from "@/types/tracking";
 import toast from "react-hot-toast";
 
 export function Navbar() {
-  const pathname = usePathname();
-  const router = useRouter();
+  const location = useLocation();
+  const pathname = location.pathname;
+  const navigate = useNavigate();
   const { user, profile, isAdmin, openAlertsCount, openAuth, signOutUser } =
     useShipWell();
   const [scrolled, setScrolled] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-
-  const burgerTapRef = useRef(0);
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 24);
@@ -63,37 +59,38 @@ export function Navbar() {
     await signOutUser();
     toast.success("Signed out");
     if (pathname.startsWith("/dashboard")) {
-      router.push("/");
+      navigate("/");
     }
   };
 
   const toggleBurger = () => {
-    const now = Date.now();
-    if (now - burgerTapRef.current < 280) return;
-    burgerTapRef.current = now;
     setMenuOpen(false);
     setDrawerOpen((p) => !p);
+  };
+
+  const handleOpenAuth = (mode: "login" | "signup") => {
+    setDrawerOpen(false);
+    setMenuOpen(false);
+    openAuth({ mode });
   };
 
   return (
     <>
       <nav className={`sw-nav ${scrolled ? "scrolled" : ""}`}>
-        <Link href="/" onClick={() => setDrawerOpen(false)}>
+        <Link to="/" onClick={() => setDrawerOpen(false)}>
           <ShipwellLogo />
         </Link>
 
         <ul className="sw-nav-links">
           <li>
-            <Link href="/#services" className={pathname === "/" ? "" : ""}>
-              Services
-            </Link>
+            <Link to="/#services">Services</Link>
           </li>
           <li>
-            <Link href="/#how-it-works">How It Works</Link>
+            <Link to="/#how-it-works">How It Works</Link>
           </li>
           <li>
             <Link
-              href="/quote"
+              to="/quote"
               className={pathname.startsWith("/quote") ? "on" : ""}
             >
               Get a Quote
@@ -101,7 +98,7 @@ export function Navbar() {
           </li>
           <li>
             <Link
-              href="/business-shipping"
+              to="/business-shipping"
               className={pathname.startsWith("/business-shipping") ? "on" : ""}
             >
               Business
@@ -109,7 +106,7 @@ export function Navbar() {
           </li>
           <li>
             <Link
-              href="/track"
+              to="/track"
               className={pathname.startsWith("/track") ? "on" : ""}
             >
               Track
@@ -122,7 +119,7 @@ export function Navbar() {
             {user ? (
               <>
                 <Link
-                  href="/dashboard"
+                  to="/dashboard"
                   className="sw-btn sw-btn-ghost hide-m"
                   style={{ display: "inline-flex", alignItems: "center" }}
                 >
@@ -153,7 +150,7 @@ export function Navbar() {
                         <small>{user.email}</small>
                       </div>
                       <Link
-                        href="/dashboard"
+                        to="/dashboard"
                         onClick={() => setMenuOpen(false)}
                       >
                         <LayoutDashboard className="w-4 h-4" />
@@ -164,18 +161,18 @@ export function Navbar() {
                       </Link>
                       {isAdmin && (
                         <Link
-                          href="/admin"
+                          to="/admin"
                           onClick={() => setMenuOpen(false)}
                         >
                           <ShieldCheck className="w-4 h-4 text-amber-400" />
                           <span>Admin panel</span>
                         </Link>
                       )}
-                      <Link href="/ship" onClick={() => setMenuOpen(false)}>
+                      <Link to="/ship" onClick={() => setMenuOpen(false)}>
                         <Package className="w-4 h-4" />
                         <span>Ship a parcel</span>
                       </Link>
-                      <Link href="/track" onClick={() => setMenuOpen(false)}>
+                      <Link to="/track" onClick={() => setMenuOpen(false)}>
                         <Search className="w-4 h-4" />
                         <span>Track a shipment</span>
                       </Link>
@@ -192,20 +189,14 @@ export function Navbar() {
                 <button
                   type="button"
                   className="sw-btn sw-btn-ghost"
-                  onClick={() => {
-                    setDrawerOpen(false);
-                    openAuth({ mode: "login" });
-                  }}
+                  onClick={() => handleOpenAuth("login")}
                 >
                   Log In
                 </button>
                 <button
                   type="button"
                   className="sw-btn sw-btn-em"
-                  onClick={() => {
-                    setDrawerOpen(false);
-                    openAuth({ mode: "signup" });
-                  }}
+                  onClick={() => handleOpenAuth("signup")}
                 >
                   Sign Up
                 </button>
@@ -216,7 +207,7 @@ export function Navbar() {
           <button
             type="button"
             className={`burger ${drawerOpen ? "open" : ""}`}
-            aria-label="Menu"
+            aria-label={drawerOpen ? "Close menu" : "Open menu"}
             aria-expanded={drawerOpen}
             onClick={toggleBurger}
           >
@@ -228,40 +219,32 @@ export function Navbar() {
       </nav>
 
       <div className={`sw-drawer ${drawerOpen ? "open" : ""}`}>
-        <Link className="dl" href="/ship" onClick={() => setDrawerOpen(false)}>
+        <Link className="dl" to="/ship" onClick={() => setDrawerOpen(false)}>
           Ship Now <span>→</span>
         </Link>
-        <Link
-          className="dl"
-          href="/quote"
-          onClick={() => setDrawerOpen(false)}
-        >
+        <Link className="dl" to="/quote" onClick={() => setDrawerOpen(false)}>
           Get a Quote <span>→</span>
         </Link>
-        <Link
-          className="dl"
-          href="/track"
-          onClick={() => setDrawerOpen(false)}
-        >
+        <Link className="dl" to="/track" onClick={() => setDrawerOpen(false)}>
           Track Shipment <span>→</span>
         </Link>
         <Link
           className="dl"
-          href="/business-shipping"
+          to="/business-shipping"
           onClick={() => setDrawerOpen(false)}
         >
           Business Shipping <span>→</span>
         </Link>
         <Link
           className="dl"
-          href="/#services"
+          to="/#services"
           onClick={() => setDrawerOpen(false)}
         >
           Services <span>→</span>
         </Link>
         <Link
           className="dl"
-          href="/#how-it-works"
+          to="/#how-it-works"
           onClick={() => setDrawerOpen(false)}
         >
           How It Works <span>→</span>
@@ -270,7 +253,7 @@ export function Navbar() {
         {user ? (
           <div className="dcta">
             <Link
-              href="/dashboard"
+              to="/dashboard"
               className="sw-btn sw-btn-em sw-btn-lg"
               onClick={() => setDrawerOpen(false)}
             >
@@ -289,20 +272,14 @@ export function Navbar() {
             <button
               type="button"
               className="sw-btn sw-btn-ghost sw-btn-lg"
-              onClick={() => {
-                setDrawerOpen(false);
-                openAuth({ mode: "login" });
-              }}
+              onClick={() => handleOpenAuth("login")}
             >
               Log In
             </button>
             <button
               type="button"
               className="sw-btn sw-btn-em sw-btn-lg"
-              onClick={() => {
-                setDrawerOpen(false);
-                openAuth({ mode: "signup" });
-              }}
+              onClick={() => handleOpenAuth("signup")}
             >
               Sign Up
             </button>

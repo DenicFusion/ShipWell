@@ -1,7 +1,5 @@
-"use client";
-
 import React from "react";
-import Link from "next/link";
+import { Link } from "react-router-dom";
 import { Globe, Mail, MapPin, Shield } from "lucide-react";
 import { ShipwellLogo } from "@/components/ShipwellLogo";
 
@@ -11,7 +9,7 @@ export function Footer() {
       <div className="wrap">
         <div className="fg">
           <div>
-            <Link href="/">
+            <Link to="/">
               <ShipwellLogo />
             </Link>
             <p>
@@ -24,19 +22,19 @@ export function Footer() {
             <h5>Services</h5>
             <ul>
               <li>
-                <Link href="/ship">Ship Now</Link>
+                <Link to="/ship">Ship Now</Link>
               </li>
               <li>
-                <Link href="/quote">Get a Quote</Link>
+                <Link to="/quote">Get a Quote</Link>
               </li>
               <li>
-                <Link href="/#services">Express Delivery</Link>
+                <Link to="/#services">Express Delivery</Link>
               </li>
               <li>
-                <Link href="/#services">Freight &amp; Cargo</Link>
+                <Link to="/#services">Freight &amp; Cargo</Link>
               </li>
               <li>
-                <Link href="/#services">Customs Brokerage</Link>
+                <Link to="/#services">Customs Brokerage</Link>
               </li>
             </ul>
           </div>
@@ -45,16 +43,16 @@ export function Footer() {
             <h5>Company</h5>
             <ul>
               <li>
-                <Link href="/#two-sides">How ShipWell Works</Link>
+                <Link to="/#two-sides">How ShipWell Works</Link>
               </li>
               <li>
-                <Link href="/#how-it-works">4-Step Process</Link>
+                <Link to="/#how-it-works">4-Step Process</Link>
               </li>
               <li>
-                <Link href="/#testimonials">Customer Stories</Link>
+                <Link to="/#testimonials">Customer Stories</Link>
               </li>
               <li>
-                <Link href="/business-shipping">Business</Link>
+                <Link to="/business-shipping">Business</Link>
               </li>
             </ul>
           </div>
@@ -63,13 +61,13 @@ export function Footer() {
             <h5>Support</h5>
             <ul>
               <li>
-                <Link href="/track">Track Package</Link>
+                <Link to="/track">Track Package</Link>
               </li>
               <li>
-                <Link href="/quote">Cost Calculator</Link>
+                <Link to="/quote">Cost Calculator</Link>
               </li>
               <li>
-                <Link href="/business-shipping#bizForm">Contact Sales</Link>
+                <Link to="/business-shipping#bizForm">Contact Sales</Link>
               </li>
               <li>
                 <a href="mailto:support@shipwell.example">Email Operations</a>
@@ -81,16 +79,16 @@ export function Footer() {
             <h5>Legal</h5>
             <ul>
               <li>
-                <Link href="/legal#terms">Terms of Use</Link>
+                <Link to="/legal#terms">Terms of Use</Link>
               </li>
               <li>
-                <Link href="/legal#privacy">Privacy Policy</Link>
+                <Link to="/legal#privacy">Privacy Policy</Link>
               </li>
               <li>
-                <Link href="/legal#cookies">Cookie Policy</Link>
+                <Link to="/legal#cookies">Cookie Policy</Link>
               </li>
               <li>
-                <Link href="/legal#fraud">Fraud Awareness</Link>
+                <Link to="/legal#fraud">Fraud Awareness</Link>
               </li>
             </ul>
           </div>
@@ -99,13 +97,13 @@ export function Footer() {
         <div className="fb">
           <span>© 2026 ShipWell Logistics Ltd. All rights reserved.</span>
           <div className="soc">
-            <Link href="/track" aria-label="Global Network Tracking">
+            <Link to="/track" aria-label="Global Network Tracking">
               <Globe className="w-4 h-4" />
             </Link>
-            <Link href="/quote" aria-label="Route Coverage">
+            <Link to="/quote" aria-label="Route Coverage">
               <MapPin className="w-4 h-4" />
             </Link>
-            <Link href="/legal#fraud" aria-label="Security & Compliance">
+            <Link to="/legal#fraud" aria-label="Security & Compliance">
               <Shield className="w-4 h-4" />
             </Link>
             <a href="mailto:support@shipwell.example" aria-label="Email Support">

@@ -1,8 +1,5 @@
-"use client";
-
 import React, { useEffect } from "react";
-import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   ArrowUpRight,
   Bell,
@@ -30,15 +27,15 @@ export function AdminShell({
   topAction?: React.ReactNode;
   children: React.ReactNode;
 }) {
-  const pathname = usePathname();
-  const router = useRouter();
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
   const { user, profile, authReady, isAdmin, signOutUser } = useShipWell();
 
   useEffect(() => {
     if (authReady && (!user || !isAdmin)) {
-      router.replace("/admin/login");
+      navigate("/admin/login", { replace: true });
     }
-  }, [authReady, user, isAdmin, router]);
+  }, [authReady, user, isAdmin, navigate]);
 
   if (!authReady || !user || !isAdmin) {
     return (
@@ -90,13 +87,13 @@ export function AdminShell({
   const handleSignOut = async () => {
     await signOutUser();
     toast.success("Signed out of operations");
-    router.replace("/admin/login");
+    navigate("/admin/login", { replace: true });
   };
 
   return (
     <div className="ad">
       <aside className="ad-side">
-        <Link href="/admin" className="ad-brand">
+        <Link to="/admin" className="ad-brand">
           <ShipwellLogo subtitle="Operations" subtitleAmber />
         </Link>
 
@@ -106,7 +103,7 @@ export function AdminShell({
             return (
               <Link
                 key={item.href}
-                href={item.href}
+                to={item.href}
                 className={item.active ? "on" : ""}
               >
                 <Icon className="w-[18px] h-[18px] shrink-0" />
@@ -125,7 +122,7 @@ export function AdminShell({
               <small>{user.email}</small>
             </div>
           </div>
-          <Link href="/" className="sw-btn sw-btn-ghost sw-btn-block">
+          <Link to="/" className="sw-btn sw-btn-ghost sw-btn-block">
             <ArrowUpRight className="w-4 h-4" />
             View website
           </Link>
@@ -145,7 +142,7 @@ export function AdminShell({
           <h2>{title}</h2>
           <div className="r">
             {topAction}
-            <Link href="/" className="sw-btn sw-btn-ghost hide-s">
+            <Link to="/" className="sw-btn sw-btn-ghost hide-s">
               <ArrowUpRight className="w-4 h-4" />
               Website
             </Link>
@@ -158,7 +155,7 @@ export function AdminShell({
             return (
               <Link
                 key={item.href}
-                href={item.href}
+                to={item.href}
                 className={item.active ? "on" : ""}
               >
                 <Icon className="w-4 h-4 shrink-0" />

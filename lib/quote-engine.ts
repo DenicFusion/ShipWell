@@ -1,4 +1,4 @@
-import type { ServiceTier } from "@/types/tracking";
+import type { ServiceTier } from "../types/tracking.ts";
 
 export interface PlaceInfo {
   city: string;

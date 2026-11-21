@@ -1,21 +1,20 @@
-'use client';
-import { useState } from "react"
-import { cn } from "@/lib/utils"
-import { Button } from "./Button"
-import { Loader2 } from "lucide-react"
-import { useRouter } from "next/navigation"
+import { useState } from "react";
+import { cn } from "@/lib/utils";
+import { Button } from "./Button";
+import { Loader2 } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
 export function SearchBar({ className }: { className?: string }) {
-  const [value, setValue] = useState("")
-  const [isFocused, setIsFocused] = useState(false)
-  const [isLoading, setIsLoading] = useState(false)
-  const router = useRouter()
+  const [value, setValue] = useState("");
+  const [isFocused, setIsFocused] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const navigate = useNavigate();
 
   const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
-    setIsLoading(true)
-    router.push("/track/" + value)
-  }
+    e.preventDefault();
+    setIsLoading(true);
+    navigate("/track/" + value);
+  };
 
   return (
     <div className={cn("w-full relative z-[2]", className)}>

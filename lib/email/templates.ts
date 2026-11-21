@@ -28,6 +28,8 @@ function firstName(fullName: string): string {
 function getBaseUrl(origin?: string): string {
   const base =
     origin ||
+    process.env.APP_URL ||
+    process.env.VITE_APP_URL ||
     process.env.NEXT_PUBLIC_APP_URL ||
     "http://localhost:3000";
   return base.replace(/\/+$/, "");

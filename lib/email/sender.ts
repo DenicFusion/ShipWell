@@ -1,4 +1,4 @@
-import type { EmailPayload } from "./templates";
+import type { EmailPayload } from "./templates.ts";
 
 declare global {
   var __shipwellRateMap: Map<string, number[]> | undefined;

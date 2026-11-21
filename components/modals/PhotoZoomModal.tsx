@@ -27,7 +27,6 @@ export function PhotoZoomModal({
         <button className="md-x" onClick={onClose} aria-label="Close zoom">
           <X className="w-4 h-4" />
         </button>
-        {/* eslint-disable-next-line @next/next/no-img-element */}
         <img className="zimg" src={src} alt={alt} />
       </div>
     </div>

@@ -1,6 +1,5 @@
-import { NextRequest } from "next/server";
-import firebaseConfigLocal from "../firebase-applet-config.json";
-import { ADMIN_EMAIL, normalizeEmail } from "@/types/tracking";
+import firebaseConfigLocal from "../firebase-applet-config.json" with { type: "json" };
+import { ADMIN_EMAIL, normalizeEmail } from "../types/tracking.ts";
 
 export interface VerifiedServerUser {
   uid: string;
@@ -16,10 +15,11 @@ interface LookupUser {
   customAttributes?: string;
 }
 
-export async function verifyFirebaseIdTokenFromRequest(
-  req: NextRequest
+export async function verifyFirebaseIdTokenFromHeaders(
+  headers: Record<string, string | string[] | undefined>
 ): Promise<VerifiedServerUser | null> {
-  const authHeader = req.headers.get("authorization") || "";
+  const rawAuth = headers.authorization;
+  const authHeader = Array.isArray(rawAuth) ? rawAuth[0] || "" : rawAuth || "";
   const match = authHeader.match(/^Bearer\s+(.+)$/i);
   const idToken = match?.[1]?.trim();
   if (!idToken || idToken.length < 20) {
@@ -35,7 +35,6 @@ export async function verifyFirebaseIdTokenFromRequest(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ idToken }),
-        cache: "no-store",
       }
     );
 
