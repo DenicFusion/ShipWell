@@ -91,14 +91,23 @@ service cloud.firestore {
       );
     }
 
+    function isValidUserPrefs(p) {
+      return p is map
+        && p.keys().hasOnly(['onway', 'scan', 'action'])
+        && (!p.keys().hasAny(['onway']) || p.onway is bool)
+        && (!p.keys().hasAny(['scan']) || p.scan is bool)
+        && (!p.keys().hasAny(['action']) || p.action is bool);
+    }
+
     function isValidUser(data, uid) {
       return data.keys().hasAll(['uid', 'name', 'email', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'name', 'email', 'phone', 'company', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'name', 'email', 'phone', 'company', 'prefs', 'createdAt', 'updatedAt'])
         && data.uid == uid
         && data.name is string && data.name.size() > 0 && data.name.size() <= 120
         && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
         && (!data.keys().hasAny(['phone']) || (data.phone is string && data.phone.size() <= 40))
-        && (!data.keys().hasAny(['company']) || (data.company is string && data.company.size() <= 160));
+        && (!data.keys().hasAny(['company']) || (data.company is string && data.company.size() <= 160))
+        && (!data.keys().hasAny(['prefs']) || isValidUserPrefs(data.prefs));
     }
 
     function isValidAccountStatus(data) {
@@ -289,7 +298,7 @@ service cloud.firestore {
                     && isValidUser(incoming(), uid)
                     && incoming().createdAt == existing().createdAt
                     && incoming().updatedAt == request.time
-                    && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'company', 'updatedAt']);
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'company', 'prefs', 'updatedAt']);
       allow delete: if isAdmin();
     }
 

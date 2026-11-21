@@ -155,12 +155,19 @@ export interface ShipmentRecord {
   invites?: ShipmentInviteRecord[];
 }
 
+export interface NotificationPrefs {
+  onway: boolean;
+  scan: boolean;
+  action: boolean;
+}
+
 export interface UserProfile {
   uid: string;
   name: string;
   email: string;
   phone?: string;
   company?: string;
+  prefs?: NotificationPrefs;
   createdAt?: unknown;
   updatedAt?: unknown;
   createdAtMs?: number;
@@ -188,6 +195,26 @@ export const STAGES: ShipmentStage[] = [
   "Out for Delivery",
   "Delivered",
 ];
+
+export const STAGE_SHORT: Record<ShipmentStage, string> = {
+  Booked: "Booked",
+  "Picked Up": "Picked up",
+  "In Transit": "In transit",
+  "At Hub": "At hub",
+  Customs: "Customs",
+  "Out for Delivery": "Out for delivery",
+  Delivered: "Delivered",
+};
+
+export const STAGE_HEAD: Record<ShipmentStage, string> = {
+  Booked: "Booking confirmed",
+  "Picked Up": "Picked up",
+  "In Transit": "In transit",
+  "At Hub": "At sorting hub",
+  Customs: "In customs",
+  "Out for Delivery": "Out for delivery",
+  Delivered: "Delivered",
+};
 
 export const STAGE_PCT = [6, 16, 42, 60, 74, 90, 100] as const;
 

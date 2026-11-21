@@ -64,7 +64,13 @@ export default function App() {
             <Route path="/business-shipping" element={<BusinessShippingPage />} />
             <Route path="/track" element={<TrackPage />} />
             <Route path="/track/:trackingId" element={<TrackPage />} />
-            <Route path="/dashboard" element={<DashboardPage />} />
+            <Route path="/dashboard" element={<DashboardPage section="overview" />} />
+            <Route path="/dashboard/incoming" element={<DashboardPage section="incoming" />} />
+            <Route path="/dashboard/sent" element={<DashboardPage section="sent" />} />
+            <Route path="/dashboard/track" element={<DashboardPage section="track" />} />
+            <Route path="/dashboard/track/:code" element={<DashboardPage section="track" />} />
+            <Route path="/dashboard/alerts" element={<DashboardPage section="alerts" />} />
+            <Route path="/dashboard/account" element={<DashboardPage section="account" />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/auth/login" element={<LoginPage />} />
             <Route path="/signup" element={<SignupPage />} />

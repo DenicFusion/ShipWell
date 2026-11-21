@@ -30,6 +30,7 @@ import {
   type AlertKind,
   type AlertTarget,
   type BusinessLead,
+  type NotificationPrefs,
   type PartyInfo,
   type ServiceTier,
   type ShipmentAlert,
@@ -85,6 +86,7 @@ export async function syncUserProfileDoc(params: {
         email: cleanEmail,
         phone: params.phone?.trim() || "",
         company: params.company?.trim() || "",
+        prefs: { onway: true, scan: true, action: true },
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -99,6 +101,36 @@ export async function syncUserProfileDoc(params: {
     await markAccountExists(cleanEmail);
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, `users/${params.uid}`);
+  }
+}
+
+export async function updateUserAccountProfile(params: {
+  uid: string;
+  name?: string;
+  phone?: string;
+  prefs?: NotificationPrefs;
+}): Promise<void> {
+  const userRef = doc(db, "users", params.uid);
+  const patch: Record<string, unknown> = {
+    updatedAt: serverTimestamp(),
+  };
+  if (typeof params.name === "string") {
+    patch.name = params.name.trim();
+  }
+  if (typeof params.phone === "string") {
+    patch.phone = params.phone.trim();
+  }
+  if (params.prefs) {
+    patch.prefs = {
+      onway: Boolean(params.prefs.onway),
+      scan: Boolean(params.prefs.scan),
+      action: Boolean(params.prefs.action),
+    };
+  }
+  try {
+    await updateDoc(userRef, patch);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `users/${params.uid}`);
   }
 }
 

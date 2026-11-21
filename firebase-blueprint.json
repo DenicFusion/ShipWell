@@ -10,6 +10,7 @@
         "email": { "type": "string", "format": "email", "maxLength": 160 },
         "phone": { "type": "string", "maxLength": 40 },
         "company": { "type": "string", "maxLength": 160 },
+        "prefs": { "type": "object", "description": "Email notification toggles (onway, scan, action)" },
         "createdAt": { "type": "timestamp" },
         "updatedAt": { "type": "timestamp" }
       },
