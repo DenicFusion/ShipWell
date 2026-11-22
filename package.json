@@ -23,6 +23,7 @@
     "firebase": "^12.14.0",
     "firebase-admin": "^14.5.1",
     "jspdf": "^4.2.1",
+    "libphonenumber-js": "^1.13.17",
     "lucide-react": "^0.475.0",
     "motion": "^12.4.7",
     "next": "^16.2.6",

@@ -176,6 +176,53 @@ export interface TrackingTeaser {
   latestEvent?: LatestTrackingUpdate | null;
 }
 
+export type BookingPaymentStatus =
+  | "awaiting_payment"
+  | "paid"
+  | "pay_on_pickup"
+  | "failed"
+  | "expired"
+  | "refunded";
+
+export type BookingStatus =
+  | "awaiting_payment"
+  | "confirmed"
+  | "expired"
+  | "cancelled";
+
+export type BookingPaymentChannel = "pay_now" | "pay_on_delivery" | "card" | "bank_transfer" | "pay_on_pickup";
+
+export interface BookingRecord {
+  id: string;
+  code: string;
+  uid: string;
+  senderEmail: string;
+  receiverEmail: string;
+  service: ServiceTier;
+  weightKg: number;
+  declaredValue: number;
+  total: number;
+  currency: string;
+  paymentMethod: "Pay now" | "Pay on delivery" | "bachs" | "pay_on_pickup";
+  paymentChannel: BookingPaymentChannel;
+  paymentStatus: BookingPaymentStatus;
+  bookingStatus: BookingStatus;
+  environment?: "sandbox" | "live";
+  checkoutId?: string | null;
+  checkoutUrl?: string | null;
+  paymentId?: string | null;
+  paymentReference?: string | null;
+  checkoutExpiresAt?: number | null;
+  paidAt?: number | null;
+  refundedAt?: number | null;
+  refundId?: string | null;
+  lastError?: string | null;
+  idempotencyKey?: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+  createdAtMs?: number;
+}
+
 export interface ShipmentRecord {
   code: string;
   senderId: string;
@@ -190,6 +237,12 @@ export interface ShipmentRecord {
   declaredValue: number;
   priceTotal: number;
   paymentMethod: string;
+  bookingId?: string;
+  paymentStatus?: BookingPaymentStatus;
+  paymentReference?: string | null;
+  paymentId?: string | null;
+  checkoutExpiresAt?: number | null;
+  bookingStatus?: BookingStatus;
   status: ShipmentStage;
   eta: number;
   deliveredAt?: number | null;
@@ -279,6 +332,8 @@ export interface SecretMask {
 export interface AdminPaymentSettingsPublic {
   bachs: {
     environment: "sandbox" | "live";
+    sandboxProductId: string;
+    liveProductId: string;
     organizationId: string;
     defaultCurrency: string;
     checkoutExpiryMinutes: number;
@@ -320,6 +375,8 @@ export interface AdminPaymentSettingsPublic {
     primaryGateway: GatewayId;
     fallbackOrder: GatewayId[];
     offerChoice: boolean;
+    enableBachsBooking: boolean;
+    enablePayOnPickup: boolean;
   };
   updatedAt?: number | null;
   updatedBy?: string | null;

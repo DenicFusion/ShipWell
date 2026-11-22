@@ -1,21 +1,39 @@
-import { Bachs, webhooks as bachsWebhooks } from "@bachs/sdk";
+import crypto from "node:crypto";
 import { FieldValue, type Firestore } from "firebase-admin/firestore";
+import { parsePhoneNumberFromString } from "libphonenumber-js";
 import {
+  ADMIN_EMAIL,
   formatUsd,
+  generateTrackingCode,
   isValidTrackingCode,
+  normalizeEmail,
+  type BookingPaymentChannel,
+  type BookingRecord,
   type CustomsPaymentEvent,
   type CustomsPaymentInfo,
   type GatewayId,
+  type ServiceTier,
   type ShipmentAlert,
   type ShipmentRecord,
 } from "../../types/tracking.ts";
+import { createSignedInviteToken } from "../invites.ts";
+import {
+  COUNTRIES,
+  addBusinessDays,
+  calculateShippingPricing,
+  formatMoney,
+} from "../quote-engine.ts";
 import { dispatchTransactionalEmail } from "../email/sender.ts";
 import {
   buildChargePaidEmail,
   buildHoldReleasedEmail,
+  buildReceiverInviteEmail,
+  buildReceiverOnItsWayEmail,
+  buildSenderBookingEmail,
 } from "../email/templates.ts";
 import {
   AdminSdkUnavailableError,
+  getAdminAuth,
   getAdminDb,
   isAdminIamError,
   type VerifiedServerUser,
@@ -29,15 +47,479 @@ function getActiveBachsApiKey(
   return env === "live" ? secrets.bachsLiveKey : secrets.bachsSandboxKey;
 }
 
-function getBachsClient(apiKey: string, env: "sandbox" | "live"): Bachs {
-  return new Bachs({
-    apiKey,
-    environment: env === "live" ? "production" : "sandbox",
-  });
-}
-
 function getBachsBaseUrl(env: "sandbox" | "live"): string {
   return env === "live" ? "https://api.bachs.io" : "https://sandbox-api.bachs.io";
+}
+
+function getActiveBachsProductId(
+  env: "sandbox" | "live",
+  bachsSettings: { sandboxProductId?: string; liveProductId?: string }
+): string {
+  return String(
+    env === "live" ? bachsSettings.liveProductId || "" : bachsSettings.sandboxProductId || ""
+  ).trim();
+}
+
+interface BachsErrorBody {
+  detail?: unknown;
+  error_code?: string;
+  errors?: unknown;
+  message?: string;
+  error?: { message?: string };
+}
+
+async function bachsFetch<T>(
+  apiKey: string,
+  env: "sandbox" | "live",
+  apiPath: string,
+  init: {
+    method?: string;
+    body?: Record<string, unknown>;
+    idempotencyKey?: string;
+  } = {}
+): Promise<T> {
+  const url = `${getBachsBaseUrl(env)}${apiPath}`;
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+  };
+  if (init.idempotencyKey) {
+    headers["Idempotency-Key"] = init.idempotencyKey;
+  }
+
+  const res = await fetch(url, {
+    method: init.method || "GET",
+    headers,
+    ...(init.body ? { body: JSON.stringify(init.body) } : {}),
+  });
+
+  const text = await res.text();
+  let json: BachsErrorBody & T = {} as BachsErrorBody & T;
+  try {
+    if (text) json = JSON.parse(text) as BachsErrorBody & T;
+  } catch {
+    // non-JSON response
+  }
+
+  if (!res.ok) {
+    const detail =
+      typeof json.detail === "string"
+        ? json.detail
+        : json.detail
+          ? JSON.stringify(json.detail)
+          : json.message || json.error?.message || `Bachs API HTTP ${res.status}`;
+    console.error("[Bachs API Error]", {
+      path: apiPath,
+      status: res.status,
+      error_code: json.error_code,
+      detail,
+    });
+    const err = new Error(detail) as Error & {
+      status?: number;
+      errorCode?: string;
+      errors?: unknown;
+    };
+    err.status = res.status >= 400 && res.status < 500 ? 400 : 502;
+    err.errorCode = json.error_code;
+    err.errors = json.errors;
+    throw err;
+  }
+
+  return json;
+}
+
+interface BachsSessionResponse {
+  checkout_id?: string;
+  id?: string;
+  checkout_url?: string;
+  url?: string;
+  reference?: string;
+  expires_at?: string;
+  amount?: string | number;
+  amount_total?: string | number;
+  currency?: string;
+  status?: string;
+}
+
+export async function createBachsCheckoutSession(params: {
+  apiKey: string;
+  env: "sandbox" | "live";
+  productId: string;
+  amount: number;
+  customerEmail: string;
+  customerName?: string;
+  returnUrl: string;
+  cancelUrl: string;
+  reference: string;
+  metadata: Record<string, string>;
+  expiresInMinutes: number;
+  idempotencyKey: string;
+}): Promise<{
+  checkoutId: string;
+  checkoutUrl: string;
+  reference: string;
+  expiresAt: number;
+}> {
+  if (!params.productId) {
+    throw new Error(
+      `No Bachs ${params.env} product ID saved. Create a pay-what-you-want product in your Bachs dashboard and paste its product_id in Admin → Settings → Bachs.`
+    );
+  }
+
+  const basePayload = {
+    product_cart: [
+      {
+        product_id: params.productId,
+        quantity: 1,
+        amount: Number(params.amount).toFixed(2),
+      },
+    ],
+    customer: {
+      email: params.customerEmail,
+      ...(params.customerName ? { name: params.customerName } : {}),
+    },
+    cancel_url: params.cancelUrl,
+    reference: params.reference.slice(0, 128),
+    metadata: params.metadata,
+    expires_in_minutes: Math.min(1440, Math.max(5, Math.round(params.expiresInMinutes || 60))),
+  };
+
+  let created: BachsSessionResponse;
+  try {
+    created = await bachsFetch<BachsSessionResponse>(
+      params.apiKey,
+      params.env,
+      "/v1/checkout-sessions",
+      {
+        method: "POST",
+        body: { ...basePayload, return_url: params.returnUrl },
+        idempotencyKey: params.idempotencyKey,
+      }
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "";
+    if (/return_url/i.test(msg)) {
+      created = await bachsFetch<BachsSessionResponse>(
+        params.apiKey,
+        params.env,
+        "/v1/checkout-sessions",
+        {
+          method: "POST",
+          body: { ...basePayload, success_url: params.returnUrl },
+          idempotencyKey: `${params.idempotencyKey}_s`,
+        }
+      );
+    } else {
+      throw err;
+    }
+  }
+
+  const checkoutId = String(created.checkout_id || created.id || "").trim();
+  const checkoutUrl = String(created.checkout_url || created.url || "").trim();
+  if (!checkoutUrl) {
+    throw new Error("Bachs did not return a checkout URL.");
+  }
+
+  return {
+    checkoutId: checkoutId || params.reference,
+    checkoutUrl,
+    reference: String(created.reference || params.reference),
+    expiresAt:
+      Date.parse(String(created.expires_at || "")) ||
+      Date.now() + (params.expiresInMinutes || 60) * 60000,
+  };
+}
+
+function headerString(
+  headers: Record<string, string | string[] | undefined>,
+  name: string
+): string | null {
+  const target = name.toLowerCase();
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() !== target) continue;
+    if (Array.isArray(v)) {
+      if (v.length !== 1) return null;
+      return String(v[0] || "").trim() || null;
+    }
+    return typeof v === "string" && v.trim() ? v.trim() : null;
+  }
+  return null;
+}
+
+function extractHexCandidates(sigHeader: string): string[] {
+  const out: string[] = [];
+  for (const part of sigHeader.split(",")) {
+    const cleaned = part.trim();
+    if (!cleaned) continue;
+    const eqIdx = cleaned.indexOf("=");
+    const hex = (eqIdx >= 0 ? cleaned.slice(eqIdx + 1) : cleaned).trim().toLowerCase();
+    if (/^[a-f0-9]{64}$/.test(hex)) {
+      out.push(hex);
+    }
+  }
+  return out;
+}
+
+export interface VerifiedBachsWebhookEvent {
+  id: string;
+  type: string;
+  data: Record<string, unknown>;
+}
+
+export function verifyBachsWebhookSignature(
+  rawBody: Buffer | string,
+  headers: Record<string, string | string[] | undefined>,
+  candidateSecrets: string[]
+): VerifiedBachsWebhookEvent {
+  const tsHeader = headerString(headers, "x-bachs-timestamp");
+  const sigV1 = headerString(headers, "x-bachs-signature");
+  const sigV2 = headerString(headers, "x-bachs-signature-v2");
+
+  if (!tsHeader || (!sigV1 && !sigV2)) {
+    throw Object.assign(new Error("Missing Bachs webhook timestamp or signature header"), {
+      status: 400,
+    });
+  }
+
+  const tsNum = Number(tsHeader);
+  if (!Number.isFinite(tsNum) || tsNum <= 0) {
+    throw Object.assign(new Error("Invalid Bachs webhook timestamp header"), {
+      status: 400,
+    });
+  }
+  const tsSec = tsNum > 1e12 ? Math.floor(tsNum / 1000) : Math.floor(tsNum);
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (Math.abs(nowSec - tsSec) > 300) {
+    throw Object.assign(new Error("Bachs webhook timestamp expired (> 300s)"), {
+      status: 400,
+    });
+  }
+
+  const rawText = Buffer.isBuffer(rawBody) ? rawBody.toString("utf8") : String(rawBody || "");
+  const signedPayload = `${tsHeader}.${rawText}`;
+  const providedDigests = [
+    ...(sigV1 ? extractHexCandidates(sigV1) : []),
+    ...(sigV2 ? extractHexCandidates(sigV2) : []),
+  ];
+
+  if (providedDigests.length === 0) {
+    throw Object.assign(new Error("Malformed Bachs webhook signature"), {
+      status: 400,
+    });
+  }
+
+  let matched = false;
+  for (const secret of candidateSecrets) {
+    const cleanSecret = secret.trim();
+    if (!cleanSecret) continue;
+    const expectedHex = crypto
+      .createHmac("sha256", cleanSecret)
+      .update(signedPayload, "utf8")
+      .digest("hex")
+      .toLowerCase();
+    const expectedBuf = Buffer.from(expectedHex, "hex");
+    for (const digest of providedDigests) {
+      const providedBuf = Buffer.from(digest, "hex");
+      if (
+        providedBuf.length === expectedBuf.length &&
+        crypto.timingSafeEqual(providedBuf, expectedBuf)
+      ) {
+        matched = true;
+        break;
+      }
+    }
+    if (matched) break;
+  }
+
+  if (!matched) {
+    throw Object.assign(new Error("Invalid Bachs webhook signature"), {
+      status: 400,
+    });
+  }
+
+  let parsed: { id?: string; type?: string; data?: Record<string, unknown> };
+  try {
+    parsed = JSON.parse(rawText) as {
+      id?: string;
+      type?: string;
+      data?: Record<string, unknown>;
+    };
+  } catch {
+    throw Object.assign(new Error("Invalid JSON webhook body"), { status: 400 });
+  }
+
+  const eventId = String(parsed.id || `evt_${crypto.createHash("sha256").update(rawText).digest("hex").slice(0, 24)}`);
+  const eventType = String(parsed.type || "");
+  if (!eventType) {
+    throw Object.assign(new Error("Missing webhook event type"), { status: 400 });
+  }
+
+  return {
+    id: eventId,
+    type: eventType,
+    data: parsed.data && typeof parsed.data === "object" ? parsed.data : {},
+  };
+}
+
+async function resolveReceiverHasAccount(
+  db: Firestore,
+  receiverEmail: string
+): Promise<boolean> {
+  const cleanEmail = normalizeEmail(receiverEmail);
+  if (!cleanEmail) return false;
+  try {
+    const emailHash = crypto.createHash("sha256").update(cleanEmail).digest("hex");
+    const snap = await db.collection("accountStatus").doc(emailHash).get();
+    if (snap.exists) return true;
+  } catch {
+    // ignore
+  }
+  try {
+    await getAdminAuth().getUserByEmail(cleanEmail);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function dispatchBookingConfirmationEmails(params: {
+  db: Firestore;
+  shipment: ShipmentRecord;
+  baseUrl?: string;
+  actorUid: string;
+}): Promise<void> {
+  const { db, shipment, baseUrl, actorUid } = params;
+  const code = shipment.code;
+  const receiverEmail = normalizeEmail(shipment.receiverEmail);
+  const senderEmail = normalizeEmail(shipment.senderEmail);
+  const etaLabel = addBusinessDaysLabel(shipment.eta);
+  const totalFormatted = formatMoney(shipment.priceTotal || 0);
+  const senderFullName = shipment.sender?.name || "A ShipWell sender";
+  const receiverFullName = shipment.receiver?.name || "Recipient";
+  const originCity = shipment.sender?.city || "Origin";
+  const originCountry = shipment.sender?.country || "";
+  const destCity = shipment.receiver?.city || "Destination";
+
+  const hasAccount = await resolveReceiverHasAccount(db, receiverEmail);
+  const receiverFirst = receiverFullName.split(/\s+/)[0] || "there";
+  const { token, tokenHash } = createSignedInviteToken({
+    code,
+    receiverEmail,
+    receiverFirstName: receiverFirst,
+    senderFullName,
+  });
+
+  // 1. Receiver invite / on-its-way email (deduped)
+  if (receiverEmail.includes("@")) {
+    const dedupRef = db.collection("emailDedup").doc(`booking_rx_${code}`);
+    const alreadySent = await db
+      .runTransaction(async (tx) => {
+        const snap = await tx.get(dedupRef);
+        if (snap.exists) return true;
+        tx.set(dedupRef, {
+          to: receiverEmail,
+          code,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+        return false;
+      })
+      .catch(() => false);
+
+    if (!alreadySent) {
+      const payload = hasAccount
+        ? buildReceiverOnItsWayEmail({
+            baseUrl,
+            trackingCode: code,
+            senderFullName,
+            receiverFullName,
+            receiverEmail,
+            contents: shipment.contents || "Parcel",
+            originCity,
+            originCountry,
+            etaLabel,
+            inviteToken: token,
+          })
+        : buildReceiverInviteEmail({
+            baseUrl,
+            trackingCode: code,
+            senderFullName,
+            receiverFullName,
+            receiverEmail,
+            contents: shipment.contents || "Parcel",
+            originCity,
+            originCountry,
+            etaLabel,
+            inviteToken: token,
+          });
+
+      const res = await dispatchTransactionalEmail(receiverEmail, payload, {
+        template: hasAccount ? "on_its_way" : "invite",
+        code,
+        createdBy: actorUid,
+      });
+
+      await db
+        .collection("shipments")
+        .doc(code)
+        .collection("invites")
+        .add({
+          tokenHash,
+          receiverEmail,
+          template: hasAccount ? "on_its_way" : "invite",
+          status: res.status === "queued_preview" ? "queued_preview" : "sent",
+          emailCount: 1,
+          sentAt: Date.now(),
+          openedAt: null,
+          completedAt: null,
+          createdBy: actorUid,
+          createdAt: FieldValue.serverTimestamp(),
+        })
+        .catch(() => null);
+    }
+  }
+
+  // 2. Sender booking receipt (deduped)
+  if (senderEmail.includes("@")) {
+    const dedupRef = db.collection("emailDedup").doc(`booking_tx_${code}`);
+    const alreadySent = await db
+      .runTransaction(async (tx) => {
+        const snap = await tx.get(dedupRef);
+        if (snap.exists) return true;
+        tx.set(dedupRef, {
+          to: senderEmail,
+          code,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+        return false;
+      })
+      .catch(() => false);
+
+    if (!alreadySent) {
+      const payload = buildSenderBookingEmail({
+        baseUrl,
+        trackingCode: code,
+        senderFullName,
+        receiverFullName,
+        receiverEmail,
+        routeLabel: `${originCity} → ${destCity}`,
+        etaLabel,
+        totalFormatted,
+      });
+      await dispatchTransactionalEmail(senderEmail, payload, {
+        template: "sender_booking",
+        code,
+        createdBy: actorUid,
+      });
+    }
+  }
+}
+
+function addBusinessDaysLabel(etaMs: number): string {
+  return new Date(Number(etaMs || Date.now())).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 }
 
 export async function reconcileShipmentHoldAfterResolution(
@@ -64,7 +546,12 @@ export async function reconcileShipmentHoldAfterResolution(
   const remainingHoldAlerts = alertsSnap.docs.filter((d) => {
     if (opts.resolvedAlertId && d.id === opts.resolvedAlertId) return false;
     const data = d.data() as Partial<ShipmentAlert>;
-    return data.holdShipment === true || data.kind === "duty" || !shipment.hold?.alertId || shipment.hold?.alertId === d.id;
+    return (
+      data.holdShipment === true ||
+      data.kind === "duty" ||
+      !shipment.hold?.alertId ||
+      shipment.hold?.alertId === d.id
+    );
   });
 
   const remainingCount = alertsSnap.docs.filter(
@@ -106,8 +593,7 @@ export async function reconcileShipmentHoldAfterResolution(
   const now = Date.now();
   const evRef = shipRef.collection("events").doc();
   const loc =
-    shipment.nextStop?.loc ||
-    `${shipment.receiver?.city || "Destination"} Hub`;
+    shipment.nextStop?.loc || `${shipment.receiver?.city || "Destination"} Hub`;
   const batch = db.batch();
   batch.update(shipRef, {
     hold: null,
@@ -135,11 +621,7 @@ export async function reconcileShipmentHoldAfterResolution(
   await batch.commit();
 
   const { publicSettings } = await loadSettingsBundle();
-  const etaLabel = new Date(Number(shipment.eta || now)).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
+  const etaLabel = addBusinessDaysLabel(shipment.eta);
 
   const recipients = new Set<string>();
   if (shipment.receiverEmail) {
@@ -292,16 +774,14 @@ export async function createCustomsCheckout(params: {
             : "bachs";
 
   const baseOrigin = params.origin.replace(/\/+$/, "");
-  const successUrl = `${baseOrigin}/dashboard/track/${encodeURIComponent(
+  const returnUrl = `${baseOrigin}/dashboard/track/${encodeURIComponent(
     code
   )}?paid=1&alertId=${encodeURIComponent(alertId)}`;
   const cancelUrl = `${baseOrigin}/dashboard/track/${encodeURIComponent(
     code
   )}?cancelled=1&alertId=${encodeURIComponent(alertId)}`;
 
-  const reference = `SW-${code}-${alertId.slice(0, 6).toUpperCase()}-${Date.now()
-    .toString(36)
-    .toUpperCase()}`;
+  const reference = `chg_${code}_${alertId}`.slice(0, 128);
 
   const payerEmail =
     params.actor.email ||
@@ -316,7 +796,7 @@ export async function createCustomsCheckout(params: {
   if (chosenGateway === "stripe") {
     const bodyParams = new URLSearchParams({
       mode: "payment",
-      success_url: successUrl,
+      success_url: returnUrl,
       cancel_url: cancelUrl,
       customer_email: payerEmail,
       "line_items[0][price_data][currency]": currency.toLowerCase(),
@@ -386,8 +866,8 @@ export async function createCustomsCheckout(params: {
           email: payerEmail,
           amount: Math.round(amount * 100),
           currency,
-          reference,
-          callback_url: successUrl,
+          reference: `${reference}_${Date.now().toString(36)}`,
+          callback_url: returnUrl,
           metadata: {
             trackingCode: code,
             alertId,
@@ -436,42 +916,36 @@ export async function createCustomsCheckout(params: {
     };
   }
 
-  // Primary: Bachs Checkout
   const env = publicSettings.bachs.environment;
   const apiKey = getActiveBachsApiKey(env, secrets);
   if (!apiKey) {
     throw new Error(
-      `Bachs ${env} secret key is not configured yet. Save it in Admin → Settings → Bachs payments.`
+      `Bachs ${env} secret key is not configured yet. Save it in Admin → Settings → Bachs.`
     );
   }
+  const productId = getActiveBachsProductId(env, publicSettings.bachs);
+  const idempotencyKey = `cust_${code}_${alertId}_${Date.now()}`;
 
-  const bachs = getBachsClient(apiKey, env);
-  const minuteBucket = Math.floor(Date.now() / 60000);
-  const idempotencyKey = `cust_${code}_${alertId}_${minuteBucket}`;
-
-  const created = await bachs.checkoutSessions.create(
-    {
-      pricing: {
-        currency,
-        amount: amount.toFixed(2),
-      },
-      customer: {
-        email: payerEmail,
-        name: payerName,
-      },
-      reference,
-      metadata: {
-        trackingCode: code,
-        alertId,
-        chargeType: String(alert.chargeType || alert.title || "Customs charge"),
-        payerUid: params.actor.uid,
-      },
-      success_url: successUrl,
-      cancel_url: cancelUrl,
-      expires_in_minutes: publicSettings.bachs.checkoutExpiryMinutes || 60,
+  const created = await createBachsCheckoutSession({
+    apiKey,
+    env,
+    productId,
+    amount,
+    customerEmail: payerEmail,
+    customerName: payerName,
+    returnUrl,
+    cancelUrl,
+    reference,
+    metadata: {
+      kind: "customs",
+      trackingCode: code,
+      alertId,
+      chargeType: String(alert.chargeType || alert.title || "Customs charge"),
+      uid: params.actor.uid,
     },
-    { idempotencyKey }
-  );
+    expiresInMinutes: publicSettings.bachs.checkoutExpiryMinutes || 60,
+    idempotencyKey,
+  });
 
   const prevEvents: CustomsPaymentEvent[] = Array.isArray(alert.payment?.events)
     ? alert.payment.events
@@ -479,20 +953,18 @@ export async function createCustomsCheckout(params: {
   const paymentDoc: CustomsPaymentInfo = {
     provider: "bachs",
     environment: env,
-    checkoutId: created.checkout_id,
-    checkoutUrl: created.checkout_url,
-    reference: created.reference || reference,
+    checkoutId: created.checkoutId,
+    checkoutUrl: created.checkoutUrl,
+    reference: created.reference,
     status: "pending",
     currency,
-    expiresAt:
-      Date.parse(created.expires_at) ||
-      Date.now() + (publicSettings.bachs.checkoutExpiryMinutes || 60) * 60000,
+    expiresAt: created.expiresAt,
     events: [
       ...prevEvents,
       {
         type: "checkout.created",
         at: Date.now(),
-        detail: `${env} checkout ${created.checkout_id}`,
+        detail: `${env} checkout ${created.checkoutId}`,
       },
     ],
   };
@@ -500,11 +972,333 @@ export async function createCustomsCheckout(params: {
   await alertSnap.ref.update({ payment: paymentDoc });
 
   return {
-    checkoutUrl: created.checkout_url,
-    checkoutId: created.checkout_id,
-    reference: created.reference || reference,
+    checkoutUrl: created.checkoutUrl,
+    checkoutId: created.checkoutId,
+    reference: created.reference,
     provider: "bachs",
     environment: env,
+  };
+}
+
+export async function getCheckoutOptions() {
+  const { publicSettings, secrets } = await loadSettingsBundle();
+  const env = publicSettings.bachs.environment;
+  const apiKey = getActiveBachsApiKey(env, secrets);
+  const productId = getActiveBachsProductId(env, publicSettings.bachs);
+  return {
+    bachsEnabled: publicSettings.routing.enableBachsBooking !== false,
+    bachsConfigured: Boolean(apiKey && productId),
+    payOnPickupEnabled: publicSettings.routing.enablePayOnPickup !== false,
+    environment: env,
+    currency: publicSettings.bachs.defaultCurrency || "USD",
+  };
+}
+
+export interface CreateBookingInput {
+  idempotencyKey?: string;
+  senderName: string;
+  senderEmail: string;
+  senderPhone: string;
+  senderAddress: string;
+  senderCity: string;
+  senderPostal?: string;
+  senderCountry: string;
+  receiverName: string;
+  receiverEmail: string;
+  receiverPhone: string;
+  receiverAddress: string;
+  receiverCity: string;
+  receiverPostal?: string;
+  receiverCountry: string;
+  service: ServiceTier;
+  weightKg: number;
+  packageType: string;
+  contents: string;
+  declaredValue: number;
+  photos: string[];
+  paymentChannel: BookingPaymentChannel;
+}
+
+export async function createServerBooking(params: {
+  actor: VerifiedServerUser;
+  body: CreateBookingInput;
+  origin: string;
+}): Promise<{
+  ok: boolean;
+  code: string;
+  bookingId: string;
+  total: number;
+  currency: string;
+  paymentMethod: "bachs" | "pay_on_pickup";
+  paymentStatus: BookingRecord["paymentStatus"];
+  checkoutUrl?: string | null;
+  checkoutId?: string | null;
+}> {
+  const { actor, body, origin } = params;
+  let db: Firestore;
+  try {
+    db = getAdminDb();
+  } catch (err) {
+    if (isAdminIamError(err)) {
+      throw new AdminSdkUnavailableError(
+        "Creating bookings requires Firebase Admin SDK access on your Blaze-plan project."
+      );
+    }
+    throw err;
+  }
+
+  const rawIdem = String(body.idempotencyKey || "").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64);
+  const bookingId = rawIdem.length >= 8 ? rawIdem : `bk_${crypto.randomBytes(8).toString("hex")}`;
+  const bookingRef = db.collection("bookings").doc(bookingId);
+
+  // Return existing booking cleanly on duplicate request / double-click
+  const existingBookingSnap = await bookingRef.get();
+  if (existingBookingSnap.exists) {
+    const existing = existingBookingSnap.data() as BookingRecord;
+    if (existing.uid !== actor.uid && !actor.isAdmin) {
+      throw Object.assign(new Error("Booking reference mismatch."), { status: 403 });
+    }
+    return {
+      ok: true,
+      code: existing.code,
+      bookingId: existing.id,
+      total: existing.total,
+      currency: existing.currency,
+      paymentMethod: existing.paymentMethod,
+      paymentStatus: existing.paymentStatus,
+      checkoutUrl: existing.checkoutUrl || null,
+      checkoutId: existing.checkoutId || null,
+    };
+  }
+
+  const senderName = String(body.senderName || "").trim();
+  const senderEmail = normalizeEmail(body.senderEmail || actor.email);
+  const senderAddress = String(body.senderAddress || "").trim();
+  const senderCity = String(body.senderCity || "").trim();
+  const senderCountry = String(body.senderCountry || "").trim();
+
+  const receiverName = String(body.receiverName || "").trim();
+  const receiverEmail = normalizeEmail(body.receiverEmail || "");
+  const receiverAddress = String(body.receiverAddress || "").trim();
+  const receiverCity = String(body.receiverCity || "").trim();
+  const receiverCountry = String(body.receiverCountry || "").trim();
+
+  if (!senderName || !senderEmail.includes("@") || !senderAddress || !senderCity || !COUNTRIES.includes(senderCountry)) {
+    throw Object.assign(new Error("Please complete all required sender details."), { status: 400 });
+  }
+  if (!receiverName || !receiverEmail.includes("@") || !receiverAddress || !receiverCity || !COUNTRIES.includes(receiverCountry)) {
+    throw Object.assign(new Error("Please complete all required receiver details."), { status: 400 });
+  }
+
+  const parsedSenderPhone = parsePhoneNumberFromString(String(body.senderPhone || "").trim());
+  if (!parsedSenderPhone || !parsedSenderPhone.isValid()) {
+    throw Object.assign(new Error("Enter a valid sender phone number with country code."), { status: 400 });
+  }
+  const parsedReceiverPhone = parsePhoneNumberFromString(String(body.receiverPhone || "").trim());
+  if (!parsedReceiverPhone || !parsedReceiverPhone.isValid()) {
+    throw Object.assign(new Error("Enter a valid receiver phone number with country code."), { status: 400 });
+  }
+
+  const contents = String(body.contents || "").trim().slice(0, 240);
+  const packageType = String(body.packageType || "Parcel").trim().slice(0, 60);
+  const weightKg = Number(body.weightKg);
+  const declaredValue = Math.max(0, Number(body.declaredValue) || 0);
+  const service: ServiceTier =
+    body.service === "economy" || body.service === "express" || body.service === "standard"
+      ? body.service
+      : "standard";
+
+  if (!contents || !Number.isFinite(weightKg) || weightKg < 0.1 || weightKg > 50000) {
+    throw Object.assign(new Error("Enter valid parcel contents and weight (0.1–50,000 kg)."), { status: 400 });
+  }
+
+  const photos = Array.isArray(body.photos)
+    ? body.photos.filter((u): u is string => typeof u === "string" && /^https?:\/\//i.test(u)).slice(0, 4)
+    : [];
+  if (photos.length === 0) {
+    throw Object.assign(new Error("At least 1 uploaded item photo is required."), { status: 400 });
+  }
+
+  const rawMethod = String(body.paymentMethod || body.paymentChannel || "").trim().toLowerCase();
+  const isPayOnDelivery =
+    rawMethod.includes("delivery") ||
+    rawMethod.includes("pickup") ||
+    rawMethod.includes("later");
+  const isPayOnPickup = isPayOnDelivery;
+
+  const paymentMethodLabel = isPayOnDelivery ? "Pay on delivery" : "Pay now";
+  const channel: BookingPaymentChannel = isPayOnDelivery ? "pay_on_delivery" : "pay_now";
+
+  // Strictly calculate price on the server
+  const quote = calculateShippingPricing(
+    senderCountry,
+    receiverCountry,
+    weightKg,
+    declaredValue,
+    service
+  );
+  const currency = (publicSettings.bachs.defaultCurrency || "USD").toUpperCase();
+  const env = publicSettings.bachs.environment;
+  const now = Date.now();
+  const eta = addBusinessDays(now, quote.days[1]).getTime();
+  const code = generateTrackingCode();
+  const reference = `booking_${bookingId}`;
+
+  const checkoutId: string | null = null;
+  const checkoutUrl: string | null = null;
+  const checkoutExpiresAt: number | null = null;
+
+  const bookingDoc: BookingRecord = {
+    id: bookingId,
+    code,
+    uid: actor.uid,
+    senderEmail,
+    receiverEmail,
+    service,
+    weightKg,
+    declaredValue,
+    total: quote.total,
+    currency,
+    paymentMethod: paymentMethodLabel,
+    paymentChannel: channel,
+    paymentStatus: isPayOnDelivery ? "pay_on_delivery" : "paid",
+    bookingStatus: "confirmed",
+    environment: env,
+    checkoutId,
+    checkoutUrl,
+    paymentReference: reference,
+    checkoutExpiresAt,
+    idempotencyKey: bookingId,
+    createdAtMs: now,
+  };
+
+  const shipmentDoc: ShipmentRecord = {
+    code,
+    senderId: actor.uid,
+    senderEmail,
+    receiverEmail,
+    sender: {
+      name: senderName,
+      email: senderEmail,
+      phone: parsedSenderPhone.formatInternational(),
+      address: senderAddress,
+      city: senderCity,
+      postal: String(body.senderPostal || "").trim(),
+      country: senderCountry,
+    },
+    receiver: {
+      name: receiverName,
+      email: receiverEmail,
+      phone: parsedReceiverPhone.formatInternational(),
+      address: receiverAddress,
+      city: receiverCity,
+      postal: String(body.receiverPostal || "").trim(),
+      country: receiverCountry,
+    },
+    service,
+    weightKg,
+    packageType,
+    contents,
+    declaredValue,
+    priceTotal: quote.total,
+    paymentMethod:
+      channel === "pay_on_pickup"
+        ? "Pay on pickup"
+        : channel === "bank_transfer"
+          ? "Bank transfer (Bachs)"
+          : "Card (Bachs)",
+    bookingId,
+    paymentStatus: isPayOnPickup ? "pay_on_pickup" : "awaiting_payment",
+    paymentReference: reference,
+    checkoutExpiresAt,
+    bookingStatus: isPayOnPickup ? "confirmed" : "awaiting_payment",
+    status: "Booked",
+    eta,
+    photos,
+    hold: null,
+    nextStop: {
+      label: isPayOnPickup
+        ? "Awaiting item review & pickup dispatch"
+        : "Awaiting booking payment confirmation",
+      loc: `${senderCity} Origin`,
+      eta: now + 86400000,
+    },
+    review: {
+      state: "pending",
+      note: "",
+    },
+  };
+
+  const eventLabel = isPayOnPickup
+    ? "Booked (pay on pickup)"
+    : "Booking started — awaiting payment";
+  const eventNote = isPayOnPickup
+    ? `Parcel ${code} booked with Pay on pickup ($${quote.total.toFixed(2)} due at collection).`
+    : `Booking checkout created for ${formatMoney(quote.total)} via Bachs.`;
+
+  const batch = db.batch();
+  batch.set(bookingRef, {
+    ...bookingDoc,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  batch.set(db.collection("shipments").doc(code), {
+    ...shipmentDoc,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  batch.set(db.collection("trackingTeasers").doc(code), {
+    code,
+    senderId: actor.uid,
+    status: "Booked",
+    holdType: null,
+    originCity: senderCity,
+    originCountry: senderCountry,
+    destinationCity: receiverCity,
+    destinationCountry: receiverCountry,
+    service,
+    weightKg,
+    contents,
+    eta,
+    latestEvent: {
+      label: eventLabel,
+      loc: `${senderCity}, ${senderCountry}`,
+      ts: now,
+    },
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  batch.set(db.collection("shipments").doc(code).collection("events").doc(), {
+    stage: "Booked",
+    label: eventLabel,
+    loc: `${senderCity}, ${senderCountry}`,
+    note: eventNote,
+    kind: "info",
+    ts: now,
+    createdBy: senderName || actor.email,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  await batch.commit();
+
+  if (isPayOnPickup) {
+    await dispatchBookingConfirmationEmails({
+      db,
+      shipment: shipmentDoc,
+      baseUrl: origin,
+      actorUid: actor.uid,
+    });
+  }
+
+  return {
+    ok: true,
+    code,
+    bookingId,
+    total: quote.total,
+    currency,
+    paymentMethod,
+    paymentStatus: bookingDoc.paymentStatus,
+    checkoutUrl,
+    checkoutId,
   };
 }
 
@@ -512,7 +1306,13 @@ export async function handleBachsWebhook(
   rawBody: Buffer | string,
   headers: Record<string, string | string[] | undefined>,
   baseUrl?: string
-): Promise<{ ok: boolean; eventId: string; eventType: string; duplicate?: boolean }> {
+): Promise<{
+  received: true;
+  ok: boolean;
+  eventId: string;
+  eventType: string;
+  duplicate?: boolean;
+}> {
   const { publicSettings, secrets } = await loadSettingsBundle();
   const env = publicSettings.bachs.environment;
   const candidateSecrets = [
@@ -545,22 +1345,15 @@ export async function handleBachsWebhook(
       })
       .catch(() => null);
     throw Object.assign(new Error("Webhook secret not configured"), {
-      status: 401,
+      status: 400,
     });
   }
 
-  let verifiedEvent: ReturnType<typeof bachsWebhooks.constructEvent> | null = null;
-  let lastError = "Invalid webhook signature";
-  for (const secret of candidateSecrets) {
-    try {
-      verifiedEvent = bachsWebhooks.constructEvent(rawBody, headers, secret);
-      break;
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : "Invalid signature";
-    }
-  }
-
-  if (!verifiedEvent) {
+  let verifiedEvent: VerifiedBachsWebhookEvent;
+  try {
+    verifiedEvent = verifyBachsWebhookSignature(rawBody, headers, candidateSecrets);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : "Invalid signature";
     await db
       .collection("webhookLogs")
       .add({
@@ -568,14 +1361,12 @@ export async function handleBachsWebhook(
         eventType: "signature_error",
         reference: "",
         result: "rejected-signature",
-        detail: lastError.slice(0, 300),
+        detail: detail.slice(0, 300),
         environment: env,
         ts: Date.now(),
       })
       .catch(() => null);
-    throw Object.assign(new Error("Invalid Bachs webhook signature"), {
-      status: 401,
-    });
+    throw err;
   }
 
   const dataObj = verifiedEvent.data || {};
@@ -583,27 +1374,28 @@ export async function handleBachsWebhook(
     dataObj.metadata && typeof dataObj.metadata === "object"
       ? (dataObj.metadata as Record<string, unknown>)
       : {};
-  const code = String(meta.trackingCode || "").trim().toUpperCase();
+  const code = String(meta.trackingCode || meta.shipment || "").trim().toUpperCase();
   const alertId = String(meta.alertId || "").trim();
   const checkoutId = String(dataObj.checkout_id || dataObj.id || "").trim();
-  const paymentId = String(dataObj.payment_id || dataObj.charge_id || checkoutId || "").trim();
-  const reference = String(dataObj.reference || meta.reference || checkoutId || "").trim();
+  const paymentId = String(
+    dataObj.payment_id || dataObj.charge_id || checkoutId || ""
+  ).trim();
+  const reference = String(
+    dataObj.reference || meta.reference || checkoutId || ""
+  ).trim();
 
-  // Always bump lastWebhookAt timestamp
+  const bookingId = String(
+    meta.bookingId ||
+      (reference.startsWith("booking_") ? reference.slice("booking_".length) : "")
+  ).trim();
+  const isBookingWebhook = meta.kind === "booking" || Boolean(bookingId);
+
   await db
     .collection("adminSettings")
     .doc("payments")
-    .set(
-      {
-        bachs: {
-          lastWebhookAt: Date.now(),
-        },
-      },
-      { merge: true }
-    )
+    .set({ bachs: { lastWebhookAt: Date.now() } }, { merge: true })
     .catch(() => null);
 
-  // Admin test webhook short-circuit
   if (meta.is_test === true || meta.is_test === "true") {
     await db.collection("webhookLogs").add({
       provider: "bachs",
@@ -614,21 +1406,25 @@ export async function handleBachsWebhook(
       environment: env,
       ts: Date.now(),
     });
-    return { ok: true, eventId: verifiedEvent.id, eventType: verifiedEvent.type };
+    return {
+      received: true,
+      ok: true,
+      eventId: verifiedEvent.id,
+      eventType: verifiedEvent.type,
+    };
   }
 
   // Deduplicate event ID in transaction
   const dedupeRef = db.collection("bachsEvents").doc(verifiedEvent.id);
   const alreadyProcessed = await db.runTransaction(async (tx) => {
     const snap = await tx.get(dedupeRef);
-    if (snap.exists) {
-      return true;
-    }
+    if (snap.exists) return true;
     tx.set(dedupeRef, {
       eventId: verifiedEvent.id,
       type: verifiedEvent.type,
       code: code || null,
       alertId: alertId || null,
+      bookingId: bookingId || null,
       processedAt: FieldValue.serverTimestamp(),
     });
     return false;
@@ -638,13 +1434,14 @@ export async function handleBachsWebhook(
     await db.collection("webhookLogs").add({
       provider: "bachs",
       eventType: verifiedEvent.type,
-      reference: reference || code,
+      reference: reference || code || bookingId,
       result: "duplicate",
       detail: `Duplicate event ${verifiedEvent.id} ignored`,
       environment: env,
       ts: Date.now(),
     });
     return {
+      received: true,
       ok: true,
       eventId: verifiedEvent.id,
       eventType: verifiedEvent.type,
@@ -652,17 +1449,231 @@ export async function handleBachsWebhook(
     };
   }
 
+  const t = verifiedEvent.type.toLowerCase();
+
+  // ── 1. PARCEL BOOKING CHECKOUT WEBHOOK ──
+  if (isBookingWebhook && bookingId) {
+    const bookingRef = db.collection("bookings").doc(bookingId);
+    const bookingSnap = await bookingRef.get();
+    if (!bookingSnap.exists) {
+      await db.collection("webhookLogs").add({
+        provider: "bachs",
+        eventType: verifiedEvent.type,
+        reference: reference || bookingId,
+        result: "ignored",
+        detail: "Target booking record not found",
+        environment: env,
+        ts: Date.now(),
+      });
+      return {
+        received: true,
+        ok: true,
+        eventId: verifiedEvent.id,
+        eventType: verifiedEvent.type,
+      };
+    }
+
+    const booking = bookingSnap.data() as BookingRecord;
+    const shipCode = booking.code || code;
+    const shipRef = db.collection("shipments").doc(shipCode);
+    const teaserRef = db.collection("trackingTeasers").doc(shipCode);
+    const shipSnap = await shipRef.get();
+    const shipment = shipSnap.exists ? (shipSnap.data() as ShipmentRecord) : null;
+
+    if (
+      t === "collection.succeeded" ||
+      t === "payment.succeeded" ||
+      t === "checkout.session.completed"
+    ) {
+      const targetEnv = booking.environment || env;
+      const apiKey = getActiveBachsApiKey(targetEnv, secrets);
+      let verifiedAmount = Number(dataObj.amount || booking.total || 0);
+      let verifiedCurrency = String(
+        dataObj.currency || booking.currency || "USD"
+      ).toUpperCase();
+
+      if (apiKey && checkoutId) {
+        const sess = await bachsFetch<BachsSessionResponse>(
+          apiKey,
+          targetEnv,
+          `/v1/checkout-sessions/${encodeURIComponent(checkoutId)}`
+        );
+        if (sess.amount != null) verifiedAmount = Number(sess.amount);
+        else if (sess.amount_total != null) verifiedAmount = Number(sess.amount_total);
+        if (sess.currency) verifiedCurrency = String(sess.currency).toUpperCase();
+      }
+
+      if (
+        Math.abs(verifiedAmount - Number(booking.total || 0)) > 0.05 ||
+        verifiedCurrency !== String(booking.currency || "USD").toUpperCase()
+      ) {
+        await bookingRef.update({
+          paymentStatus: "failed",
+          lastError: `Amount mismatch: received ${verifiedCurrency} ${verifiedAmount}, expected ${booking.currency} ${booking.total}`,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        await db.collection("webhookLogs").add({
+          provider: "bachs",
+          eventType: verifiedEvent.type,
+          reference: `${shipCode}/${bookingId}`,
+          result: "error",
+          detail: "Booking amount/currency mismatch",
+          environment: targetEnv,
+          ts: Date.now(),
+        });
+        return {
+          received: true,
+          ok: true,
+          eventId: verifiedEvent.id,
+          eventType: verifiedEvent.type,
+        };
+      }
+
+      const now = Date.now();
+      const batch = db.batch();
+      batch.update(bookingRef, {
+        paymentStatus: "paid",
+        bookingStatus: "confirmed",
+        paymentId: paymentId || reference,
+        paymentReference: reference || booking.paymentReference || null,
+        paidAt: now,
+        lastError: null,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      if (shipSnap.exists) {
+        batch.update(shipRef, {
+          paymentStatus: "paid",
+          bookingStatus: "confirmed",
+          paymentId: paymentId || reference,
+          paymentReference: reference || booking.paymentReference || null,
+          "nextStop.label": "Awaiting item review & pickup dispatch",
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        batch.update(teaserRef, {
+          latestEvent: {
+            label: "Booking confirmed",
+            loc: `${shipment?.sender?.city || "Origin Hub"}`,
+            ts: now,
+          },
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        batch.set(shipRef.collection("events").doc(), {
+          stage: "Booked",
+          label: "Booking confirmed",
+          loc: `${shipment?.sender?.city || "Origin Hub"}`,
+          note: `Payment confirmed (${formatUsd(verifiedAmount, verifiedCurrency)} via Bachs · ${paymentId || reference}).`,
+          kind: "info",
+          ts: now,
+          createdBy: "Bachs webhook",
+          createdAt: FieldValue.serverTimestamp(),
+        });
+      }
+      await batch.commit();
+
+      if (shipment) {
+        await dispatchBookingConfirmationEmails({
+          db,
+          shipment,
+          baseUrl,
+          actorUid: booking.uid || "bachs-webhook",
+        });
+      }
+
+      await db.collection("webhookLogs").add({
+        provider: "bachs",
+        eventType: verifiedEvent.type,
+        reference: `${shipCode}/${bookingId}`,
+        result: "processed",
+        detail: `Booking ${shipCode} paid (${formatUsd(verifiedAmount, verifiedCurrency)})`,
+        environment: targetEnv,
+        ts: now,
+      });
+    } else if (
+      t === "collection.failed" ||
+      t === "collection.abandoned" ||
+      t === "checkout.expired" ||
+      t === "checkout.session.expired"
+    ) {
+      const isExp = t.includes("expired");
+      await bookingRef.update({
+        paymentStatus: isExp ? "expired" : "failed",
+        bookingStatus: isExp ? "expired" : "awaiting_payment",
+        lastError: isExp
+          ? "Checkout expired after 60 minutes without payment."
+          : "Payment attempt did not complete.",
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      if (shipSnap.exists) {
+        await shipRef.update({
+          paymentStatus: isExp ? "expired" : "failed",
+          bookingStatus: isExp ? "expired" : "awaiting_payment",
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+      await db.collection("webhookLogs").add({
+        provider: "bachs",
+        eventType: verifiedEvent.type,
+        reference: `${shipCode}/${bookingId}`,
+        result: "processed",
+        detail: `Booking payment ${t}`,
+        environment: env,
+        ts: Date.now(),
+      });
+    } else if (
+      t === "refund.succeeded" ||
+      t === "refund.paid" ||
+      t === "collection.refunded"
+    ) {
+      const now = Date.now();
+      await bookingRef.update({
+        paymentStatus: "refunded",
+        bookingStatus: "cancelled",
+        refundedAt: now,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      if (shipSnap.exists) {
+        await shipRef.update({
+          paymentStatus: "refunded",
+          bookingStatus: "cancelled",
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+      await db.collection("webhookLogs").add({
+        provider: "bachs",
+        eventType: verifiedEvent.type,
+        reference: `${shipCode}/${bookingId}`,
+        result: "processed",
+        detail: `Booking refunded`,
+        environment: env,
+        ts: now,
+      });
+    }
+
+    return {
+      received: true,
+      ok: true,
+      eventId: verifiedEvent.id,
+      eventType: verifiedEvent.type,
+    };
+  }
+
+  // ── 2. CUSTOMS / DUTY ALERT WEBHOOK ──
   if (!isValidTrackingCode(code) || !alertId) {
     await db.collection("webhookLogs").add({
       provider: "bachs",
       eventType: verifiedEvent.type,
       reference: reference || verifiedEvent.id,
       result: "ignored",
-      detail: "Webhook event did not reference a valid shipment customs alert",
+      detail: "Webhook event did not match a shipment booking or customs charge",
       environment: env,
       ts: Date.now(),
     });
-    return { ok: true, eventId: verifiedEvent.id, eventType: verifiedEvent.type };
+    return {
+      received: true,
+      ok: true,
+      eventId: verifiedEvent.id,
+      eventType: verifiedEvent.type,
+    };
   }
 
   const shipRef = db.collection("shipments").doc(code);
@@ -679,7 +1690,12 @@ export async function handleBachsWebhook(
       environment: env,
       ts: Date.now(),
     });
-    return { ok: true, eventId: verifiedEvent.id, eventType: verifiedEvent.type };
+    return {
+      received: true,
+      ok: true,
+      eventId: verifiedEvent.id,
+      eventType: verifiedEvent.type,
+    };
   }
 
   const shipment = shipSnap.data() as ShipmentRecord;
@@ -687,18 +1703,14 @@ export async function handleBachsWebhook(
   const prevEvents: CustomsPaymentEvent[] = Array.isArray(alert.payment?.events)
     ? alert.payment.events
     : [];
-  const t = verifiedEvent.type.toLowerCase();
 
   if (
     t === "collection.succeeded" ||
     t === "payment.succeeded" ||
     t === "checkout.session.completed"
   ) {
-    // Double-check session directly with Bachs API if key available
-    const apiKey = getActiveBachsApiKey(
-      alert.payment?.environment || env,
-      secrets
-    );
+    const targetEnv = alert.payment?.environment || env;
+    const apiKey = getActiveBachsApiKey(targetEnv, secrets);
     let verifiedAmount = Number(dataObj.amount || alert.amount || 0);
     let verifiedCurrency = String(
       dataObj.currency || alert.currency || "USD"
@@ -706,13 +1718,15 @@ export async function handleBachsWebhook(
 
     if (apiKey && checkoutId) {
       try {
-        const bachs = getBachsClient(
+        const session = await bachsFetch<BachsSessionResponse>(
           apiKey,
-          alert.payment?.environment || env
+          targetEnv,
+          `/v1/checkout-sessions/${encodeURIComponent(checkoutId)}`
         );
-        const session = await bachs.checkoutSessions.get(checkoutId);
-        if (session.amount) {
+        if (session.amount != null) {
           verifiedAmount = Number(session.amount);
+        } else if (session.amount_total != null) {
+          verifiedAmount = Number(session.amount_total);
         }
         if (session.currency) {
           verifiedCurrency = String(session.currency).toUpperCase();
@@ -760,7 +1774,12 @@ export async function handleBachsWebhook(
         environment: env,
         ts: Date.now(),
       });
-      return { ok: true, eventId: verifiedEvent.id, eventType: verifiedEvent.type };
+      return {
+        received: true,
+        ok: true,
+        eventId: verifiedEvent.id,
+        eventType: verifiedEvent.type,
+      };
     }
 
     const now = Date.now();
@@ -771,7 +1790,7 @@ export async function handleBachsWebhook(
       payment: {
         ...(alert.payment || {}),
         provider: "bachs",
-        environment: alert.payment?.environment || env,
+        environment: targetEnv,
         checkoutId: checkoutId || alert.payment?.checkoutId || null,
         paymentId: paymentId || reference,
         reference: reference || alert.payment?.reference || null,
@@ -813,7 +1832,6 @@ export async function handleBachsWebhook(
         resolvedAlertId: alertId,
       });
 
-    // Notify receiver & sender
     if (shipment.receiverEmail) {
       await dispatchTransactionalEmail(
         shipment.receiverEmail,
@@ -849,6 +1867,25 @@ export async function handleBachsWebhook(
         { template: "charge_paid", code, createdBy: "bachs-webhook" }
       );
     }
+    if (
+      publicSettings.resend.supportInbox &&
+      publicSettings.resend.supportInbox.toLowerCase() !== shipment.receiverEmail?.toLowerCase()
+    ) {
+      await dispatchTransactionalEmail(
+        publicSettings.resend.supportInbox,
+        buildChargePaidEmail({
+          baseUrl,
+          trackingCode: code,
+          recipientName: "ShipWell Support",
+          chargeType: chargeName,
+          amountFormatted: amtFormatted,
+          paymentId: paymentId || reference || code,
+          holdReleased,
+          remainingCount,
+        }),
+        { template: "charge_paid_ops", code, createdBy: "bachs-webhook" }
+      );
+    }
 
     await db.collection("webhookLogs").add({
       provider: "bachs",
@@ -862,7 +1899,7 @@ export async function handleBachsWebhook(
   } else if (t === "collection.underpaid") {
     await alertRef.update({
       "payment.status": "underpaid",
-      "payment.lastError": "Underpaid — remaining balance required",
+      "payment.lastError": "Underpaid — remaining balance due",
       "payment.events": [
         ...prevEvents,
         { type: verifiedEvent.type, at: Date.now(), detail: "Underpaid" },
@@ -880,14 +1917,14 @@ export async function handleBachsWebhook(
   } else if (
     t === "collection.failed" ||
     t === "collection.abandoned" ||
+    t === "checkout.expired" ||
     t === "checkout.session.expired"
   ) {
     await alertRef.update({
       "payment.status": "failed",
-      "payment.lastError":
-        t === "checkout.session.expired"
-          ? "Checkout link expired — click Pay with Bachs to generate a fresh session."
-          : "Payment attempt did not complete.",
+      "payment.lastError": t.includes("expired")
+        ? "Checkout link expired — click Pay with Bachs to generate a fresh session."
+        : "Payment attempt did not complete.",
       "payment.events": [
         ...prevEvents,
         { type: verifiedEvent.type, at: Date.now(), detail: t },
@@ -902,7 +1939,11 @@ export async function handleBachsWebhook(
       environment: env,
       ts: Date.now(),
     });
-  } else if (t === "refund.succeeded" || t === "collection.refunded") {
+  } else if (
+    t === "refund.succeeded" ||
+    t === "refund.paid" ||
+    t === "collection.refunded"
+  ) {
     const now = Date.now();
     await alertRef.update({
       "payment.status": "refunded",
@@ -933,14 +1974,19 @@ export async function handleBachsWebhook(
     });
   }
 
-  return { ok: true, eventId: verifiedEvent.id, eventType: verifiedEvent.type };
+  return {
+    received: true,
+    ok: true,
+    eventId: verifiedEvent.id,
+    eventType: verifiedEvent.type,
+  };
 }
 
 export async function testBachsConnection(): Promise<{
   ok: boolean;
   environment: "sandbox" | "live";
   accountId?: string;
-  totalBalanceUsd?: string;
+  productReady?: boolean;
   error?: string;
 }> {
   const { publicSettings, secrets } = await loadSettingsBundle();
@@ -953,14 +1999,32 @@ export async function testBachsConnection(): Promise<{
       error: `No Bachs ${env} secret key saved yet.`,
     };
   }
+  const productId = getActiveBachsProductId(env, publicSettings.bachs);
   try {
-    const bachs = getBachsClient(apiKey, env);
-    const balances = await bachs.balances.get();
+    if (productId) {
+      const prod = await bachsFetch<{
+        id?: string;
+        product_id?: string;
+        custom_amount_enabled?: boolean;
+        price_type?: string;
+      }>(apiKey, env, `/v1/products/${encodeURIComponent(productId)}`);
+      return {
+        ok: true,
+        environment: env,
+        accountId: String(prod.product_id || prod.id || productId),
+        productReady: prod.custom_amount_enabled !== false,
+      };
+    }
+    const list = await bachsFetch<{ items?: unknown[]; data?: unknown[] }>(
+      apiKey,
+      env,
+      "/v1/products?limit=1"
+    );
     return {
       ok: true,
       environment: env,
-      accountId: balances.account_id,
-      totalBalanceUsd: balances.total_balance_usd,
+      accountId: `API connected (${Array.isArray(list.items || list.data) ? "products accessible" : "ok"})`,
+      productReady: false,
     };
   } catch (err) {
     return {
@@ -985,32 +2049,28 @@ export async function createBachsTestCheckout(
   if (!apiKey) {
     throw new Error(`No Bachs ${env} secret key saved yet.`);
   }
-  const bachs = getBachsClient(apiKey, env);
+  const productId = getActiveBachsProductId(env, publicSettings.bachs);
   const baseOrigin = origin.replace(/\/+$/, "");
-  const created = await bachs.checkoutSessions.create(
-    {
-      pricing: {
-        currency: publicSettings.bachs.defaultCurrency || "USD",
-        amount: "1.00",
-      },
-      customer: {
-        email: actor.email || "ops@shipwell.cc",
-        name: "ShipWell Admin Test",
-      },
-      reference: `SW-TEST-${Date.now().toString(36).toUpperCase()}`,
-      metadata: {
-        is_test: "true",
-        actorUid: actor.uid,
-      },
-      success_url: `${baseOrigin}/admin/settings?test_paid=1`,
-      cancel_url: `${baseOrigin}/admin/settings?test_cancelled=1`,
-      expires_in_minutes: 15,
+  const created = await createBachsCheckoutSession({
+    apiKey,
+    env,
+    productId,
+    amount: 1.0,
+    customerEmail: actor.email || ADMIN_EMAIL,
+    customerName: "ShipWell Admin Test",
+    returnUrl: `${baseOrigin}/admin/settings?test_paid=1`,
+    cancelUrl: `${baseOrigin}/admin/settings?test_cancelled=1`,
+    reference: `SW-TEST-${Date.now().toString(36).toUpperCase()}`,
+    metadata: {
+      is_test: "true",
+      actorUid: actor.uid,
     },
-    { idempotencyKey: `admin_test_${Date.now()}` }
-  );
+    expiresInMinutes: 15,
+    idempotencyKey: `admin_test_${Date.now()}`,
+  });
   return {
-    checkoutId: created.checkout_id,
-    checkoutUrl: created.checkout_url,
+    checkoutId: created.checkoutId,
+    checkoutUrl: created.checkoutUrl,
     environment: env,
   };
 }
@@ -1045,34 +2105,19 @@ export async function issueCustomsRefund(params: {
     throw new Error(`No Bachs ${env} secret key configured for refund.`);
   }
 
-  const refundRes = await fetch(`${getBachsBaseUrl(env)}/v1/refunds`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      payment_id: alert.payment.paymentId,
-      amount: Number(alert.payment.amountPaid || alert.amount).toFixed(2),
-      reason: params.reason || `Admin refund on ${code}`,
-    }),
-  });
-
-  const refundJson = (await refundRes.json().catch(() => ({}))) as {
+  const refundJson = await bachsFetch<{
     refund_id?: string;
     id?: string;
     status?: string;
-    message?: string;
-    error?: { message?: string };
-  };
-
-  if (!refundRes.ok) {
-    throw new Error(
-      refundJson.error?.message ||
-        refundJson.message ||
-        `Bachs refund endpoint returned HTTP ${refundRes.status}`
-    );
-  }
+  }>(apiKey, env, "/v1/refunds", {
+    method: "POST",
+    body: {
+      payment_id: alert.payment.paymentId,
+      amount: Number(alert.payment.amountPaid || alert.amount).toFixed(2),
+      reason: params.reason || `Admin refund on ${code}`,
+    },
+    idempotencyKey: `ref_${code}_${alertId}_${Date.now()}`,
+  });
 
   const refundId =
     refundJson.refund_id || refundJson.id || `ref_${Date.now().toString(36)}`;
@@ -1123,4 +2168,138 @@ export async function issueCustomsRefund(params: {
     refundId,
     status: refundJson.status || "refunded",
   };
+}
+
+export async function adminBookingAction(params: {
+  actor: VerifiedServerUser;
+  code: string;
+  action: "mark_pickup_paid" | "refund_booking";
+  reason?: string;
+}): Promise<{ ok: boolean; status: string; refundId?: string }> {
+  const code = String(params.code || "").trim().toUpperCase();
+  if (!isValidTrackingCode(code)) {
+    throw new Error("Valid tracking code is required.");
+  }
+
+  const db = getAdminDb();
+  const shipRef = db.collection("shipments").doc(code);
+  const shipSnap = await shipRef.get();
+  if (!shipSnap.exists) {
+    throw new Error("Shipment not found.");
+  }
+  const shipment = shipSnap.data() as ShipmentRecord;
+  const now = Date.now();
+  const bookingRef = shipment.bookingId
+    ? db.collection("bookings").doc(shipment.bookingId)
+    : null;
+
+  if (params.action === "mark_pickup_paid") {
+    const batch = db.batch();
+    batch.update(shipRef, {
+      paymentStatus: "paid",
+      bookingStatus: "confirmed",
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    if (bookingRef) {
+      const bSnap = await bookingRef.get();
+      if (bSnap.exists) {
+        batch.update(bookingRef, {
+          paymentStatus: "paid",
+          bookingStatus: "confirmed",
+          paidAt: now,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+    }
+    batch.set(shipRef.collection("events").doc(), {
+      stage: shipment.status,
+      label: `Pickup payment received (${formatMoney(shipment.priceTotal || 0)})`,
+      loc: shipment.nextStop?.loc || shipment.sender?.city || "Collection Point",
+      note: `Cash/pickup payment confirmed by ${params.actor.email}.`,
+      kind: "info",
+      ts: now,
+      createdBy: params.actor.email,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    batch.set(db.collection("auditLogs").doc(), {
+      actorUid: params.actor.uid,
+      actorEmail: params.actor.email,
+      action: "mark_pickup_paid",
+      code,
+      detail: `Marked pay-on-pickup settled (${formatMoney(shipment.priceTotal || 0)})`,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    await batch.commit();
+    return { ok: true, status: "paid" };
+  }
+
+  // Refund booking
+  if (shipment.paymentStatus !== "paid") {
+    throw new Error("Only paid bookings can be refunded.");
+  }
+
+  let refundId = `ref_${Date.now().toString(36)}`;
+  if (shipment.paymentId) {
+    const bData = bookingRef ? ((await bookingRef.get()).data() as BookingRecord | undefined) : undefined;
+    const { publicSettings, secrets } = await loadSettingsBundle();
+    const env = bData?.environment || publicSettings.bachs.environment;
+    const apiKey = getActiveBachsApiKey(env, secrets);
+    if (!apiKey) {
+      throw new Error(`No Bachs ${env} secret key configured to process refund.`);
+    }
+    const rJson = await bachsFetch<{ refund_id?: string; id?: string }>(
+      apiKey,
+      env,
+      "/v1/refunds",
+      {
+        method: "POST",
+        body: {
+          payment_id: shipment.paymentId,
+          amount: Number(shipment.priceTotal || 0).toFixed(2),
+          reason: params.reason || `Booking refund on ${code}`,
+        },
+        idempotencyKey: `ref_bk_${code}_${now}`,
+      }
+    );
+    refundId = rJson.refund_id || rJson.id || refundId;
+  }
+
+  const batch = db.batch();
+  batch.update(shipRef, {
+    paymentStatus: "refunded",
+    bookingStatus: "cancelled",
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  if (bookingRef) {
+    const bSnap = await bookingRef.get();
+    if (bSnap.exists) {
+      batch.update(bookingRef, {
+        paymentStatus: "refunded",
+        bookingStatus: "cancelled",
+        refundId,
+        refundedAt: now,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    }
+  }
+  batch.set(shipRef.collection("events").doc(), {
+    stage: shipment.status,
+    label: "Booking refunded",
+    loc: "ShipWell Billing",
+    note: `Booking refund ${refundId} issued by ${params.actor.email}.`,
+    kind: "info",
+    ts: now,
+    createdBy: params.actor.email,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  batch.set(db.collection("auditLogs").doc(), {
+    actorUid: params.actor.uid,
+    actorEmail: params.actor.email,
+    action: "refund_booking",
+    code,
+    detail: `Refunded booking ${code} (${refundId})`,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  await batch.commit();
+  return { ok: true, status: "refunded", refundId };
 }

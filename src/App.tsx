@@ -76,6 +76,8 @@ export default function App() {
             <Route path="/dashboard/support" element={<DashboardPage section="support" />} />
             <Route path="/dashboard/support/new" element={<DashboardPage section="support" />} />
             <Route path="/dashboard/support/:threadId" element={<DashboardPage section="support" />} />
+            <Route path="/dashboard/quote" element={<DashboardPage section="quote" />} />
+            <Route path="/dashboard/ship" element={<DashboardPage section="ship" />} />
             <Route path="/dashboard/account" element={<DashboardPage section="account" />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/auth/login" element={<LoginPage />} />

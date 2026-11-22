@@ -28,12 +28,12 @@ import { formatTrackingCode } from "@/types/tracking";
 import toast from "react-hot-toast";
 
 const TICKER_ITEMS = [
-  { code: "SW-20261116-A8F4B2C1", lane: "LOS → LHR", status: "Out for Delivery", tone: "" },
-  { code: "SW-20261117-C3D9E102", lane: "ACC → FRA", status: "In Transit · Frankfurt Hub", tone: "b" },
+  { code: "SW-20261116-A8F4B2C1", lane: "JFK → LHR", status: "Out for Delivery", tone: "" },
+  { code: "SW-20261117-C3D9E102", lane: "YYZ → FRA", status: "In Transit · Frankfurt Hub", tone: "b" },
   { code: "SW-20261115-99F01B4A", lane: "DXB → JFK", status: "Customs Cleared", tone: "" },
-  { code: "SW-20261118-71C22E8D", lane: "JNB → AMS", status: "Priority Air Dispatched", tone: "b" },
+  { code: "SW-20261118-71C22E8D", lane: "SYD → AMS", status: "Priority Air Dispatched", tone: "b" },
   { code: "SW-20261114-4A198D0C", lane: "BOM → SIN", status: "Delivered · Signed", tone: "" },
-  { code: "SW-20261119-E5209F7B", lane: "YYZ → LHR", status: "Courier Collection Scheduled", tone: "a" },
+  { code: "SW-20261119-E5209F7B", lane: "CDG → LHR", status: "Courier Collection Scheduled", tone: "a" },
 ];
 
 const PARTNER_LOGOS = [
@@ -56,7 +56,7 @@ export default function HomePage() {
   const handleShipLinkClick = (e: React.MouseEvent) => {
     if (!user) {
       e.preventDefault();
-      requireAuthForShip("/ship");
+      requireAuthForShip("/dashboard/ship");
     }
   };
 
@@ -224,7 +224,7 @@ export default function HomePage() {
                   textAnchor="middle"
                   fontWeight="600"
                 >
-                  Accra
+                  New York
                 </text>
                 <text
                   x="556"
@@ -244,7 +244,7 @@ export default function HomePage() {
                 </div>
                 <div>
                   <small>Distance</small>
-                  <b>5,090 km</b>
+                  <b>5,570 km</b>
                 </div>
                 <div>
                   <small>Service</small>
@@ -278,7 +278,7 @@ export default function HomePage() {
               viewport={{ once: true }}
               transition={{ duration: 0.45 }}
             >
-              <Link className="qac" to="/ship" onClick={handleShipLinkClick}>
+              <Link className="qac" to={user ? "/dashboard/ship" : "/ship"} onClick={handleShipLinkClick}>
                 <span className="go">
                   <ArrowUpRight className="w-5 h-5" />
                 </span>
@@ -404,7 +404,7 @@ export default function HomePage() {
                 <span className="more">Talk to sales →</span>
               </Link>
 
-              <Link className="sc" to="/ship" onClick={handleShipLinkClick}>
+              <Link className="sc" to={user ? "/dashboard/ship" : "/ship"} onClick={handleShipLinkClick}>
                 <div className="num">05</div>
                 <div className="si">
                   <MapPin className="w-[26px] h-[26px]" />
@@ -618,8 +618,8 @@ export default function HomePage() {
                 <div className="who">
                   <div className="av">JM</div>
                   <div>
-                    <b>James Mensah</b>
-                    <small>Head of Imports · Meridian Trade, Accra</small>
+                    <b>James Mercer</b>
+                    <small>Head of Imports · Meridian Trade, London</small>
                   </div>
                 </div>
               </div>
@@ -633,10 +633,10 @@ export default function HomePage() {
                   arrive in one clean statement.
                 </p>
                 <div className="who">
-                  <div className="av">SO</div>
+                  <div className="av">HA</div>
                   <div>
-                    <b>Sarah Okonkwo</b>
-                    <small>E-commerce Director · Nova Retail, Lagos</small>
+                    <b>Hannah Abbott</b>
+                    <small>E-commerce Director · Northstar Retail, Toronto</small>
                   </div>
                 </div>
               </div>

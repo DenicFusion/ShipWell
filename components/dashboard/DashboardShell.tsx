@@ -1,7 +1,8 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   Bell,
+  DollarSign,
   Home,
   LayoutGrid,
   Lock,
@@ -24,6 +25,8 @@ export type DashboardSection =
   | "track"
   | "alerts"
   | "support"
+  | "quote"
+  | "ship"
   | "account";
 
 export function DashboardShell({
@@ -50,6 +53,17 @@ export function DashboardShell({
   const navigate = useNavigate();
   const location = useLocation();
   const [quickCode, setQuickCode] = useState("");
+
+  useEffect(() => {
+    if (!authReady || !user) {
+      document.body.classList.remove("dashmode");
+      return;
+    }
+    document.body.classList.add("dashmode");
+    return () => {
+      document.body.classList.remove("dashmode");
+    };
+  }, [authReady, user]);
 
   const handleQuickTrack = (e: React.FormEvent) => {
     e.preventDefault();
@@ -159,30 +173,37 @@ export function DashboardShell({
   }[] = [
     {
       key: "overview",
-      label: "Overview",
+      label: "Home",
       href: "/dashboard",
       icon: <LayoutGrid className="w-[19px] h-[19px]" />,
       count: 0,
     },
     {
       key: "incoming",
-      label: "On Its Way To You",
+      label: "Incoming",
       href: "/dashboard/incoming",
       icon: <Home className="w-[19px] h-[19px]" />,
       count: incomingActiveCount,
     },
     {
       key: "sent",
-      label: "Sent By You",
+      label: "Sent",
       href: "/dashboard/sent",
       icon: <Truck className="w-[19px] h-[19px]" />,
       count: sentCount,
     },
     {
       key: "track",
-      label: "Track a Parcel",
+      label: "Track",
       href: "/dashboard/track",
       icon: <Search className="w-[19px] h-[19px]" />,
+      count: 0,
+    },
+    {
+      key: "quote",
+      label: "Get a Quote",
+      href: "/dashboard/quote",
+      icon: <DollarSign className="w-[19px] h-[19px]" />,
       count: 0,
     },
     {
@@ -238,13 +259,6 @@ export function DashboardShell({
       href: "/dashboard/sent",
       icon: <Truck className="w-[22px] h-[22px]" />,
       count: 0,
-    },
-    {
-      key: "alerts",
-      label: "Actions",
-      href: "/dashboard/alerts",
-      icon: <Bell className="w-[22px] h-[22px]" />,
-      count: openAlertsCount,
     },
     {
       key: "support",
@@ -306,7 +320,7 @@ export function DashboardShell({
             Book a pickup in under a minute and add item photos for the
             receiver.
           </p>
-          <Link className="sw-btn sw-btn-em" to="/ship">
+          <Link className="sw-btn sw-btn-em" to="/dashboard/ship">
             <Plus className="w-4 h-4" />
             Ship a parcel
           </Link>
@@ -377,17 +391,6 @@ export function DashboardShell({
             />
             <button type="submit">Track</button>
           </form>
-
-          <Link
-            className="dx-ib"
-            to="/dashboard/support"
-            aria-label="Support messages"
-          >
-            <span className="ic">
-              <MessageSquare className="w-[19px] h-[19px]" />
-            </span>
-            {unreadSupportCount > 0 && <em>{unreadSupportCount}</em>}
-          </Link>
 
           <Link
             className="dx-ib"

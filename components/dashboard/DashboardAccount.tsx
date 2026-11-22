@@ -4,6 +4,8 @@ import { updateProfile, type User } from "firebase/auth";
 import toast from "react-hot-toast";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
 import { ThemeSwitch } from "@/components/ThemeSwitch";
+import { PhoneField } from "@/components/PhoneField";
+import { validateInternationalPhone } from "@/lib/phone";
 import { updateUserAccountProfile } from "@/lib/firestore-shipments";
 import {
   firestoreTimeToMs,
@@ -59,12 +61,21 @@ export function DashboardAccount({
       setError("Please enter your name");
       return;
     }
+    let cleanPhone = phone.trim();
+    if (cleanPhone) {
+      const parsed = validateInternationalPhone(cleanPhone);
+      if (!parsed.valid) {
+        setError(parsed.error || "Please enter a valid phone number.");
+        return;
+      }
+      cleanPhone = parsed.e164;
+    }
     setSaving(true);
     try {
       await updateUserAccountProfile({
         uid: user.uid,
         name: name.trim(),
-        phone: phone.trim(),
+        phone: cleanPhone,
       });
       await updateProfile(user, { displayName: name.trim() }).catch(() => null);
       await refreshProfile();
@@ -131,20 +142,12 @@ export function DashboardAccount({
               autoComplete="name"
             />
           </div>
-          <div className="fw">
-            <label className="lbl" htmlFor="dxPhone">
-              Phone
-            </label>
-            <input
-              className="field"
-              id="dxPhone"
-              name="phone"
-              value={phone}
-              onChange={(e) => setDraftPhone(e.target.value)}
-              autoComplete="tel"
-              placeholder="+234 ..."
-            />
-          </div>
+          <PhoneField
+            id="dxPhone"
+            label="Phone"
+            value={phone}
+            onChange={(nextVal) => setDraftPhone(nextVal)}
+          />
           <div className="fw">
             <label className="lbl" htmlFor="dxEmail">
               Email

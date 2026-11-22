@@ -72,6 +72,29 @@ export function distanceKm(a: PlaceInfo, b: PlaceInfo): number {
   return 2 * R * Math.asin(Math.sqrt(h));
 }
 
+export function getDefaultOriginCountry(): string {
+  if (typeof window === "undefined") return "United States";
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+    if (/Europe\/London/i.test(tz)) return "United Kingdom";
+    if (/Europe\/Berlin/i.test(tz)) return "Germany";
+    if (/Europe\/Paris/i.test(tz)) return "France";
+    if (/Asia\/Dubai/i.test(tz)) return "United Arab Emirates";
+    if (/Australia\//i.test(tz)) return "Australia";
+    if (/Asia\/Tokyo/i.test(tz)) return "Japan";
+    if (/Asia\/Shanghai/i.test(tz)) return "China";
+    if (/Asia\/(Kolkata|Calcutta)/i.test(tz)) return "India";
+    if (/America\/(Toronto|Vancouver|Montreal|Edmonton|Winnipeg|Halifax)/i.test(tz)) return "Canada";
+    if (/Africa\/Lagos/i.test(tz)) return "Nigeria";
+    if (/Africa\/Accra/i.test(tz)) return "Ghana";
+    if (/Africa\/Johannesburg/i.test(tz)) return "South Africa";
+    if (/Africa\/Nairobi/i.test(tz)) return "Kenya";
+  } catch {
+    // ignore
+  }
+  return "United States";
+}
+
 export function calculateShippingPricing(
   from: string,
   to: string,
@@ -79,8 +102,8 @@ export function calculateShippingPricing(
   declaredValue: number,
   svc: ServiceTier
 ): ShippingQuote {
-  const A = PLACES[from] ?? PLACES.Nigeria;
-  const B = PLACES[to] ?? PLACES.Germany;
+  const A = PLACES[from] ?? PLACES["United States"];
+  const B = PLACES[to] ?? PLACES["United Kingdom"];
   const intl = from !== to;
   const dist = intl ? distanceKm(A, B) : 120;
   const perKg = 1.9 + dist / 3800;

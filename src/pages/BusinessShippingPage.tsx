@@ -315,7 +315,7 @@ export default function BusinessShippingPage() {
                   </div>
                   <div>
                     <Globe className="w-[18px] h-[18px] text-[var(--blue)]" />
-                    Offices in Lagos, London, Dubai &amp; Singapore
+                    Offices in New York, London, Dubai &amp; Singapore
                   </div>
                 </div>
               </div>
@@ -395,7 +395,7 @@ export default function BusinessShippingPage() {
                           className="field"
                           value={name}
                           onChange={(e) => setName(e.target.value)}
-                          placeholder="Adaeze Okafor"
+                          placeholder="John Doe"
                           required
                         />
                       </div>
@@ -466,7 +466,7 @@ export default function BusinessShippingPage() {
                         className="field"
                         value={message}
                         onChange={(e) => setMessage(e.target.value)}
-                        placeholder="e.g. Fashion exports from Lagos to the UK and UAE, ~400 parcels a month"
+                        placeholder="e.g. Apparel exports from New York to the UK and EU, ~400 parcels a month"
                       />
                     </div>
 

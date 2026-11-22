@@ -167,8 +167,10 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'code', 'senderId', 'senderEmail', 'receiverEmail', 'sender', 'receiver',
           'service', 'weightKg', 'packageType', 'contents', 'declaredValue',
-          'priceTotal', 'paymentMethod', 'status', 'eta', 'photos', 'hold',
-          'nextStop', 'review', 'deliveredAt', 'createdAt', 'updatedAt'
+          'priceTotal', 'paymentMethod', 'bookingId', 'paymentStatus',
+          'paymentReference', 'paymentId', 'checkoutExpiresAt', 'bookingStatus',
+          'status', 'eta', 'photos', 'hold', 'nextStop', 'review',
+          'deliveredAt', 'createdAt', 'updatedAt'
         ])
         && data.code == code
         && isValidTrackingCode(data.code)
@@ -184,6 +186,12 @@ service cloud.firestore {
         && data.declaredValue is number && data.declaredValue >= 0
         && data.priceTotal is number && data.priceTotal >= 0
         && data.paymentMethod is string && data.paymentMethod.size() > 0 && data.paymentMethod.size() <= 40
+        && (!data.keys().hasAny(['bookingId']) || data.bookingId == null || (data.bookingId is string && data.bookingId.size() <= 128))
+        && (!data.keys().hasAny(['paymentStatus']) || data.paymentStatus in ['awaiting_payment', 'paid', 'pay_on_pickup', 'failed', 'expired', 'refunded'])
+        && (!data.keys().hasAny(['paymentReference']) || data.paymentReference == null || (data.paymentReference is string && data.paymentReference.size() <= 160))
+        && (!data.keys().hasAny(['paymentId']) || data.paymentId == null || (data.paymentId is string && data.paymentId.size() <= 160))
+        && (!data.keys().hasAny(['checkoutExpiresAt']) || data.checkoutExpiresAt == null || data.checkoutExpiresAt is number)
+        && (!data.keys().hasAny(['bookingStatus']) || data.bookingStatus in ['awaiting_payment', 'confirmed', 'expired', 'cancelled'])
         && isValidStage(data.status)
         && data.eta is number
         && data.photos is list && data.photos.size() >= 1 && data.photos.size() <= 4
@@ -355,6 +363,7 @@ service cloud.firestore {
                     && (incoming().senderId == request.auth.uid || isAdmin())
                     && incoming().status == 'Booked'
                     && incoming().review.state == 'pending'
+                    && (!incoming().keys().hasAny(['paymentStatus']) || incoming().paymentStatus != 'paid')
                     && incoming().createdAt == request.time
                     && incoming().updatedAt == request.time;
 
@@ -518,6 +527,12 @@ service cloud.firestore {
 
     match /webhookLogs/{logId} {
       allow get, list: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /bookings/{bookingId} {
+      allow get: if isValidId(bookingId) && isSignedIn() && (isAdmin() || existing().uid == request.auth.uid);
+      allow list: if isSignedIn() && (isAdmin() || existing().uid == request.auth.uid);
       allow create, update, delete: if false;
     }
   }

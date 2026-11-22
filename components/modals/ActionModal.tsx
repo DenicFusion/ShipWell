@@ -20,6 +20,7 @@ import {
 import { resolveShipmentAlert } from "@/lib/firestore-shipments";
 import { uploadIdAttachment } from "@/lib/storage";
 import { auth } from "@/lib/firebase";
+import { openBachsOverlay } from "@/lib/bachs-overlay";
 import { formatMoney, formatShortDay } from "@/lib/quote-engine";
 import toast from "react-hot-toast";
 
@@ -101,7 +102,21 @@ export function ActionModal({
             data.error || "Unable to create hosted payment session."
           );
         }
-        window.location.href = data.checkoutUrl;
+        await openBachsOverlay(data.checkoutUrl, (eventType) => {
+          if (eventType === "checkout.completed") {
+            setBusy(false);
+            toast.success("Payment received — confirming with carrier...");
+            onClose();
+          } else if (
+            eventType === "checkout.failed" ||
+            eventType === "checkout.error"
+          ) {
+            setBusy(false);
+            setError("Payment was not completed. Please try again.");
+          } else if (eventType === "checkout.closed") {
+            setBusy(false);
+          }
+        });
       } catch (err) {
         setError(
           err instanceof Error

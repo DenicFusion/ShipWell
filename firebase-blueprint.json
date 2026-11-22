@@ -76,6 +76,18 @@
         "declaredValue": { "type": "number" },
         "priceTotal": { "type": "number" },
         "paymentMethod": { "type": "string", "maxLength": 40 },
+        "bookingId": { "type": "string", "maxLength": 128 },
+        "paymentStatus": {
+          "type": "string",
+          "enum": ["awaiting_payment", "paid", "pay_on_pickup", "failed", "expired", "refunded"]
+        },
+        "paymentReference": { "type": "string", "maxLength": 160 },
+        "paymentId": { "type": "string", "maxLength": 160 },
+        "checkoutExpiresAt": { "type": "number" },
+        "bookingStatus": {
+          "type": "string",
+          "enum": ["awaiting_payment", "confirmed", "expired", "cancelled"]
+        },
         "status": {
           "type": "string",
           "enum": ["Booked", "Picked Up", "In Transit", "At Hub", "Customs", "Out for Delivery", "Delivered"]
@@ -93,6 +105,44 @@
         "service", "weightKg", "packageType", "contents", "declaredValue",
         "priceTotal", "paymentMethod", "status", "eta", "photos", "review",
         "createdAt", "updatedAt"
+      ]
+    },
+    "Booking": {
+      "title": "Booking",
+      "description": "Server-authoritative parcel booking and payment checkout session.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "code": { "type": "string", "pattern": "^SW-\\d{8}-[A-F0-9]{8}$", "maxLength": 20 },
+        "uid": { "type": "string", "maxLength": 128 },
+        "senderEmail": { "type": "string", "format": "email", "maxLength": 160 },
+        "receiverEmail": { "type": "string", "format": "email", "maxLength": 160 },
+        "service": { "type": "string", "enum": ["economy", "standard", "express"] },
+        "weightKg": { "type": "number" },
+        "declaredValue": { "type": "number" },
+        "total": { "type": "number" },
+        "currency": { "type": "string", "maxLength": 8 },
+        "paymentMethod": { "type": "string", "enum": ["bachs", "pay_on_pickup"] },
+        "paymentChannel": { "type": "string", "enum": ["card", "bank_transfer", "pay_on_pickup"] },
+        "paymentStatus": {
+          "type": "string",
+          "enum": ["awaiting_payment", "paid", "pay_on_pickup", "failed", "expired", "refunded"]
+        },
+        "bookingStatus": {
+          "type": "string",
+          "enum": ["awaiting_payment", "confirmed", "expired", "cancelled"]
+        },
+        "checkoutId": { "type": "string", "maxLength": 160 },
+        "checkoutUrl": { "type": "string", "maxLength": 1024 },
+        "paymentId": { "type": "string", "maxLength": 160 },
+        "paymentReference": { "type": "string", "maxLength": 160 },
+        "checkoutExpiresAt": { "type": "number" },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      },
+      "required": [
+        "id", "code", "uid", "service", "weightKg", "total", "currency",
+        "paymentMethod", "paymentStatus", "bookingStatus"
       ]
     },
     "TrackingEvent": {
@@ -355,6 +405,10 @@
     "webhookLogs/{logId}": {
       "schema": { "$ref": "WebhookEventLog" },
       "description": "Webhook verification history visible to admins."
+    },
+    "bookings/{bookingId}": {
+      "schema": { "$ref": "Booking" },
+      "description": "Server-managed parcel bookings and payment checkout status."
     }
   }
 }

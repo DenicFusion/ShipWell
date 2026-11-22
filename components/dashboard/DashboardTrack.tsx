@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import type { User } from "firebase/auth";
 import {
   AlertTriangle,
@@ -7,10 +7,12 @@ import {
   Box,
   Calendar,
   Check,
+  CheckCircle2,
   Copy,
   CreditCard,
   Eye,
   Home,
+  Loader2,
   Lock,
   MapPin,
   Search,
@@ -301,8 +303,79 @@ function FullTrackedContent({
   const receiverOnShipWell = Boolean(receiverStatusMap[recEmail]);
   const reversedEvents = useMemo(() => [...events].reverse(), [events]);
 
+  const [searchParams] = useSearchParams();
+  const isBookingRedirect =
+    searchParams.get("paid") === "1" && searchParams.get("booking") === "1";
+
+  const paymentChip = useMemo(() => {
+    const ps = shipment.paymentStatus;
+    if (!ps) return null;
+    if (ps === "paid") return { tone: "g", label: "Booking paid" };
+    if (ps === "pay_on_pickup") return { tone: "b", label: "Pay on pickup" };
+    if (ps === "refunded") return { tone: "n", label: "Booking refunded" };
+    return { tone: "a", label: "Awaiting payment" };
+  }, [shipment.paymentStatus]);
+
   return (
     <>
+      {isBookingRedirect && (
+        <div
+          className={`dxt-hold ${
+            shipment.paymentStatus === "paid" ? "" : ""
+          }`}
+          style={{
+            borderColor:
+              shipment.paymentStatus === "paid"
+                ? "rgb(var(--em-rgb) / 0.35)"
+                : shipment.paymentStatus === "pay_on_pickup"
+                  ? "rgb(var(--blue-rgb) / 0.35)"
+                  : "rgb(var(--amber-rgb) / 0.4)",
+            background:
+              shipment.paymentStatus === "paid"
+                ? "rgb(var(--em-rgb) / 0.08)"
+                : shipment.paymentStatus === "pay_on_pickup"
+                  ? "rgb(var(--blue-rgb) / 0.08)"
+                  : "rgb(var(--amber-rgb) / 0.08)",
+          }}
+        >
+          <span
+            className="ic"
+            style={{
+              color:
+                shipment.paymentStatus === "paid"
+                  ? "var(--em)"
+                  : shipment.paymentStatus === "pay_on_pickup"
+                    ? "var(--blue)"
+                    : "var(--amber)",
+            }}
+          >
+            {shipment.paymentStatus === "paid" ? (
+              <CheckCircle2 className="w-5 h-5" />
+            ) : shipment.paymentStatus === "pay_on_pickup" ? (
+              <Truck className="w-5 h-5" />
+            ) : (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            )}
+          </span>
+          <div>
+            <b>
+              {shipment.paymentStatus === "paid"
+                ? "Payment confirmed — shipment booked"
+                : shipment.paymentStatus === "pay_on_pickup"
+                  ? "Booking confirmed — pay at pickup"
+                  : "Confirming your payment…"}
+            </b>
+            <small>
+              {shipment.paymentStatus === "paid"
+                ? "Your payment has been verified and the recipient has been notified."
+                : shipment.paymentStatus === "pay_on_pickup"
+                  ? "Courier collection is booked. Payment is collected at pickup."
+                  : "Waiting for live webhook confirmation from Bachs. This updates automatically."}
+            </small>
+          </div>
+        </div>
+      )}
+
       {openAlerts.map((al) => (
         <div key={al.id} className="dx-alert">
           <div className="ai">
@@ -340,6 +413,11 @@ function FullTrackedContent({
               }}
             >
               <span className={`chip ${chip.tone}`}>{chip.label}</span>
+              {paymentChip && (
+                <span className={`chip ${paymentChip.tone}`}>
+                  {paymentChip.label}
+                </span>
+              )}
               <span className="dx-code">
                 {shipment.code}
                 <button

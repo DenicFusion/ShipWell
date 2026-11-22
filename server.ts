@@ -19,11 +19,15 @@ import {
 import { checkRateLimit, dispatchTransactionalEmail } from "./lib/email/sender.ts";
 import { COUNTRIES, calculateShippingPricing } from "./lib/quote-engine.ts";
 import {
+  adminBookingAction,
   createBachsTestCheckout,
   createCustomsCheckout,
+  createServerBooking,
+  getCheckoutOptions,
   handleBachsWebhook,
   issueCustomsRefund,
   testBachsConnection,
+  type CreateBookingInput,
 } from "./lib/server/bachs.ts";
 import {
   AdminSdkUnavailableError,
@@ -182,8 +186,8 @@ async function startServer() {
           "status" in err &&
           typeof (err as { status: number }).status === "number"
             ? (err as { status: number }).status
-            : 400;
-        res.status(status).json({
+            : 500;
+        res.status(status >= 400 && status < 600 ? status : 500).json({
           error: err instanceof Error ? err.message : "Webhook processing error",
         });
       }
@@ -192,7 +196,7 @@ async function startServer() {
 
   app.use(express.json({ limit: "2mb" }));
 
-  // ── QUOTE API ──
+  // ── QUOTE & CHECKOUT OPTIONS API ──
   app.post("/api/quote", (req, res) => {
     try {
       const body = (req.body || {}) as {
@@ -202,8 +206,8 @@ async function startServer() {
         declaredValue?: number;
         service?: ServiceTier;
       };
-      const from = body.from && COUNTRIES.includes(body.from) ? body.from : "Nigeria";
-      const to = body.to && COUNTRIES.includes(body.to) ? body.to : "Germany";
+      const from = body.from && COUNTRIES.includes(body.from) ? body.from : "United States";
+      const to = body.to && COUNTRIES.includes(body.to) ? body.to : "United Kingdom";
       const weightKg = Math.min(50000, Math.max(0.1, Number(body.weightKg) || 1));
       const declaredValue = Math.max(0, Number(body.declaredValue) || 0);
       const service: ServiceTier =
@@ -223,6 +227,39 @@ async function startServer() {
       res.json({ quote });
     } catch {
       res.status(400).json({ error: "Invalid quote payload." });
+    }
+  });
+
+  app.get("/api/checkout/options", async (_req, res) => {
+    try {
+      const options = await getCheckoutOptions();
+      res.json(options);
+    } catch {
+      res.json({
+        bachsEnabled: true,
+        bachsConfigured: false,
+        payOnPickupEnabled: true,
+        environment: "sandbox",
+        currency: "USD",
+      });
+    }
+  });
+
+  app.post("/api/bookings", async (req, res) => {
+    try {
+      const actor = await verifyFirebaseAdminAuth(req.headers);
+      if (!actor) {
+        res.status(401).json({ error: "Please log in or sign up before booking a parcel." });
+        return;
+      }
+      const result = await createServerBooking({
+        actor,
+        body: (req.body || {}) as CreateBookingInput,
+        origin: getOrigin(req),
+      });
+      res.json(result);
+    } catch (err) {
+      handleServerError(res, err, "Unable to complete booking.");
     }
   });
 
@@ -394,6 +431,39 @@ async function startServer() {
       res.json(result);
     } catch (err) {
       handleServerError(res, err, "Refund failed.");
+    }
+  });
+
+  app.post("/api/admin/booking-action", async (req, res) => {
+    try {
+      const actor = await verifyFirebaseAdminAuth(req.headers);
+      if (!actor?.isAdmin) {
+        res.status(actor ? 403 : 401).json({ error: "Admin authorization required." });
+        return;
+      }
+      const body = (req.body || {}) as {
+        code?: string;
+        action?: "mark_pickup_paid" | "refund_booking";
+        reason?: string;
+      };
+      if (body.action === "refund_booking" && !requireRecentAuth(actor, 900)) {
+        res.status(403).json({
+          error: "Please confirm your password before refunding a booking.",
+          code: "RECENT_AUTH_REQUIRED",
+        });
+        return;
+      }
+      const action =
+        body.action === "refund_booking" ? "refund_booking" : "mark_pickup_paid";
+      const result = await adminBookingAction({
+        actor,
+        code: String(body.code || ""),
+        action,
+        reason: body.reason,
+      });
+      res.json(result);
+    } catch (err) {
+      handleServerError(res, err, "Booking update failed.");
     }
   });
 

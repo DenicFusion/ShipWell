@@ -73,6 +73,8 @@ export function defaultPublicSettings(): AdminPaymentSettingsPublic {
   return {
     bachs: {
       environment: "sandbox",
+      sandboxProductId: "",
+      liveProductId: "",
       organizationId: "",
       defaultCurrency: "USD",
       checkoutExpiryMinutes: 60,
@@ -116,6 +118,8 @@ export function defaultPublicSettings(): AdminPaymentSettingsPublic {
       primaryGateway: "bachs",
       fallbackOrder: ["bachs"],
       offerChoice: false,
+      enableBachsBooking: true,
+      enablePayOnPickup: true,
     },
     updatedAt: null,
     updatedBy: null,
@@ -258,6 +262,8 @@ export async function loadSettingsBundle(): Promise<{
 export interface SaveSettingsPayload {
   bachs?: {
     environment?: "sandbox" | "live";
+    sandboxProductId?: string;
+    liveProductId?: string;
     organizationId?: string;
     defaultCurrency?: string;
     checkoutExpiryMinutes?: number;
@@ -290,6 +296,8 @@ export interface SaveSettingsPayload {
     primaryGateway?: GatewayId;
     fallbackOrder?: GatewayId[];
     offerChoice?: boolean;
+    enableBachsBooking?: boolean;
+    enablePayOnPickup?: boolean;
   };
 }
 
@@ -446,6 +454,14 @@ export async function saveAdminSettings(
       current.bachs.environment = patch.bachs.environment;
       changedFields.push(`bachs.environment=${patch.bachs.environment}`);
     }
+    if (typeof patch.bachs.sandboxProductId === "string") {
+      current.bachs.sandboxProductId = patch.bachs.sandboxProductId.trim();
+      changedFields.push("bachs.sandboxProductId");
+    }
+    if (typeof patch.bachs.liveProductId === "string") {
+      current.bachs.liveProductId = patch.bachs.liveProductId.trim();
+      changedFields.push("bachs.liveProductId");
+    }
     if (typeof patch.bachs.organizationId === "string") {
       current.bachs.organizationId = patch.bachs.organizationId.trim();
       changedFields.push("bachs.organizationId");
@@ -516,6 +532,14 @@ export async function saveAdminSettings(
     if (typeof patch.routing.offerChoice === "boolean") {
       current.routing.offerChoice = patch.routing.offerChoice;
       changedFields.push("routing.offerChoice");
+    }
+    if (typeof patch.routing.enableBachsBooking === "boolean") {
+      current.routing.enableBachsBooking = patch.routing.enableBachsBooking;
+      changedFields.push("routing.enableBachsBooking");
+    }
+    if (typeof patch.routing.enablePayOnPickup === "boolean") {
+      current.routing.enablePayOnPickup = patch.routing.enablePayOnPickup;
+      changedFields.push("routing.enablePayOnPickup");
     }
   }
 

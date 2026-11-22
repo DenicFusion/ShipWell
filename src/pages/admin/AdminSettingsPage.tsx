@@ -140,6 +140,8 @@ export default function AdminSettingsPage() {
 
   // Editable non-secret fields
   const [envMode, setEnvMode] = useState<"sandbox" | "live">("sandbox");
+  const [sandboxProductId, setSandboxProductId] = useState("");
+  const [liveProductId, setLiveProductId] = useState("");
   const [orgId, setOrgId] = useState("");
   const [defaultCurrency, setDefaultCurrency] = useState("USD");
   const [expiryMins, setExpiryMins] = useState("60");
@@ -176,6 +178,8 @@ export default function AdminSettingsPage() {
   const [primaryGateway, setPrimaryGateway] = useState<GatewayId>("bachs");
   const [fallbackOrder, setFallbackOrder] = useState("bachs");
   const [offerChoice, setOfferChoice] = useState(false);
+  const [enableBachsBooking, setEnableBachsBooking] = useState(true);
+  const [enablePayOnPickup, setEnablePayOnPickup] = useState(true);
 
   // Live activity & test checkout results
   const [webhookLogs, setWebhookLogs] = useState<WebhookEventLog[]>([]);
@@ -194,6 +198,8 @@ export default function AdminSettingsPage() {
   const hydrateFromSettings = useCallback((s: AdminPaymentSettingsPublic) => {
     setSettings(s);
     setEnvMode(s.bachs.environment);
+    setSandboxProductId(s.bachs.sandboxProductId || "");
+    setLiveProductId(s.bachs.liveProductId || "");
     setOrgId(s.bachs.organizationId || "");
     setDefaultCurrency(s.bachs.defaultCurrency || "USD");
     setExpiryMins(String(s.bachs.checkoutExpiryMinutes || 60));
@@ -210,6 +216,8 @@ export default function AdminSettingsPage() {
     setPrimaryGateway(s.routing.primaryGateway || "bachs");
     setFallbackOrder((s.routing.fallbackOrder || ["bachs"]).join(", "));
     setOfferChoice(Boolean(s.routing.offerChoice));
+    setEnableBachsBooking(s.routing.enableBachsBooking !== false);
+    setEnablePayOnPickup(s.routing.enablePayOnPickup !== false);
   }, []);
 
   const fetchSettings = useCallback(async () => {
@@ -391,6 +399,8 @@ export default function AdminSettingsPage() {
     const payload = {
       bachs: {
         environment: envMode,
+        sandboxProductId: sandboxProductId.trim(),
+        liveProductId: liveProductId.trim(),
         organizationId: orgId.trim(),
         defaultCurrency: defaultCurrency.trim().toUpperCase() || "USD",
         checkoutExpiryMinutes: Math.max(5, Math.min(1440, Number(expiryMins) || 60)),
@@ -656,6 +666,39 @@ export default function AdminSettingsPage() {
                   onChange={setPrevWebhookInput}
                 />
 
+                <div className="g2">
+                  <div className="fw">
+                    <label className="lbl" htmlFor="b-sb-prod">
+                      Sandbox Product ID
+                    </label>
+                    <input
+                      id="b-sb-prod"
+                      className="field mono"
+                      value={sandboxProductId}
+                      onChange={(e) => setSandboxProductId(e.target.value)}
+                      placeholder="prod_..."
+                    />
+                    <small className="cfg-h">
+                      Pay-What-You-Want (custom amount) product in Bachs Sandbox
+                    </small>
+                  </div>
+                  <div className="fw">
+                    <label className="lbl" htmlFor="b-lv-prod">
+                      Live Product ID
+                    </label>
+                    <input
+                      id="b-lv-prod"
+                      className="field mono"
+                      value={liveProductId}
+                      onChange={(e) => setLiveProductId(e.target.value)}
+                      placeholder="prod_..."
+                    />
+                    <small className="cfg-h">
+                      Pay-What-You-Want (custom amount) product in Bachs Live
+                    </small>
+                  </div>
+                </div>
+
                 <div className="g3">
                   <div className="fw">
                     <label className="lbl" htmlFor="b-org">
@@ -762,7 +805,7 @@ export default function AdminSettingsPage() {
             <div className="ad-card">
               <div className="ad-ch">
                 <b>Bachs Webhook Setup</b>
-                <small>HMAC X-Bachs-Signature-V2</small>
+                <small>HMAC X-Bachs-Timestamp + Signature</small>
               </div>
               <div className="ad-cb">
                 <label className="lbl">Webhook destination URL</label>
@@ -1086,6 +1129,8 @@ export default function AdminSettingsPage() {
                   primaryGateway,
                   fallbackOrder: order.length ? order : [primaryGateway],
                   offerChoice,
+                  enableBachsBooking,
+                  enablePayOnPickup,
                 },
               });
             }}
@@ -1129,6 +1174,29 @@ export default function AdminSettingsPage() {
               <span>
                 Let receivers choose between enabled payment gateways on Duties
                 &amp; charges
+              </span>
+            </label>
+
+            <label className="chk">
+              <input
+                type="checkbox"
+                checked={enableBachsBooking}
+                onChange={(e) => setEnableBachsBooking(e.target.checked)}
+              />
+              <span>
+                Allow Card &amp; Bank Transfer (Bachs Checkout) on Ship booking
+                checkout
+              </span>
+            </label>
+
+            <label className="chk">
+              <input
+                type="checkbox"
+                checked={enablePayOnPickup}
+                onChange={(e) => setEnablePayOnPickup(e.target.checked)}
+              />
+              <span>
+                Allow Pay on pickup during Ship booking checkout
               </span>
             </label>
 
@@ -1251,6 +1319,8 @@ export default function AdminSettingsPage() {
                   await submitSettingsPatch({
                     bachs: {
                       environment: "live",
+                      sandboxProductId: sandboxProductId.trim(),
+                      liveProductId: liveProductId.trim(),
                       organizationId: orgId.trim(),
                       defaultCurrency: defaultCurrency.trim().toUpperCase() || "USD",
                       checkoutExpiryMinutes: Math.max(

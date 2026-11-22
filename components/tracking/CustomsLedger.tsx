@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { auth, db } from "@/lib/firebase";
+import { openBachsOverlay } from "@/lib/bachs-overlay";
 import { formatDateTime } from "@/lib/quote-engine";
 import {
   formatUsd,
@@ -44,6 +45,7 @@ export function CustomsLedger({
   const paidQuery = searchParams.get("paid");
 
   const [payingKey, setPayingKey] = useState<string | null>(null);
+  const [confirmingAlertId, setConfirmingAlertId] = useState<string | null>(null);
   const [checkoutError, setCheckoutError] = useState<string>("");
   const [receiptAlert, setReceiptAlert] = useState<ShipmentAlert | null>(null);
   const [gatewayConfig, setGatewayConfig] = useState<{
@@ -135,7 +137,25 @@ export function CustomsLedger({
           data.error || "Unable to start hosted checkout session."
         );
       }
-      window.location.assign(data.checkoutUrl);
+      if (activeGateway === "bachs") {
+        await openBachsOverlay(data.checkoutUrl, (eventType) => {
+          if (eventType === "checkout.completed") {
+            setConfirmingAlertId(al.id);
+            setPayingKey(null);
+            toast.success("Payment received — waiting for webhook confirmation");
+          } else if (
+            eventType === "checkout.failed" ||
+            eventType === "checkout.error"
+          ) {
+            setPayingKey(null);
+            setCheckoutError("Payment could not be completed. Please try again.");
+          } else if (eventType === "checkout.closed") {
+            setPayingKey(null);
+          }
+        });
+      } else {
+        window.location.assign(data.checkoutUrl);
+      }
     } catch (err) {
       const msg =
         err instanceof Error
@@ -190,7 +210,7 @@ h1{font-size:20px;margin:0 0 6px}small{color:#64748b}
       </div>
 
       <div className="dx-cb">
-        {paidQuery === "1" && (
+        {(paidQuery === "1" || confirmingAlertId !== null) && (
           <div
             className={`tk-hold ${openDutyCount === 0 ? "g" : "a"}`}
             style={{

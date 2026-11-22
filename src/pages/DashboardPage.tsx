@@ -12,6 +12,8 @@ import { DashboardTrack } from "@/components/dashboard/DashboardTrack";
 import { DashboardAlerts } from "@/components/dashboard/DashboardAlerts";
 import { DashboardAccount } from "@/components/dashboard/DashboardAccount";
 import { DashboardSupport } from "@/components/dashboard/DashboardSupport";
+import { QuoteCalculator } from "@/components/quote/QuoteCalculator";
+import { ShipWizard } from "@/components/ship/ShipWizard";
 import { formatTrackingCode } from "@/types/tracking";
 
 export default function DashboardPage({
@@ -52,25 +54,25 @@ export default function DashboardPage({
   const meta = useMemo(() => {
     if (section === "incoming") {
       return {
-        title: "ON ITS WAY TO YOU",
+        title: "Incoming",
         subtitle: `Parcels addressed to ${user?.email || ""}`,
       };
     }
     if (section === "sent") {
       return {
-        title: "SENT BY YOU",
+        title: "Sent",
         subtitle: "Shipments you booked",
       };
     }
     if (section === "track") {
       return {
-        title: "TRACK A PARCEL",
+        title: "Track",
         subtitle: routeCode || "Live status and full history",
       };
     }
     if (section === "alerts") {
       return {
-        title: "ACTION REQUIRED",
+        title: "Actions",
         subtitle: openAlerts.length
           ? `${openAlerts.length} waiting for you`
           : "Nothing pending",
@@ -78,18 +80,30 @@ export default function DashboardPage({
     }
     if (section === "support") {
       return {
-        title: "SUPPORT",
+        title: "Support",
         subtitle: "Messages with ShipWell operations",
+      };
+    }
+    if (section === "quote") {
+      return {
+        title: "Quote",
+        subtitle: "Instant rate & transit estimate",
+      };
+    }
+    if (section === "ship") {
+      return {
+        title: "Ship",
+        subtitle: "Book a door-to-door pickup",
       };
     }
     if (section === "account") {
       return {
-        title: "ACCOUNT",
+        title: "Account",
         subtitle: "Your details, notifications and appearance",
       };
     }
     return {
-      title: "OVERVIEW",
+      title: "Home",
       subtitle: new Date().toLocaleDateString("en-GB", {
         weekday: "long",
         day: "numeric",
@@ -111,7 +125,9 @@ export default function DashboardPage({
           loading &&
           section !== "track" &&
           section !== "account" &&
-          section !== "support"
+          section !== "support" &&
+          section !== "quote" &&
+          section !== "ship"
       )}
     >
       {user && section === "overview" && (
@@ -168,6 +184,10 @@ export default function DashboardPage({
           routeThreadId={routeThreadId}
         />
       )}
+
+      {user && section === "quote" && <QuoteCalculator embedded />}
+
+      {user && section === "ship" && <ShipWizard embedded />}
 
       {user && section === "account" && (
         <DashboardAccount user={user} profile={profile} />

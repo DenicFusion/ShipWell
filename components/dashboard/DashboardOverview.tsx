@@ -7,6 +7,7 @@ import {
   Box,
   Check,
   Copy,
+  DollarSign,
   Home,
   Mail,
   Plus,
@@ -159,10 +160,16 @@ export function DashboardOverview({
               : "Nothing needs your attention."}
           </p>
         </div>
-        <Link className="sw-btn sw-btn-em sw-btn-lg" to="/ship">
-          <Plus className="w-4 h-4" />
-          Ship a parcel
-        </Link>
+        <div className="dx-acts">
+          <Link className="sw-btn sw-btn-ghost" to="/dashboard/quote">
+            <DollarSign className="w-4 h-4" />
+            Get a quote
+          </Link>
+          <Link className="sw-btn sw-btn-em" to="/dashboard/ship">
+            <Plus className="w-4 h-4" />
+            Ship a parcel
+          </Link>
+        </div>
       </div>
 
       {/* Email Verification Prompt when unverified */}
@@ -431,7 +438,7 @@ export function DashboardOverview({
                 live tracking appears here.
               </p>
               <div className="acts">
-                <Link className="sw-btn sw-btn-em sw-btn-lg" to="/ship">
+                <Link className="sw-btn sw-btn-em sw-btn-lg" to="/dashboard/ship">
                   Ship something
                 </Link>
                 <Link

@@ -107,7 +107,7 @@ export function DashboardParcelList({
             >
               Track a parcel
             </Link>
-            <Link className="sw-btn sw-btn-ghost sw-btn-lg" to="/ship">
+            <Link className="sw-btn sw-btn-ghost sw-btn-lg" to="/dashboard/ship">
               Ship something
             </Link>
           </div>
@@ -126,7 +126,7 @@ export function DashboardParcelList({
           receiver&rsquo;s email so it shows up on their dashboard.
         </p>
         <div className="acts">
-          <Link className="sw-btn sw-btn-em sw-btn-lg" to="/ship">
+          <Link className="sw-btn sw-btn-em sw-btn-lg" to="/dashboard/ship">
             Ship now →
           </Link>
         </div>

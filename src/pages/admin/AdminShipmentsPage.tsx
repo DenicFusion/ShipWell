@@ -115,6 +115,16 @@ function ShipmentsListContent() {
             filtered.map((s) => {
               const chip = getShipmentChip(s);
               const signedUp = receiverMap[s.receiverEmail];
+              const payLabel =
+                s.paymentStatus === "paid"
+                  ? "Paid"
+                  : s.paymentStatus === "pay_on_pickup"
+                    ? "Pay on pickup"
+                    : s.paymentStatus === "refunded"
+                      ? "Refunded"
+                      : s.paymentStatus === "awaiting_payment"
+                        ? "Awaiting payment"
+                        : null;
               return (
                 <Link
                   key={s.code}
@@ -138,7 +148,7 @@ function ShipmentsListContent() {
                       {signedUp ? "✓ receiver on ShipWell" : "not signed up"}
                     </small>
                   </div>
-                  <div className="c4">
+                  <div className="c4 flex flex-wrap gap-1 justify-end">
                     <span className={`chip ${chip.tone}`}>{chip.label}</span>
                   </div>
                   <div className="c5">
@@ -147,7 +157,10 @@ function ShipmentsListContent() {
                         ? "Delivered"
                         : `ETA ${formatShortDay(s.eta)}`}
                     </span>
-                    <small>Review: {s.review?.state || "pending"}</small>
+                    <small>
+                      Review: {s.review?.state || "pending"}
+                      {payLabel ? ` · ${payLabel}` : ""}
+                    </small>
                   </div>
                   <div className="arr">→</div>
                 </Link>

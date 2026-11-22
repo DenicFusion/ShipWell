@@ -59,20 +59,20 @@ import {
 import toast from "react-hot-toast";
 
 const HUB_LOCATIONS = [
-  "Lagos Hub, NG",
-  "Accra Hub, GH",
-  "Nairobi Hub, KE",
-  "Johannesburg Hub, ZA",
+  "New York JFK Hub, US",
   "London Heathrow Hub, UK",
   "London East Delivery Depot, UK",
+  "Toronto Pearson Hub, CA",
   "Frankfurt Air Hub, DE",
   "Paris Charles de Gaulle Hub, FR",
   "Dubai Logistics Hub, UAE",
   "Mumbai Air Cargo Hub, IN",
   "Shanghai Pudong Hub, CN",
   "Tokyo Narita Hub, JP",
-  "New York JFK Hub, US",
-  "Toronto Pearson Hub, CA",
+  "Sydney Airport Cargo Hub, AU",
+  "Accra Hub, GH",
+  "Nairobi Hub, KE",
+  "Johannesburg Hub, ZA",
 ];
 
 const ALERT_TEMPLATES: Record<
@@ -149,8 +149,9 @@ export default function AdminShipmentDetailPage() {
   const [chgHold, setChgHold] = useState(true);
   const [chgTo, setChgTo] = useState<AlertTarget>("receiver");
 
-  // Refund modal + re-auth password
+  // Refund modal + re-auth password (supports customs charge or booking refund)
   const [refundTarget, setRefundTarget] = useState<ShipmentAlert | null>(null);
+  const [bookingRefundOpen, setBookingRefundOpen] = useState(false);
   const [refundReason, setRefundReason] = useState("Customs fee adjustment");
   const [refundPassword, setRefundPassword] = useState("");
   const [refundNeedsReauth, setRefundNeedsReauth] = useState(false);
@@ -415,6 +416,114 @@ export default function AdminShipmentDetailPage() {
                   <AlertTriangle className="w-4 h-4" />
                   Flag an issue
                 </button>
+              </div>
+            </div>
+          </div>
+
+          {/* BOOKING PAYMENT STATUS & ADMIN ACTIONS */}
+          <div className="ad-card">
+            <div className="ad-ch">
+              <div>
+                <b>Booking payment</b>
+                <span
+                  className={`mini ${
+                    shipment.paymentStatus === "paid"
+                      ? "g"
+                      : shipment.paymentStatus === "pay_on_pickup"
+                        ? "b"
+                        : shipment.paymentStatus === "refunded"
+                          ? "n"
+                          : "a"
+                  }`}
+                >
+                  {shipment.paymentStatus === "paid"
+                    ? "Paid"
+                    : shipment.paymentStatus === "pay_on_pickup"
+                      ? "Pay on pickup"
+                      : shipment.paymentStatus === "refunded"
+                        ? "Refunded"
+                        : shipment.paymentStatus === "awaiting_payment"
+                          ? "Awaiting payment"
+                          : shipment.paymentMethod || "Booked"}
+                </span>
+              </div>
+              <small>{formatMoney(shipment.priceTotal || 0)}</small>
+            </div>
+            <div className="ad-cb">
+              <div className="ad-kv">
+                <div>
+                  <small>Method</small>
+                  <b>{shipment.paymentMethod || "—"}</b>
+                </div>
+                <div>
+                  <small>Reference</small>
+                  <b className="mono">{shipment.paymentReference || shipment.bookingId || "—"}</b>
+                </div>
+              </div>
+              <div className="ad-rev">
+                {(shipment.paymentStatus === "pay_on_pickup" ||
+                  shipment.paymentStatus === "awaiting_payment") && (
+                  <button
+                    type="button"
+                    disabled={busyAction !== ""}
+                    className="sw-btn sw-btn-em"
+                    onClick={async () => {
+                      setBusyAction("pickup_paid");
+                      try {
+                        const token = await auth.currentUser?.getIdToken(true);
+                        const res = await fetch("/api/admin/booking-action", {
+                          method: "POST",
+                          headers: {
+                            "Content-Type": "application/json",
+                            Authorization: `Bearer ${token}`,
+                          },
+                          body: JSON.stringify({
+                            code: shipment.code,
+                            action: "mark_pickup_paid",
+                          }),
+                        });
+                        const data = await res.json();
+                        if (!res.ok) {
+                          throw new Error(
+                            data.error || "Could not mark pickup payment received."
+                          );
+                        }
+                        toast.success("Pickup payment marked received");
+                        await loadDetail();
+                      } catch (err) {
+                        toast.error(
+                          err instanceof Error ? err.message : "Update failed."
+                        );
+                      } finally {
+                        setBusyAction("");
+                      }
+                    }}
+                  >
+                    {busyAction === "pickup_paid" ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Check className="w-4 h-4" />
+                    )}
+                    Mark pickup payment received
+                  </button>
+                )}
+
+                {shipment.paymentStatus === "paid" && (
+                  <button
+                    type="button"
+                    disabled={busyAction !== ""}
+                    className="sw-btn sw-btn-ghost"
+                    onClick={() => {
+                      setRefundReason("Booking refund");
+                      setRefundPassword("");
+                      setRefundNeedsReauth(false);
+                      setBookingRefundOpen(true);
+                    }}
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                    Refund booking
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -1451,14 +1560,23 @@ export default function AdminShipmentDetailPage() {
         </div>
       )}
 
-      {/* CUSTOM REACT REFUND MODAL (ZERO window.prompt / window.confirm) */}
-      {refundTarget && (
+      {/* CUSTOM REACT REFUND MODAL (CUSTOMS CHARGE OR BOOKING REFUND) */}
+      {(refundTarget || bookingRefundOpen) && (
         <div className="md" role="dialog" aria-modal="true">
-          <div className="md-b" onClick={() => setRefundTarget(null)} />
+          <div
+            className="md-b"
+            onClick={() => {
+              setRefundTarget(null);
+              setBookingRefundOpen(false);
+            }}
+          />
           <div className="md-c">
             <button
               className="md-x"
-              onClick={() => setRefundTarget(null)}
+              onClick={() => {
+                setRefundTarget(null);
+                setBookingRefundOpen(false);
+              }}
               aria-label="Close"
             >
               <X className="w-4 h-4" />
@@ -1466,12 +1584,29 @@ export default function AdminShipmentDetailPage() {
             <div className="au-ic">
               <RotateCcw className="w-6 h-6" />
             </div>
-            <div className="au-t">ISSUE BACHS REFUND</div>
+            <div className="au-t">
+              {bookingRefundOpen ? "REFUND BOOKING" : "ISSUE BACHS REFUND"}
+            </div>
             <p className="au-r">
-              Refund{" "}
-              <b>{formatUsd(refundTarget.amount, refundTarget.currency || "USD")}</b>{" "}
-              for <b>{refundTarget.chargeType || refundTarget.title}</b> via
-              Bachs.
+              {bookingRefundOpen ? (
+                <>
+                  Refund{" "}
+                  <b>{formatMoney(shipment.priceTotal || 0)}</b> for shipment
+                  booking <b className="mono">{shipment.code}</b> via Bachs.
+                </>
+              ) : refundTarget ? (
+                <>
+                  Refund{" "}
+                  <b>
+                    {formatUsd(
+                      refundTarget.amount,
+                      refundTarget.currency || "USD"
+                    )}
+                  </b>{" "}
+                  for <b>{refundTarget.chargeType || refundTarget.title}</b> via
+                  Bachs.
+                </>
+              ) : null}
             </p>
             <form
               className="au-f"
@@ -1490,17 +1625,27 @@ export default function AdminShipmentDetailPage() {
                     await reauthenticateWithCredential(auth.currentUser, cred);
                   }
                   const token = await auth.currentUser?.getIdToken(true);
-                  const res = await fetch("/api/admin/refund", {
+                  const endpoint = bookingRefundOpen
+                    ? "/api/admin/booking-action"
+                    : "/api/admin/refund";
+                  const payload = bookingRefundOpen
+                    ? {
+                        code: shipment.code,
+                        action: "refund_booking",
+                        reason: refundReason,
+                      }
+                    : {
+                        code: shipment.code,
+                        alertId: refundTarget?.id,
+                        reason: refundReason,
+                      };
+                  const res = await fetch(endpoint, {
                     method: "POST",
                     headers: {
                       "Content-Type": "application/json",
                       Authorization: `Bearer ${token}`,
                     },
-                    body: JSON.stringify({
-                      code: shipment.code,
-                      alertId: refundTarget.id,
-                      reason: refundReason,
-                    }),
+                    body: JSON.stringify(payload),
                   });
                   const data = await res.json();
                   if (!res.ok) {
@@ -1511,8 +1656,13 @@ export default function AdminShipmentDetailPage() {
                     }
                     throw new Error(data.error || "Refund failed.");
                   }
-                  toast.success("Refund submitted to Bachs");
+                  toast.success(
+                    bookingRefundOpen
+                      ? "Booking refund submitted"
+                      : "Refund submitted to Bachs"
+                  );
                   setRefundTarget(null);
+                  setBookingRefundOpen(false);
                   await loadDetail();
                 } catch (err) {
                   toast.error(
