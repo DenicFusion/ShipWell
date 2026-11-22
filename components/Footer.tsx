@@ -1,9 +1,25 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import { Globe, Mail, MapPin, Shield } from "lucide-react";
+import { Copy, Globe, Mail, MapPin, Shield } from "lucide-react";
+import toast from "react-hot-toast";
 import { ShipwellLogo } from "@/components/ShipwellLogo";
+import { ThemeSwitch } from "@/components/ThemeSwitch";
+import { useShipWell } from "@/components/providers/ShipWellProvider";
+
+const SUPPORT_EMAIL = "support@info.shipwell.cc";
 
 export function Footer() {
+  const { user, openContact, requireAuthForShip } = useShipWell();
+
+  const copySupport = async () => {
+    try {
+      await navigator.clipboard.writeText(SUPPORT_EMAIL);
+      toast.success(`Copied ${SUPPORT_EMAIL}`);
+    } catch {
+      toast.error("Could not copy email");
+    }
+  };
+
   return (
     <footer className="sw-footer">
       <div className="wrap">
@@ -22,7 +38,17 @@ export function Footer() {
             <h5>Services</h5>
             <ul>
               <li>
-                <Link to="/ship">Ship Now</Link>
+                <Link
+                  to="/ship"
+                  onClick={(e) => {
+                    if (!user) {
+                      e.preventDefault();
+                      requireAuthForShip("/ship");
+                    }
+                  }}
+                >
+                  Ship Now
+                </Link>
               </li>
               <li>
                 <Link to="/quote">Get a Quote</Link>
@@ -67,10 +93,40 @@ export function Footer() {
                 <Link to="/quote">Cost Calculator</Link>
               </li>
               <li>
+                <button
+                  type="button"
+                  className="fcontact"
+                  onClick={() => openContact()}
+                >
+                  Contact Us
+                </button>
+              </li>
+              <li>
                 <Link to="/business-shipping#bizForm">Contact Sales</Link>
               </li>
               <li>
-                <a href="mailto:support@shipwell.example">Email Operations</a>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <a href={`mailto:${SUPPORT_EMAIL}`}>{SUPPORT_EMAIL}</a>
+                  <button
+                    type="button"
+                    onClick={copySupport}
+                    aria-label="Copy support email"
+                    style={{
+                      background: "transparent",
+                      border: "1px solid var(--border)",
+                      borderRadius: 6,
+                      padding: "2px 6px",
+                      color: "var(--muted)",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 4,
+                      fontSize: 11,
+                    }}
+                  >
+                    <Copy className="w-3 h-3" />
+                    Copy
+                  </button>
+                </div>
               </li>
             </ul>
           </div>
@@ -96,6 +152,24 @@ export function Footer() {
 
         <div className="fb">
           <span>© 2026 ShipWell Logistics Ltd. All rights reserved.</span>
+
+          <div className="flex items-center gap-3 flex-wrap">
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                letterSpacing: "0.14em",
+                textTransform: "uppercase",
+                color: "var(--faint)",
+              }}
+            >
+              Appearance
+            </span>
+            <div style={{ minWidth: 220 }}>
+              <ThemeSwitch compact />
+            </div>
+          </div>
+
           <div className="soc">
             <Link to="/track" aria-label="Global Network Tracking">
               <Globe className="w-4 h-4" />
@@ -106,9 +180,13 @@ export function Footer() {
             <Link to="/legal#fraud" aria-label="Security & Compliance">
               <Shield className="w-4 h-4" />
             </Link>
-            <a href="mailto:support@shipwell.example" aria-label="Email Support">
+            <button
+              type="button"
+              onClick={() => openContact()}
+              aria-label="Contact Support"
+            >
               <Mail className="w-4 h-4" />
-            </a>
+            </button>
           </div>
         </div>
       </div>

@@ -1,3 +1,6 @@
+export type ThemePreference = "system" | "dark" | "light";
+export type ResolvedTheme = "dark" | "light";
+
 export type ShipmentStage =
   | "Booked"
   | "Picked Up"
@@ -20,6 +23,49 @@ export type AlertKind =
   | "reschedule"
   | "custom"
   | "item";
+
+export type ChargeType =
+  | "Import duty"
+  | "VAT / GST"
+  | "Customs handling fee"
+  | "Inspection fee"
+  | "Storage fee"
+  | "Other charge";
+
+export const CHARGE_TYPES: ChargeType[] = [
+  "Import duty",
+  "VAT / GST",
+  "Customs handling fee",
+  "Inspection fee",
+  "Storage fee",
+  "Other charge",
+];
+
+export type GatewayId = "bachs" | "stripe" | "paystack";
+
+export interface CustomsPaymentEvent {
+  type: string;
+  at: number;
+  detail?: string;
+}
+
+export interface CustomsPaymentInfo {
+  provider: GatewayId;
+  environment: "sandbox" | "live";
+  checkoutId?: string | null;
+  checkoutUrl?: string | null;
+  paymentId?: string | null;
+  reference?: string | null;
+  status: "unpaid" | "pending" | "paid" | "failed" | "underpaid" | "refunded";
+  amountPaid?: number | null;
+  currency?: string;
+  expiresAt?: number | null;
+  paidAt?: number | null;
+  refundedAt?: number | null;
+  refundId?: string | null;
+  lastError?: string | null;
+  events?: CustomsPaymentEvent[];
+}
 
 export type AlertStatus = "open" | "resolved";
 
@@ -71,6 +117,9 @@ export interface ShipmentAlert {
   id: string;
   to: AlertTarget;
   kind: AlertKind;
+  chargeType?: ChargeType | string | null;
+  currency?: string;
+  holdShipment?: boolean;
   title: string;
   message: string;
   amount: number;
@@ -78,6 +127,7 @@ export interface ShipmentAlert {
   response?: string;
   attachmentName?: string;
   attachmentUrl?: string;
+  payment?: CustomsPaymentInfo | null;
   createdAt?: unknown;
   resolvedAt?: unknown;
   createdAtMs?: number;
@@ -167,6 +217,7 @@ export interface UserProfile {
   email: string;
   phone?: string;
   company?: string;
+  theme?: ThemePreference;
   prefs?: NotificationPrefs;
   createdAt?: unknown;
   updatedAt?: unknown;
@@ -184,6 +235,121 @@ export interface BusinessLead {
   message: string;
   status: "new" | "contacted";
   createdAt?: unknown;
+}
+
+export interface SupportMessage {
+  id: string;
+  from: "user" | "admin";
+  senderName: string;
+  senderEmail: string;
+  body: string;
+  source: "web" | "email";
+  ts: number;
+  createdAt?: unknown;
+}
+
+export interface SupportThread {
+  id: string;
+  ticketCode: string;
+  uid?: string | null;
+  userName: string;
+  userEmail: string;
+  subject: string;
+  code?: string | null;
+  status: "open" | "closed";
+  source: "web" | "email";
+  unreadAdmin: boolean;
+  unreadUser: boolean;
+  lastMessageAt: number;
+  lastMessagePreview?: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+  messages?: SupportMessage[];
+}
+
+export interface SecretMask {
+  configured: boolean;
+  last4?: string;
+  prefix?: string;
+  masked?: string;
+  updatedAt?: number;
+  updatedBy?: string;
+}
+
+export interface AdminPaymentSettingsPublic {
+  bachs: {
+    environment: "sandbox" | "live";
+    organizationId: string;
+    defaultCurrency: string;
+    checkoutExpiryMinutes: number;
+    lastWebhookAt?: number | null;
+    secrets: {
+      sandboxSecretKey: SecretMask;
+      liveSecretKey: SecretMask;
+      sandboxWebhookSecret: SecretMask;
+      liveWebhookSecret: SecretMask;
+      previousWebhookSecret: SecretMask;
+    };
+  };
+  resend: {
+    from: string;
+    replyTo: string;
+    supportInbox: string;
+    secrets: {
+      apiKey: SecretMask;
+      inboundWebhookSecret: SecretMask;
+    };
+  };
+  stripe: {
+    enabled: boolean;
+    publicKey: string;
+    secrets: {
+      secretKey: SecretMask;
+      webhookSecret: SecretMask;
+    };
+  };
+  paystack: {
+    enabled: boolean;
+    publicKey: string;
+    secrets: {
+      secretKey: SecretMask;
+      webhookSecret: SecretMask;
+    };
+  };
+  routing: {
+    primaryGateway: GatewayId;
+    fallbackOrder: GatewayId[];
+    offerChoice: boolean;
+  };
+  updatedAt?: number | null;
+  updatedBy?: string | null;
+  encryptionReady?: boolean;
+}
+
+export interface WebhookEventLog {
+  id: string;
+  provider: string;
+  eventType: string;
+  reference: string;
+  result: "processed" | "duplicate" | "rejected-signature" | "ignored" | "error";
+  detail?: string;
+  environment?: string;
+  ts: number;
+}
+
+export interface EmailLogRecord {
+  id: string;
+  to: string;
+  from?: string;
+  code?: string | null;
+  template: string;
+  subject: string;
+  status: "sent" | "queued_preview" | "failed" | "delivered" | "bounced";
+  providerId?: string | null;
+  htmlPreview?: string | null;
+  createdBy: string;
+  createdAt?: unknown;
+  createdAtMs?: number;
 }
 
 export const STAGES: ShipmentStage[] = [
@@ -321,4 +487,12 @@ export function firestoreTimeToMs(val: unknown): number {
     return Number((val as { seconds: number }).seconds) * 1000;
   }
   return Date.now();
+}
+
+export function formatUsd(amount: number, currency = "USD"): string {
+  const num = Number(amount || 0);
+  if (currency.toUpperCase() === "USD") {
+    return `$${num.toFixed(2)}`;
+  }
+  return `${currency.toUpperCase()} ${num.toFixed(2)}`;
 }

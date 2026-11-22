@@ -1,0 +1,26 @@
+{
+  "name": "shipwell-functions",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ShipWell Cloud Functions v2 (Bachs webhooks, Resend email & inbound, encrypted secrets, Firestore triggers)",
+  "main": "lib/index.js",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "build": "tsc",
+    "serve": "npm run build && firebase emulators:start --only functions",
+    "deploy": "firebase deploy --only functions"
+  },
+  "dependencies": {
+    "@bachs/sdk": "^2.0.0",
+    "express": "^5.1.0",
+    "firebase-admin": "^14.5.1",
+    "firebase-functions": "^7.4.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.2"
+  }
+}

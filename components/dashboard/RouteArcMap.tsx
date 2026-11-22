@@ -48,7 +48,7 @@ export function RouteArcMap({
     t * t * P[2][1];
 
   const fin = status === "Delivered";
-  const col = isHeld && !fin ? "#F59E0B" : "#10B981";
+  const col = isHeld && !fin ? "var(--amber)" : "var(--em)";
   const pathD = "M60 150 Q300 -30 540 150";
 
   return (
@@ -62,7 +62,7 @@ export function RouteArcMap({
         <path
           d={pathD}
           fill="none"
-          stroke="#2a3a52"
+          stroke="var(--border)"
           strokeWidth={3}
           strokeDasharray="2 9"
           strokeLinecap="round"
@@ -76,14 +76,13 @@ export function RouteArcMap({
           strokeWidth={4}
           strokeLinecap="round"
           strokeDasharray={`${animatedPct} 100`}
-          style={{ filter: `drop-shadow(0 0 6px ${col}88)` }}
         />
         <circle cx="60" cy="150" r="7" fill={col} />
         <circle
           cx="540"
           cy="150"
           r="7"
-          fill={fin ? col : "#0b1016"}
+          fill={fin ? col : "var(--bg)"}
           stroke={col}
           strokeWidth="3"
         />
@@ -101,7 +100,7 @@ export function RouteArcMap({
           cx={x.toFixed(1)}
           cy={y.toFixed(1)}
           r="7"
-          fill="#fff"
+          fill="var(--card)"
           stroke={col}
           strokeWidth="4"
         />

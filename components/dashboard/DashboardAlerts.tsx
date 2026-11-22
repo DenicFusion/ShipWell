@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import { Link } from "react-router-dom";
 import {
   AlertTriangle,
@@ -6,9 +6,12 @@ import {
   Calendar,
   Check,
   CreditCard,
+  Loader2,
   MapPin,
   Shield,
 } from "lucide-react";
+import toast from "react-hot-toast";
+import { auth } from "@/lib/firebase";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
 import { formatMoney } from "@/lib/quote-engine";
 import {
@@ -36,6 +39,35 @@ export function DashboardAlerts({
   resolvedAlerts: { shipment: ShipmentRecord; alert: ShipmentAlert }[];
 }) {
   const { openAction, refreshOpenAlerts } = useShipWell();
+  const [payingId, setPayingId] = useState<string | null>(null);
+
+  const handlePayDuty = async (shipment: ShipmentRecord, alert: ShipmentAlert) => {
+    const key = `${shipment.code}_${alert.id}`;
+    setPayingId(key);
+    try {
+      const token = await auth.currentUser?.getIdToken().catch(() => null);
+      if (!token) throw new Error("Please log in to continue.");
+      const res = await fetch("/api/customs/create-checkout", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          code: shipment.code,
+          alertId: alert.id,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.checkoutUrl) {
+        throw new Error(data.error || "Unable to create payment session.");
+      }
+      window.location.assign(data.checkoutUrl);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Payment failed.");
+      setPayingId(null);
+    }
+  };
 
   const renderCard = (item: { shipment: ShipmentRecord; alert: ShipmentAlert }) => {
     const { shipment, alert } = item;
@@ -44,6 +76,7 @@ export function DashboardAlerts({
       ? alert.resolvedAtMs || alert.createdAtMs || 0
       : alert.createdAtMs || 0;
     const timeLabel = ts ? formatTimeAgo(ts) : "just now";
+    const isBusy = payingId === `${shipment.code}_${alert.id}`;
 
     return (
       <div key={`${shipment.code}_${alert.id}`} className={`dx-al ${done ? "done" : ""}`}>
@@ -75,17 +108,41 @@ export function DashboardAlerts({
               : `Requested ${timeLabel}`}
           </small>
           {!done && (
-            <button
-              type="button"
-              className="sw-btn sw-btn-em"
-              onClick={() =>
-                openAction(shipment, alert, async () => {
-                  await refreshOpenAlerts();
-                })
-              }
-            >
-              Take action
-            </button>
+            <div className="flex flex-wrap gap-2">
+              {alert.kind === "duty" ? (
+                <button
+                  type="button"
+                  disabled={payingId !== null}
+                  className="sw-btn sw-btn-em"
+                  onClick={() => handlePayDuty(shipment, alert)}
+                >
+                  {isBusy ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <CreditCard className="w-4 h-4" />
+                  )}
+                  Pay with Bachs
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="sw-btn sw-btn-em"
+                  onClick={() =>
+                    openAction(shipment, alert, async () => {
+                      await refreshOpenAlerts();
+                    })
+                  }
+                >
+                  Take action
+                </button>
+              )}
+              <Link
+                to={`/dashboard/track/${shipment.code}`}
+                className="sw-btn sw-btn-ghost"
+              >
+                View parcel
+              </Link>
+            </div>
           )}
         </div>
       </div>

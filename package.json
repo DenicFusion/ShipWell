@@ -10,6 +10,7 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@bachs/sdk": "^2.0.0",
     "@radix-ui/react-slot": "^1.1.2",
     "@tailwindcss/postcss": "^4.0.7",
     "@tanstack/react-query": "^5.28.9",
@@ -20,6 +21,7 @@
     "date-fns": "^3.6.0",
     "express": "^5.3.0",
     "firebase": "^12.14.0",
+    "firebase-admin": "^14.5.1",
     "jspdf": "^4.2.1",
     "lucide-react": "^0.475.0",
     "motion": "^12.4.7",

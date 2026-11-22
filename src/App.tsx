@@ -25,6 +25,9 @@ import AdminShipmentsPage from "@/src/pages/admin/AdminShipmentsPage";
 import AdminShipmentDetailPage from "@/src/pages/admin/AdminShipmentDetailPage";
 import AdminAlertsPage from "@/src/pages/admin/AdminAlertsPage";
 import AdminCustomersPage from "@/src/pages/admin/AdminCustomersPage";
+import AdminMessagesPage from "@/src/pages/admin/AdminMessagesPage";
+import AdminMailPage from "@/src/pages/admin/AdminMailPage";
+import AdminSettingsPage from "@/src/pages/admin/AdminSettingsPage";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 60 * 1000 } },
@@ -70,6 +73,9 @@ export default function App() {
             <Route path="/dashboard/track" element={<DashboardPage section="track" />} />
             <Route path="/dashboard/track/:code" element={<DashboardPage section="track" />} />
             <Route path="/dashboard/alerts" element={<DashboardPage section="alerts" />} />
+            <Route path="/dashboard/support" element={<DashboardPage section="support" />} />
+            <Route path="/dashboard/support/new" element={<DashboardPage section="support" />} />
+            <Route path="/dashboard/support/:threadId" element={<DashboardPage section="support" />} />
             <Route path="/dashboard/account" element={<DashboardPage section="account" />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/auth/login" element={<LoginPage />} />
@@ -82,7 +88,11 @@ export default function App() {
             <Route path="/admin/shipments" element={<AdminShipmentsPage />} />
             <Route path="/admin/shipment/:code" element={<AdminShipmentDetailPage />} />
             <Route path="/admin/alerts" element={<AdminAlertsPage />} />
+            <Route path="/admin/messages" element={<AdminMessagesPage />} />
+            <Route path="/admin/thread/:id" element={<AdminMessagesPage />} />
+            <Route path="/admin/mail" element={<AdminMailPage />} />
             <Route path="/admin/customers" element={<AdminCustomersPage />} />
+            <Route path="/admin/settings" element={<AdminSettingsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
           <Toaster

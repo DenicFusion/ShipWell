@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import { EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
 import { collection, doc, onSnapshot, orderBy, query } from "firebase/firestore";
 import {
   AlertCircle,
@@ -7,19 +8,23 @@ import {
   ArrowLeft,
   Check,
   Clock,
+  Copy,
+  CreditCard,
   Loader2,
   Mail,
+  RotateCcw,
   Send,
   Shield,
   Truck,
   Undo2,
   X,
 } from "lucide-react";
-import { db } from "@/lib/firebase";
+import { auth, db } from "@/lib/firebase";
 import { AdminShell } from "@/components/admin/AdminShell";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
 import {
   adminAddCheckpoint,
+  adminAddCustomsCharge,
   adminApproveShipmentItem,
   adminClearHold,
   adminFlagShipmentItem,
@@ -38,11 +43,14 @@ import {
   SERVICES,
 } from "@/lib/quote-engine";
 import {
+  CHARGE_TYPES,
   firestoreTimeToMs,
+  formatUsd,
   getShipmentChip,
   STAGES,
   type AlertKind,
   type AlertTarget,
+  type ChargeType,
   type ShipmentAlert,
   type ShipmentRecord,
   type ShipmentStage,
@@ -134,16 +142,29 @@ export default function AdminShipmentDetailPage() {
   const [nsEta, setNsEta] = useState("");
   const [deliveryEta, setDeliveryEta] = useState("");
 
+  // Customs charges form
+  const [chgType, setChgType] = useState<ChargeType>(CHARGE_TYPES[0]);
+  const [chgAmount, setChgAmount] = useState("38.40");
+  const [chgNote, setChgNote] = useState("");
+  const [chgHold, setChgHold] = useState(true);
+  const [chgTo, setChgTo] = useState<AlertTarget>("receiver");
+
+  // Refund modal + re-auth password
+  const [refundTarget, setRefundTarget] = useState<ShipmentAlert | null>(null);
+  const [refundReason, setRefundReason] = useState("Customs fee adjustment");
+  const [refundPassword, setRefundPassword] = useState("");
+  const [refundNeedsReauth, setRefundNeedsReauth] = useState(false);
+
   // Delay / hold form
   const [holdType, setHoldType] = useState<"Delayed" | "On Hold">("Delayed");
   const [holdReason, setHoldReason] = useState("");
 
   // Alert form
   const [alTo, setAlTo] = useState<AlertTarget>("receiver");
-  const [alKind, setAlKind] = useState<AlertKind>("duty");
-  const [alTitle, setAlTitle] = useState(ALERT_TEMPLATES.duty.title);
-  const [alMsg, setAlMsg] = useState(ALERT_TEMPLATES.duty.message);
-  const [alAmt, setAlAmt] = useState(ALERT_TEMPLATES.duty.amount);
+  const [alKind, setAlKind] = useState<AlertKind>("address");
+  const [alTitle, setAlTitle] = useState(ALERT_TEMPLATES.address.title);
+  const [alMsg, setAlMsg] = useState(ALERT_TEMPLATES.address.message);
+  const [alAmt, setAlAmt] = useState(ALERT_TEMPLATES.address.amount);
   const [alHold, setAlHold] = useState(true);
 
   const loadDetail = useCallback(async () => {
@@ -620,10 +641,273 @@ export default function AdminShipmentDetailPage() {
             </form>
           </div>
 
-          {/* 4. DELAY OR HOLD */}
+          {/* 4. CUSTOMS & DUTY CHARGES */}
+          {(() => {
+            const dutyList = (shipment.alerts || [])
+              .filter((a) => a.kind === "duty")
+              .sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
+            const totalPaid = dutyList.reduce(
+              (acc, a) =>
+                a.payment?.status === "paid" || a.status === "resolved"
+                  ? acc + Number(a.amount || 0)
+                  : acc,
+              0
+            );
+            const totalOpen = dutyList.reduce(
+              (acc, a) =>
+                a.status === "open" && a.payment?.status !== "paid"
+                  ? acc + Math.max(0, Number(a.amount || 0) - Number(a.payment?.amountPaid || 0))
+                  : acc,
+              0
+            );
+
+            return (
+              <div className="ad-card">
+                <div className="ad-ch">
+                  <b>4. Customs &amp; duty charges</b>
+                  <small>Add as many as needed · Bachs checkout</small>
+                </div>
+                <div className="ad-cb">
+                  {dutyList.length > 0 && (
+                    <>
+                      <div className="cl-t" style={{ marginTop: 0 }}>
+                        <span>
+                          Paid:{" "}
+                          <strong style={{ color: "var(--em)" }}>
+                            {formatUsd(totalPaid)}
+                          </strong>
+                        </span>
+                        <span>
+                          Outstanding:{" "}
+                          <strong
+                            style={{
+                              color:
+                                totalOpen > 0 ? "var(--amber)" : "var(--text)",
+                            }}
+                          >
+                            {formatUsd(totalOpen)}
+                          </strong>
+                        </span>
+                      </div>
+                      <div className="cl" style={{ marginBottom: 14 }}>
+                        {dutyList.map((al) => {
+                          const pStatus =
+                            al.payment?.status ||
+                            (al.status === "resolved" ? "paid" : "unpaid");
+                          const isPaid =
+                            pStatus === "paid" || al.status === "resolved";
+                          const isRefunded = pStatus === "refunded";
+                          const refCode =
+                            al.payment?.reference ||
+                            `chg_${shipment.code}_${al.id}`;
+                          return (
+                            <div className="cl-r" key={al.id}>
+                              <span className={`cl-d ${isPaid ? "p" : "o"}`} />
+                              <div className="cl-m">
+                                <b>{al.chargeType || al.title}</b>
+                                <small>
+                                  {al.message}
+                                  {al.createdAtMs
+                                    ? ` · ${formatDateTime(al.createdAtMs)}`
+                                    : ""}
+                                </small>
+                                <small className="mono">Ref: {refCode}</small>
+                              </div>
+                              <strong>
+                                {formatUsd(al.amount, al.currency || "USD")}
+                              </strong>
+                              <span
+                                className={`chip ${
+                                  isRefunded
+                                    ? "n"
+                                    : isPaid
+                                      ? "g"
+                                      : pStatus === "underpaid"
+                                        ? "r"
+                                        : "a"
+                                }`}
+                              >
+                                {isRefunded
+                                  ? "Refunded"
+                                  : isPaid
+                                    ? "Paid"
+                                    : pStatus === "underpaid"
+                                      ? "Underpaid"
+                                      : "Unpaid"}
+                              </span>
+                              <div className="cl-acts">
+                                <button
+                                  type="button"
+                                  className="sw-btn sw-btn-ghost"
+                                  style={{ padding: "5px 9px", fontSize: 11.5 }}
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(refCode);
+                                    toast.success("Reference copied");
+                                  }}
+                                  aria-label="Copy payment reference"
+                                >
+                                  <Copy className="w-3 h-3" />
+                                </button>
+                                {isPaid && al.payment?.paymentId && (
+                                  <button
+                                    type="button"
+                                    className="sw-btn sw-btn-ghost"
+                                    style={{ padding: "5px 9px", fontSize: 11.5 }}
+                                    onClick={() => {
+                                      setRefundTarget(al);
+                                      setRefundPassword("");
+                                      setRefundNeedsReauth(false);
+                                    }}
+                                  >
+                                    <RotateCcw className="w-3 h-3" />
+                                    Refund
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+
+                  <form
+                    className="ad-form"
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      const amt = Number(chgAmount);
+                      if (!Number.isFinite(amt) || amt <= 0) {
+                        toast.error("Enter a USD amount above 0.");
+                        return;
+                      }
+                      setBusyAction("addcharge");
+                      try {
+                        await adminAddCustomsCharge({
+                          shipment,
+                          chargeType: chgType,
+                          amount: amt,
+                          currency: "USD",
+                          note: chgNote,
+                          holdShipment: chgHold,
+                          to: chgTo,
+                          actorUid: user.uid,
+                          actorEmail: adminEmail,
+                        });
+                        setChgNote("");
+                        toast.success(
+                          `${chgType} ($${amt.toFixed(2)}) added & receiver notified`
+                        );
+                        await loadDetail();
+                      } catch (err) {
+                        toast.error(
+                          err instanceof Error
+                            ? err.message
+                            : "Unable to add customs charge."
+                        );
+                      } finally {
+                        setBusyAction("");
+                      }
+                    }}
+                  >
+                    <div className="g2">
+                      <div className="fw">
+                        <label className="lbl" htmlFor="chg-type">
+                          Charge type
+                        </label>
+                        <select
+                          id="chg-type"
+                          className="field"
+                          value={chgType}
+                          onChange={(e) =>
+                            setChgType(e.target.value as ChargeType)
+                          }
+                        >
+                          {CHARGE_TYPES.map((ct) => (
+                            <option key={ct} value={ct}>
+                              {ct}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="fw">
+                        <label className="lbl" htmlFor="chg-amt">
+                          Amount (USD)
+                        </label>
+                        <input
+                          id="chg-amt"
+                          className="field mono"
+                          type="number"
+                          step="0.01"
+                          min="0.50"
+                          value={chgAmount}
+                          onChange={(e) => setChgAmount(e.target.value)}
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className="g2">
+                      <div className="fw">
+                        <label className="lbl" htmlFor="chg-to">
+                          Billed party
+                        </label>
+                        <select
+                          id="chg-to"
+                          className="field"
+                          value={chgTo}
+                          onChange={(e) =>
+                            setChgTo(e.target.value as AlertTarget)
+                          }
+                        >
+                          <option value="receiver">Receiver</option>
+                          <option value="sender">Sender</option>
+                        </select>
+                      </div>
+                      <div className="fw">
+                        <label className="lbl" htmlFor="chg-note">
+                          Note to receiver
+                        </label>
+                        <input
+                          id="chg-note"
+                          className="field"
+                          value={chgNote}
+                          onChange={(e) => setChgNote(e.target.value)}
+                          placeholder="e.g. Tariff assessment ref #884"
+                        />
+                      </div>
+                    </div>
+
+                    <label className="chk">
+                      <input
+                        type="checkbox"
+                        checked={chgHold}
+                        onChange={(e) => setChgHold(e.target.checked)}
+                      />
+                      <span>Hold the parcel until this is paid</span>
+                    </label>
+
+                    <button
+                      type="submit"
+                      disabled={busyAction !== ""}
+                      className="sw-btn sw-btn-em"
+                    >
+                      {busyAction === "addcharge" ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <CreditCard className="w-4 h-4" />
+                      )}
+                      Add charge &amp; notify
+                    </button>
+                  </form>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* 5. DELAY OR HOLD */}
           <div className="ad-card">
             <div className="ad-ch">
-              <b>4. Delay or hold</b>
+              <b>5. Delay or hold</b>
               <small>Banner shown to customer</small>
             </div>
             <div className="ad-cb">
@@ -726,10 +1010,10 @@ export default function AdminShipmentDetailPage() {
 
         {/* RIGHT COLUMN */}
         <div>
-          {/* 5. SEND ACTION ALERT */}
+          {/* 6. SEND ACTION ALERT */}
           <div className="ad-card">
             <div className="ad-ch">
-              <b>5. Ask receiver (or sender) to act</b>
+              <b>6. Ask receiver (or sender) to act</b>
               <small>Creates dashboard &amp; email alert</small>
             </div>
             <div className="ad-cb">
@@ -924,10 +1208,10 @@ export default function AdminShipmentDetailPage() {
             </div>
           </div>
 
-          {/* 6. PARTIES & INVITES */}
+          {/* 7. PARTIES & INVITES */}
           <div className="ad-card">
             <div className="ad-ch">
-              <b>6. Parties &amp; receiver invites</b>
+              <b>7. Parties &amp; receiver invites</b>
               <small>Linking &amp; email status</small>
             </div>
 
@@ -1024,10 +1308,10 @@ export default function AdminShipmentDetailPage() {
             </div>
           </div>
 
-          {/* 7. TIMELINE + UNDO LAST */}
+          {/* 8. TIMELINE + UNDO LAST */}
           <div className="ad-card">
             <div className="ad-ch">
-              <b>7. Timeline</b>
+              <b>8. Timeline</b>
               <button
                 type="button"
                 disabled={busyAction !== "" || sortedEvents.length <= 1}
@@ -1161,6 +1445,121 @@ export default function AdminShipmentDetailPage() {
                   <Loader2 className="w-4 h-4 animate-spin" />
                 )}
                 Flag item &amp; notify sender
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* CUSTOM REACT REFUND MODAL (ZERO window.prompt / window.confirm) */}
+      {refundTarget && (
+        <div className="md" role="dialog" aria-modal="true">
+          <div className="md-b" onClick={() => setRefundTarget(null)} />
+          <div className="md-c">
+            <button
+              className="md-x"
+              onClick={() => setRefundTarget(null)}
+              aria-label="Close"
+            >
+              <X className="w-4 h-4" />
+            </button>
+            <div className="au-ic">
+              <RotateCcw className="w-6 h-6" />
+            </div>
+            <div className="au-t">ISSUE BACHS REFUND</div>
+            <p className="au-r">
+              Refund{" "}
+              <b>{formatUsd(refundTarget.amount, refundTarget.currency || "USD")}</b>{" "}
+              for <b>{refundTarget.chargeType || refundTarget.title}</b> via
+              Bachs.
+            </p>
+            <form
+              className="au-f"
+              onSubmit={async (e) => {
+                e.preventDefault();
+                setBusyAction("refund");
+                try {
+                  if (refundNeedsReauth && auth.currentUser && user.email) {
+                    if (!refundPassword) {
+                      throw new Error("Enter your admin password to confirm.");
+                    }
+                    const cred = EmailAuthProvider.credential(
+                      user.email,
+                      refundPassword
+                    );
+                    await reauthenticateWithCredential(auth.currentUser, cred);
+                  }
+                  const token = await auth.currentUser?.getIdToken(true);
+                  const res = await fetch("/api/admin/refund", {
+                    method: "POST",
+                    headers: {
+                      "Content-Type": "application/json",
+                      Authorization: `Bearer ${token}`,
+                    },
+                    body: JSON.stringify({
+                      code: shipment.code,
+                      alertId: refundTarget.id,
+                      reason: refundReason,
+                    }),
+                  });
+                  const data = await res.json();
+                  if (!res.ok) {
+                    if (data.code === "RECENT_AUTH_REQUIRED") {
+                      setRefundNeedsReauth(true);
+                      toast("Confirm your password to issue this refund.");
+                      return;
+                    }
+                    throw new Error(data.error || "Refund failed.");
+                  }
+                  toast.success("Refund submitted to Bachs");
+                  setRefundTarget(null);
+                  await loadDetail();
+                } catch (err) {
+                  toast.error(
+                    err instanceof Error ? err.message : "Refund failed."
+                  );
+                } finally {
+                  setBusyAction("");
+                }
+              }}
+            >
+              <div className="fw">
+                <label className="lbl" htmlFor="ref-reason">
+                  Reason
+                </label>
+                <input
+                  id="ref-reason"
+                  className="field"
+                  value={refundReason}
+                  onChange={(e) => setRefundReason(e.target.value)}
+                  required
+                />
+              </div>
+              {refundNeedsReauth && (
+                <div className="fw">
+                  <label className="lbl" htmlFor="ref-pass">
+                    Confirm admin password
+                  </label>
+                  <input
+                    id="ref-pass"
+                    type="password"
+                    className="field"
+                    value={refundPassword}
+                    onChange={(e) => setRefundPassword(e.target.value)}
+                    placeholder="Enter your password"
+                    required
+                  />
+                </div>
+              )}
+              <button
+                type="submit"
+                disabled={busyAction === "refund"}
+                className="sw-btn sw-btn-red sw-btn-lg sw-btn-block"
+              >
+                {busyAction === "refund" && (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                )}
+                Confirm full refund
               </button>
             </form>
           </div>

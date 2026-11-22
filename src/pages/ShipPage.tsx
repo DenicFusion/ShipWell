@@ -12,6 +12,7 @@ import {
   FileText,
   Home as HomeIcon,
   Loader2,
+  Lock,
   Package,
   Truck,
   X,
@@ -44,7 +45,8 @@ import toast from "react-hot-toast";
 
 function ShipWizardContent() {
   const [searchParams] = useSearchParams();
-  const { user, profile, openAuth, refreshOpenAlerts } = useShipWell();
+  const { user, profile, authReady, openAuth, refreshOpenAlerts } = useShipWell();
+  const promptedRef = useRef(false);
 
   const qFrom = searchParams.get("from");
   const qTo = searchParams.get("to");
@@ -115,6 +117,17 @@ function ShipWizardContent() {
       checkAccountExists(rEmail).then(setReceiverExists);
     }
   }, [step, rEmail]);
+
+  useEffect(() => {
+    if (authReady && !user && !promptedRef.current) {
+      promptedRef.current = true;
+      openAuth({
+        mode: "login",
+        prompt:
+          "Log in or create a free account to ship a parcel. Your tracking number and the receiver link are kept on your account.",
+      });
+    }
+  }, [authReady, user, openAuth]);
 
   const actualKg = Math.max(0.1, Number(pKg) || 0.1);
   const volKg =
@@ -266,6 +279,66 @@ function ShipWizardContent() {
     }
     await executeBooking(user.uid);
   };
+
+  if (!authReady) {
+    return (
+      <div className="wrap" style={{ paddingTop: 48, paddingBottom: 64 }}>
+        <div className="dx-skel" style={{ height: 220, maxWidth: 640, margin: "0 auto" }} />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="wrap" style={{ paddingTop: 48, paddingBottom: 80 }}>
+        <div className="panel" style={{ maxWidth: 560, margin: "0 auto" }}>
+          <div className="panel-h">
+            <div className="pi">
+              <Lock className="w-[17px] h-[17px]" />
+            </div>
+            <div>
+              <b>Account required to book</b>
+              <small>Log in or create a free ShipWell account</small>
+            </div>
+          </div>
+          <div className="panel-b">
+            <p className="lead" style={{ marginBottom: 20 }}>
+              Log in or create a free account to ship a parcel. Your tracking
+              number and the receiver link are kept on your account.
+            </p>
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                className="sw-btn sw-btn-em"
+                onClick={() =>
+                  openAuth({
+                    mode: "login",
+                    prompt:
+                      "Log in or create a free account to ship a parcel. Your tracking number and the receiver link are kept on your account.",
+                  })
+                }
+              >
+                Log in
+              </button>
+              <button
+                type="button"
+                className="sw-btn sw-btn-ghost"
+                onClick={() =>
+                  openAuth({
+                    mode: "signup",
+                    prompt:
+                      "Log in or create a free account to ship a parcel. Your tracking number and the receiver link are kept on your account.",
+                  })
+                }
+              >
+                Create free account
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (completed) {
     const s = completed.shipment;

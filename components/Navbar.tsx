@@ -3,11 +3,13 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard,
   LogOut,
+  MessageSquare,
   Package,
   Search,
   ShieldCheck,
 } from "lucide-react";
 import { ShipwellLogo } from "@/components/ShipwellLogo";
+import { ThemeSwitch } from "@/components/ThemeSwitch";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
 import { getInitials } from "@/types/tracking";
 import toast from "react-hot-toast";
@@ -16,8 +18,17 @@ export function Navbar() {
   const location = useLocation();
   const pathname = location.pathname;
   const navigate = useNavigate();
-  const { user, profile, isAdmin, openAlertsCount, openAuth, signOutUser } =
-    useShipWell();
+  const {
+    user,
+    profile,
+    isAdmin,
+    openAlertsCount,
+    unreadSupportCount,
+    openAuth,
+    openContact,
+    requireAuthForShip,
+    signOutUser,
+  } = useShipWell();
   const [scrolled, setScrolled] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -52,6 +63,7 @@ export function Navbar() {
   const displayName =
     profile?.name || user?.displayName || user?.email?.split("@")[0] || "Customer";
   const initials = getInitials(displayName);
+  const totalBadge = openAlertsCount + unreadSupportCount;
 
   const handleSignOut = async () => {
     setMenuOpen(false);
@@ -72,6 +84,15 @@ export function Navbar() {
     setDrawerOpen(false);
     setMenuOpen(false);
     openAuth({ mode });
+  };
+
+  const handleShipClick = (e: React.MouseEvent) => {
+    setDrawerOpen(false);
+    setMenuOpen(false);
+    if (!user) {
+      e.preventDefault();
+      requireAuthForShip("/ship");
+    }
   };
 
   return (
@@ -124,9 +145,7 @@ export function Navbar() {
                   style={{ display: "inline-flex", alignItems: "center" }}
                 >
                   Dashboard
-                  {openAlertsCount > 0 && (
-                    <span className="nbadge">{openAlertsCount}</span>
-                  )}
+                  {totalBadge > 0 && <span className="nbadge">{totalBadge}</span>}
                 </Link>
                 <div className="acct" ref={menuRef}>
                   <button
@@ -141,7 +160,7 @@ export function Navbar() {
                     }}
                   >
                     {initials}
-                    {openAlertsCount > 0 && <span className="dotb" />}
+                    {totalBadge > 0 && <span className="dotb" />}
                   </button>
                   {menuOpen && (
                     <div className="amenu">
@@ -156,7 +175,17 @@ export function Navbar() {
                         <LayoutDashboard className="w-4 h-4" />
                         <span>
                           Dashboard{" "}
-                          {openAlertsCount > 0 && `(${openAlertsCount})`}
+                          {totalBadge > 0 && `(${totalBadge})`}
+                        </span>
+                      </Link>
+                      <Link
+                        to="/dashboard/support"
+                        onClick={() => setMenuOpen(false)}
+                      >
+                        <MessageSquare className="w-4 h-4" />
+                        <span>
+                          Support{" "}
+                          {unreadSupportCount > 0 && `(${unreadSupportCount})`}
                         </span>
                       </Link>
                       {isAdmin && (
@@ -168,7 +197,7 @@ export function Navbar() {
                           <span>Admin panel</span>
                         </Link>
                       )}
-                      <Link to="/ship" onClick={() => setMenuOpen(false)}>
+                      <Link to="/ship" onClick={handleShipClick}>
                         <Package className="w-4 h-4" />
                         <span>Ship a parcel</span>
                       </Link>
@@ -176,10 +205,38 @@ export function Navbar() {
                         <Search className="w-4 h-4" />
                         <span>Track a shipment</span>
                       </Link>
-                      <button type="button" onClick={handleSignOut}>
+                      <button
+                        type="button"
+                        className="amenu-item"
+                        onClick={handleSignOut}
+                      >
                         <LogOut className="w-4 h-4" />
                         <span>Sign out</span>
                       </button>
+
+                      <div
+                        style={{
+                          marginTop: 6,
+                          padding: "10px 8px 4px",
+                          borderTop: "1px solid var(--border)",
+                          display: "grid",
+                          gap: 6,
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontSize: 10.5,
+                            fontWeight: 700,
+                            letterSpacing: "0.14em",
+                            textTransform: "uppercase",
+                            color: "var(--faint)",
+                            paddingLeft: 2,
+                          }}
+                        >
+                          Appearance
+                        </span>
+                        <ThemeSwitch compact />
+                      </div>
                     </div>
                   )}
                 </div>
@@ -219,7 +276,7 @@ export function Navbar() {
       </nav>
 
       <div className={`sw-drawer ${drawerOpen ? "open" : ""}`}>
-        <Link className="dl" to="/ship" onClick={() => setDrawerOpen(false)}>
+        <Link className="dl" to="/ship" onClick={handleShipClick}>
           Ship Now <span>→</span>
         </Link>
         <Link className="dl" to="/quote" onClick={() => setDrawerOpen(false)}>
@@ -249,6 +306,24 @@ export function Navbar() {
         >
           How It Works <span>→</span>
         </Link>
+        <button
+          type="button"
+          className="dl"
+          style={{
+            background: "transparent",
+            borderTop: "none",
+            borderLeft: "none",
+            borderRight: "none",
+            borderBottom: "1px solid var(--border2)",
+            textAlign: "left",
+          }}
+          onClick={() => {
+            setDrawerOpen(false);
+            openContact();
+          }}
+        >
+          Contact Support <span>→</span>
+        </button>
 
         {user ? (
           <div className="dcta">
@@ -257,7 +332,7 @@ export function Navbar() {
               className="sw-btn sw-btn-em sw-btn-lg"
               onClick={() => setDrawerOpen(false)}
             >
-              Dashboard{openAlertsCount > 0 ? ` (${openAlertsCount})` : ""}
+              Dashboard{totalBadge > 0 ? ` (${totalBadge})` : ""}
             </Link>
             <button
               type="button"
@@ -285,6 +360,30 @@ export function Navbar() {
             </button>
           </div>
         )}
+
+        <div
+          style={{
+            marginTop: 22,
+            paddingTop: 18,
+            borderTop: "1px solid var(--border)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+          }}
+        >
+          <span
+            style={{
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: "0.16em",
+              textTransform: "uppercase",
+              color: "var(--faint)",
+            }}
+          >
+            Appearance
+          </span>
+          <ThemeSwitch compact />
+        </div>
       </div>
     </>
   );

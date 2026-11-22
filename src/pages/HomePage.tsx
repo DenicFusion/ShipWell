@@ -23,6 +23,7 @@ import {
 import { motion } from "motion/react";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
+import { useShipWell } from "@/components/providers/ShipWellProvider";
 import { formatTrackingCode } from "@/types/tracking";
 import toast from "react-hot-toast";
 
@@ -46,55 +47,18 @@ const PARTNER_LOGOS = [
   "ORBIT LOGISTICS",
 ];
 
-function AnimatedCounter({
-  target,
-  suffix = "",
-  decimals = 0,
-}: {
-  target: number;
-  suffix?: string;
-  decimals?: number;
-}) {
-  const [val, setVal] = useState(0);
-  const ref = useRef<HTMLSpanElement>(null);
-  const ran = useRef(false);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const io = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting && !ran.current) {
-          ran.current = true;
-          const start = performance.now();
-          const dur = 1400;
-          const tick = (now: number) => {
-            const p = Math.min(1, (now - start) / dur);
-            const eased = 1 - Math.pow(1 - p, 3);
-            setVal(target * eased);
-            if (p < 1) requestAnimationFrame(tick);
-          };
-          requestAnimationFrame(tick);
-        }
-      },
-      { threshold: 0.35 }
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  }, [target]);
-
-  return (
-    <span ref={ref}>
-      {decimals > 0 ? val.toFixed(decimals) : Math.round(val)}
-      {suffix}
-    </span>
-  );
-}
-
 export default function HomePage() {
   const navigate = useNavigate();
+  const { user, requireAuthForShip } = useShipWell();
   const [trackCode, setTrackCode] = useState("");
   const [shake, setShake] = useState(false);
+
+  const handleShipLinkClick = (e: React.MouseEvent) => {
+    if (!user) {
+      e.preventDefault();
+      requireAuthForShip("/ship");
+    }
+  };
 
   const handleTrackSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -115,9 +79,9 @@ export default function HomePage() {
       <main className="sw-main flex-1">
         {/* HERO */}
         <section className="sw-hero">
-          <div className="glow g1" />
-          <div className="glow g2" />
-          <div className="glow g3" />
+          <div className="glow gl1" />
+          <div className="glow gl2" />
+          <div className="glow gl3" />
 
           <div className="wrap">
             <div className="sw-badge">
@@ -206,7 +170,7 @@ export default function HomePage() {
                 <path
                   d="M44 112 C 170 6, 430 6, 556 112"
                   fill="none"
-                  stroke="#1E293B"
+                  stroke="var(--border)"
                   strokeWidth="2.5"
                   className="dash"
                   strokeLinecap="round"
@@ -218,33 +182,33 @@ export default function HomePage() {
                   strokeWidth="3"
                   strokeLinecap="round"
                   strokeDasharray="470 700"
-                  style={{ filter: "drop-shadow(0 0 6px rgba(16,185,129,.8))" }}
+                  style={{ filter: "drop-shadow(0 0 6px rgb(var(--em-rgb) / 0.8))" }}
                 />
                 <circle
                   cx="44"
                   cy="112"
                   r="7"
-                  fill="#07090F"
-                  stroke="#10B981"
+                  fill="var(--bg)"
+                  stroke="var(--em)"
                   strokeWidth="2.5"
                 />
                 <circle
                   cx="556"
                   cy="112"
                   r="7"
-                  fill="#07090F"
-                  stroke="#475569"
+                  fill="var(--bg)"
+                  stroke="var(--faint)"
                   strokeWidth="2.5"
                 />
                 <g>
-                  <circle r="14" fill="#10B981" opacity=".18">
+                  <circle r="14" fill="var(--em)" opacity=".18">
                     <animateMotion
                       dur="7s"
                       repeatCount="indefinite"
                       path="M44 112 C 170 6, 430 6, 556 112"
                     />
                   </circle>
-                  <circle r="6" fill="#34D399">
+                  <circle r="6" fill="var(--em2)">
                     <animateMotion
                       dur="7s"
                       repeatCount="indefinite"
@@ -255,7 +219,7 @@ export default function HomePage() {
                 <text
                   x="44"
                   y="140"
-                  fill="#94A3B8"
+                  fill="var(--muted)"
                   fontSize="13"
                   textAnchor="middle"
                   fontWeight="600"
@@ -265,7 +229,7 @@ export default function HomePage() {
                 <text
                   x="556"
                   y="140"
-                  fill="#94A3B8"
+                  fill="var(--muted)"
                   fontSize="13"
                   textAnchor="middle"
                   fontWeight="600"
@@ -314,7 +278,7 @@ export default function HomePage() {
               viewport={{ once: true }}
               transition={{ duration: 0.45 }}
             >
-              <Link className="qac" to="/ship">
+              <Link className="qac" to="/ship" onClick={handleShipLinkClick}>
                 <span className="go">
                   <ArrowUpRight className="w-5 h-5" />
                 </span>
@@ -440,7 +404,7 @@ export default function HomePage() {
                 <span className="more">Talk to sales →</span>
               </Link>
 
-              <Link className="sc" to="/ship">
+              <Link className="sc" to="/ship" onClick={handleShipLinkClick}>
                 <div className="num">05</div>
                 <div className="si">
                   <MapPin className="w-[26px] h-[26px]" />
@@ -537,28 +501,46 @@ export default function HomePage() {
         <div className="stats">
           <div className="wrap">
             <div className="sgrid4">
-              <div className="st">
-                <b>
-                  <AnimatedCounter target={200} suffix="M+" />
-                </b>
+              <motion.div
+                className="st"
+                initial={{ opacity: 0, y: 12 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true }}
+                transition={{ duration: 0.4 }}
+              >
+                <b>200M+</b>
                 <span>Packages Delivered</span>
-              </div>
-              <div className="st">
-                <b>
-                  <AnimatedCounter target={180} suffix="+" />
-                </b>
+              </motion.div>
+              <motion.div
+                className="st"
+                initial={{ opacity: 0, y: 12 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true }}
+                transition={{ duration: 0.4, delay: 0.06 }}
+              >
+                <b>180+</b>
                 <span>Countries Covered</span>
-              </div>
-              <div className="st">
-                <b>
-                  <AnimatedCounter target={99.98} decimals={2} suffix="%" />
-                </b>
+              </motion.div>
+              <motion.div
+                className="st"
+                initial={{ opacity: 0, y: 12 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true }}
+                transition={{ duration: 0.4, delay: 0.12 }}
+              >
+                <b>99.98%</b>
                 <span>On-Time Delivery</span>
-              </div>
-              <div className="st">
+              </motion.div>
+              <motion.div
+                className="st"
+                initial={{ opacity: 0, y: 12 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true }}
+                transition={{ duration: 0.4, delay: 0.18 }}
+              >
                 <b>24/7</b>
                 <span>Live Support</span>
-              </div>
+              </motion.div>
             </div>
           </div>
         </div>

@@ -10,6 +10,7 @@
         "email": { "type": "string", "format": "email", "maxLength": 160 },
         "phone": { "type": "string", "maxLength": 40 },
         "company": { "type": "string", "maxLength": 160 },
+        "theme": { "type": "string", "enum": ["system", "dark", "light"] },
         "prefs": { "type": "object", "description": "Email notification toggles (onway, scan, action)" },
         "createdAt": { "type": "timestamp" },
         "updatedAt": { "type": "timestamp" }
@@ -115,11 +116,14 @@
     },
     "ShipmentAlert": {
       "title": "ShipmentAlert",
-      "description": "Action request sent to the receiver or sender.",
+      "description": "Action request and customs duty charges attached to a shipment.",
       "type": "object",
       "properties": {
         "to": { "type": "string", "enum": ["receiver", "sender"] },
         "kind": { "type": "string", "enum": ["duty", "address", "id", "reschedule", "custom", "item"] },
+        "chargeType": { "type": "string", "maxLength": 80 },
+        "currency": { "type": "string", "maxLength": 8 },
+        "holdShipment": { "type": "boolean" },
         "title": { "type": "string", "maxLength": 160 },
         "message": { "type": "string", "maxLength": 600 },
         "amount": { "type": "number" },
@@ -127,6 +131,7 @@
         "response": { "type": "string", "maxLength": 600 },
         "attachmentName": { "type": "string", "maxLength": 160 },
         "attachmentUrl": { "type": "string", "maxLength": 1024 },
+        "payment": { "type": "object" },
         "createdAt": { "type": "timestamp" },
         "resolvedAt": { "type": "timestamp" }
       },
@@ -185,11 +190,13 @@
       "type": "object",
       "properties": {
         "to": { "type": "string", "maxLength": 160 },
+        "from": { "type": "string", "maxLength": 160 },
         "code": { "type": "string", "maxLength": 24 },
         "template": { "type": "string", "maxLength": 60 },
         "subject": { "type": "string", "maxLength": 240 },
-        "status": { "type": "string", "enum": ["sent", "queued_preview", "failed"] },
+        "status": { "type": "string", "enum": ["sent", "queued_preview", "failed", "delivered", "bounced"] },
         "providerId": { "type": "string", "maxLength": 128 },
+        "htmlPreview": { "type": "string" },
         "createdBy": { "type": "string", "maxLength": 128 },
         "createdAt": { "type": "timestamp" }
       },
@@ -208,6 +215,72 @@
         "createdAt": { "type": "timestamp" }
       },
       "required": ["actorUid", "actorEmail", "action", "detail", "createdAt"]
+    },
+    "SupportThread": {
+      "title": "SupportThread",
+      "description": "Customer and guest support ticket thread.",
+      "type": "object",
+      "properties": {
+        "ticketCode": { "type": "string", "maxLength": 24 },
+        "uid": { "type": "string", "maxLength": 128 },
+        "userName": { "type": "string", "maxLength": 120 },
+        "userEmail": { "type": "string", "maxLength": 160 },
+        "subject": { "type": "string", "maxLength": 200 },
+        "code": { "type": "string", "maxLength": 24 },
+        "status": { "type": "string", "enum": ["open", "closed"] },
+        "source": { "type": "string", "enum": ["web", "email"] },
+        "unreadAdmin": { "type": "boolean" },
+        "unreadUser": { "type": "boolean" },
+        "lastMessageAt": { "type": "number" },
+        "lastMessagePreview": { "type": "string", "maxLength": 200 },
+        "createdAt": { "type": "timestamp" },
+        "updatedAt": { "type": "timestamp" }
+      },
+      "required": ["ticketCode", "userName", "userEmail", "subject", "status", "unreadAdmin", "unreadUser", "lastMessageAt"]
+    },
+    "SupportMessage": {
+      "title": "SupportMessage",
+      "description": "Individual message in a support thread.",
+      "type": "object",
+      "properties": {
+        "from": { "type": "string", "enum": ["user", "admin"] },
+        "senderName": { "type": "string", "maxLength": 120 },
+        "senderEmail": { "type": "string", "maxLength": 160 },
+        "body": { "type": "string", "maxLength": 4000 },
+        "source": { "type": "string", "enum": ["web", "email"] },
+        "ts": { "type": "number" },
+        "createdAt": { "type": "timestamp" }
+      },
+      "required": ["from", "senderName", "senderEmail", "body", "ts"]
+    },
+    "AdminPaymentSettings": {
+      "title": "AdminPaymentSettings",
+      "description": "Public/masked gateway configuration and routing metadata (never holds plaintext secrets).",
+      "type": "object",
+      "properties": {
+        "bachs": { "type": "object" },
+        "resend": { "type": "object" },
+        "stripe": { "type": "object" },
+        "paystack": { "type": "object" },
+        "routing": { "type": "object" },
+        "updatedAt": { "type": "number" },
+        "updatedBy": { "type": "string" }
+      }
+    },
+    "WebhookEventLog": {
+      "title": "WebhookEventLog",
+      "description": "Webhook verification and delivery audit log.",
+      "type": "object",
+      "properties": {
+        "provider": { "type": "string", "maxLength": 40 },
+        "eventType": { "type": "string", "maxLength": 120 },
+        "reference": { "type": "string", "maxLength": 160 },
+        "result": { "type": "string", "maxLength": 40 },
+        "detail": { "type": "string", "maxLength": 400 },
+        "environment": { "type": "string", "maxLength": 20 },
+        "ts": { "type": "number" }
+      },
+      "required": ["provider", "eventType", "result", "ts"]
     }
   },
   "firestore": {
@@ -233,7 +306,7 @@
     },
     "shipments/{code}/alerts/{alertId}": {
       "schema": { "$ref": "ShipmentAlert" },
-      "description": "Receiver/sender action alerts."
+      "description": "Receiver/sender action alerts and customs duty charges."
     },
     "shipments/{code}/invites/{inviteId}": {
       "schema": { "$ref": "ShipmentInvite" },
@@ -254,6 +327,34 @@
     "auditLogs/{logId}": {
       "schema": { "$ref": "AuditLog" },
       "description": "Admin operations audit logs."
+    },
+    "supportThreads/{threadId}": {
+      "schema": { "$ref": "SupportThread" },
+      "description": "Support conversations accessible by thread owner and admins."
+    },
+    "supportThreads/{threadId}/messages/{messageId}": {
+      "schema": { "$ref": "SupportMessage" },
+      "description": "Messages inside a support conversation."
+    },
+    "adminSettings/{docId}": {
+      "schema": { "$ref": "AdminPaymentSettings" },
+      "description": "Non-secret gateway/email settings and routing options."
+    },
+    "adminSecrets/{docId}": {
+      "schema": { "type": "object" },
+      "description": "Server-only AES-256-GCM encrypted API keys and webhook secrets."
+    },
+    "bachsEvents/{eventId}": {
+      "schema": { "type": "object" },
+      "description": "Server-only webhook idempotency deduplication store."
+    },
+    "emailDedup/{dedupKey}": {
+      "schema": { "type": "object" },
+      "description": "Server-only email trigger deduplication store."
+    },
+    "webhookLogs/{logId}": {
+      "schema": { "$ref": "WebhookEventLog" },
+      "description": "Webhook verification history visible to admins."
     }
   }
 }

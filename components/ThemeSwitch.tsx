@@ -1,28 +1,46 @@
-'use client';
-import { useTheme } from 'next-themes'
-import { Search, Moon, Sun } from 'lucide-react'
-import { useEffect, useState } from 'react'
+"use client";
 
-export function ThemeSwitch() {
-  const [mounted, setMounted] = useState(false)
-  const { theme, setTheme } = useTheme()
+import React from "react";
+import { Monitor, Moon, Sun } from "lucide-react";
+import { useShipWell } from "@/components/providers/ShipWellProvider";
+import type { ThemePreference } from "@/types/tracking";
 
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setMounted(true)
-  }, [])
+const OPTIONS: { key: ThemePreference; label: string; Icon: React.ComponentType<{ className?: string }> }[] = [
+  { key: "system", label: "System", Icon: Monitor },
+  { key: "dark", label: "Dark", Icon: Moon },
+  { key: "light", label: "Light", Icon: Sun },
+];
 
-  if (!mounted) {
-    return <div className="w-9 h-9" />
-  }
+export function ThemeSwitch({
+  compact = false,
+  className = "",
+}: {
+  compact?: boolean;
+  className?: string;
+}) {
+  const { themePreference, setThemePreference } = useShipWell();
 
   return (
-    <button
-      onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-      className="p-2 rounded-md hover:bg-bg-surface text-text-muted hover:text-text-base transition-colors"
-      aria-label="Toggle theme"
+    <div
+      className={`seg ${compact ? "compact" : ""} ${className}`.trim()}
+      role="group"
+      aria-label="Theme appearance"
     >
-      {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-    </button>
-  )
+      {OPTIONS.map(({ key, label, Icon }) => {
+        const active = themePreference === key;
+        return (
+          <button
+            key={key}
+            type="button"
+            className={active ? "on" : ""}
+            aria-pressed={active}
+            onClick={() => setThemePreference(key)}
+          >
+            <Icon className={compact ? "w-3.5 h-3.5 shrink-0" : "w-4 h-4 shrink-0"} />
+            <span>{label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
 }

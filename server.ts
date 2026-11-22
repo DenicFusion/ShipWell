@@ -1,7 +1,9 @@
+import crypto from "node:crypto";
 import express from "express";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { FieldValue } from "firebase-admin/firestore";
 import firebaseConfig from "./firebase-applet-config.json" with { type: "json" };
 import { createSignedInviteToken, verifySignedInviteToken } from "./lib/invites.ts";
 import {
@@ -9,13 +11,39 @@ import {
   buildReceiverOnItsWayEmail,
   buildSenderBookingEmail,
   buildShipmentUpdateEmail,
+  buildSupportInboundAdminEmail,
+  buildSupportReplyEmail,
   escapeHtml,
   sanitizeHeaderText,
 } from "./lib/email/templates.ts";
 import { checkRateLimit, dispatchTransactionalEmail } from "./lib/email/sender.ts";
 import { COUNTRIES, calculateShippingPricing } from "./lib/quote-engine.ts";
-import { verifyFirebaseIdTokenFromHeaders } from "./lib/server-auth.ts";
-import { ADMIN_EMAIL, isValidTrackingCode, type ServiceTier } from "./types/tracking.ts";
+import {
+  createBachsTestCheckout,
+  createCustomsCheckout,
+  handleBachsWebhook,
+  issueCustomsRefund,
+  testBachsConnection,
+} from "./lib/server/bachs.ts";
+import {
+  AdminSdkUnavailableError,
+  getAdminDb,
+  isAdminIamError,
+  requireRecentAuth,
+  verifyFirebaseAdminAuth,
+} from "./lib/server/firebase-admin.ts";
+import {
+  loadSettingsBundle,
+  saveAdminSettings,
+  type SaveSettingsPayload,
+} from "./lib/server/settings-store.ts";
+import {
+  ADMIN_EMAIL,
+  isValidTrackingCode,
+  normalizeEmail,
+  type GatewayId,
+  type ServiceTier,
+} from "./types/tracking.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -24,7 +52,9 @@ const isProduction = process.env.NODE_ENV === "production";
 function getOrigin(req: express.Request): string {
   const forwardedProto = req.headers["x-forwarded-proto"];
   const proto =
-    (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto)?.split(",")[0]?.trim() ||
+    (Array.isArray(forwardedProto) ? forwardedProto[0] : forwardedProto)
+      ?.split(",")[0]
+      ?.trim() ||
     req.protocol ||
     "http";
   const host = req.headers.host || `localhost:${PORT}`;
@@ -42,11 +72,62 @@ function getClientIp(req: express.Request): string {
   return raw?.split(",")[0]?.trim() || req.ip || "unknown";
 }
 
+function makeTicketCode(): string {
+  return `TKT-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+}
+
+function stripHtmlTags(html: string): string {
+  return String(html || "")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function handleServerError(res: express.Response, err: unknown, fallback: string) {
+  if (err instanceof AdminSdkUnavailableError || isAdminIamError(err)) {
+    res.status(503).json({
+      error:
+        err instanceof Error && err.message
+          ? err.message
+          : "This action requires Firebase Admin SDK access on your Blaze-plan project.",
+      code: "ADMIN_SDK_UNAVAILABLE",
+    });
+    return;
+  }
+  const msg = err instanceof Error ? err.message : fallback;
+  const status =
+    err && typeof err === "object" && "status" in err && typeof (err as { status: number }).status === "number"
+      ? (err as { status: number }).status
+      : 400;
+  res.status(status >= 400 && status < 600 ? status : 500).json({ error: msg || fallback });
+}
+
 async function recordInviteActionInFirestore(
   tokenHash: string,
   code: string,
   action: "unknown_sender" | "unsubscribe"
 ) {
+  try {
+    const db = getAdminDb();
+    await db
+      .collection("inviteActions")
+      .doc(`${action}_${tokenHash.slice(0, 24)}_${Date.now()}`)
+      .set({
+        tokenHash,
+        code,
+        action,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    return;
+  } catch {
+    // Fallback to REST commit if Admin IAM is unavailable in Starter Tier preview
+  }
+
   const docId = `${action}_${tokenHash.slice(0, 24)}_${Date.now()}`;
   const docPath = `projects/${firebaseConfig.projectId}/databases/${firebaseConfig.firestoreDatabaseId}/documents/inviteActions/${docId}`;
   const commitUrl = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${firebaseConfig.firestoreDatabaseId}/documents:commit`;
@@ -80,9 +161,38 @@ async function recordInviteActionInFirestore(
 async function startServer() {
   const app = express();
   app.set("trust proxy", true);
+
+  // CRITICAL: Raw body route BEFORE express.json() for Bachs webhook signature verification
+  app.post(
+    "/api/bachs-webhook",
+    express.raw({ type: "application/json", limit: "2mb" }),
+    async (req, res) => {
+      try {
+        const rawBody = Buffer.isBuffer(req.body)
+          ? req.body
+          : Buffer.from(
+              typeof req.body === "string" ? req.body : JSON.stringify(req.body || {})
+            );
+        const result = await handleBachsWebhook(rawBody, req.headers, getOrigin(req));
+        res.status(200).json(result);
+      } catch (err) {
+        const status =
+          err &&
+          typeof err === "object" &&
+          "status" in err &&
+          typeof (err as { status: number }).status === "number"
+            ? (err as { status: number }).status
+            : 400;
+        res.status(status).json({
+          error: err instanceof Error ? err.message : "Webhook processing error",
+        });
+      }
+    }
+  );
+
   app.use(express.json({ limit: "2mb" }));
 
-  // ── API ROUTES ──
+  // ── QUOTE API ──
   app.post("/api/quote", (req, res) => {
     try {
       const body = (req.body || {}) as {
@@ -116,6 +226,613 @@ async function startServer() {
     }
   });
 
+  // ── CUSTOMS CHECKOUT (BACHS / FALLBACK) ──
+  app.post("/api/customs/create-checkout", async (req, res) => {
+    try {
+      const actor = await verifyFirebaseAdminAuth(req.headers);
+      if (!actor) {
+        res.status(401).json({ error: "Please log in to pay customs charges." });
+        return;
+      }
+      const body = (req.body || {}) as {
+        code?: string;
+        alertId?: string;
+        gateway?: GatewayId;
+      };
+      const result = await createCustomsCheckout({
+        code: String(body.code || ""),
+        alertId: String(body.alertId || ""),
+        actor,
+        origin: getOrigin(req),
+        gateway: body.gateway,
+      });
+      res.json(result);
+    } catch (err) {
+      handleServerError(res, err, "Unable to start customs payment checkout.");
+    }
+  });
+
+  // ── ADMIN SETTINGS & ENCRYPTED SECRETS ──
+  app.get("/api/admin/settings", async (req, res) => {
+    try {
+      const actor = await verifyFirebaseAdminAuth(req.headers);
+      if (!actor) {
+        res.status(401).json({ error: "Authentication required." });
+        return;
+      }
+      if (!actor.isAdmin) {
+        res.status(403).json({ error: "Admin access required." });
+        return;
+      }
+      const { publicSettings } = await loadSettingsBundle();
+      res.json({ settings: publicSettings });
+    } catch (err) {
+      handleServerError(res, err, "Unable to load admin settings.");
+    }
+  });
+
+  app.post("/api/admin/settings", async (req, res) => {
+    try {
+      const actor = await verifyFirebaseAdminAuth(req.headers);
+      if (!actor) {
+        res.status(401).json({ error: "Authentication required." });
+        return;
+      }
+      if (!actor.isAdmin) {
+        res.status(403).json({ error: "Admin access required." });
+        return;
+      }
+
+      const body = (req.body || {}) as SaveSettingsPayload;
+      const touchesLiveSecrets =
+        Boolean(body.bachs?.liveSecretKey) ||
+        Boolean(body.bachs?.liveWebhookSecret) ||
+        body.bachs?.environment === "live";
+
+      if (touchesLiveSecrets && !requireRecentAuth(actor, 900)) {
+        res.status(403).json({
+          error: "Please confirm your password before updating Live mode or live secrets.",
+          code: "RECENT_AUTH_REQUIRED",
+        });
+        return;
+      }
+
+      const updated = await saveAdminSettings(actor, body);
+      res.json({ settings: updated });
+    } catch (err) {
+      handleServerError(res, err, "Unable to save admin settings.");
+    }
+  });
+
+  app.post("/api/admin/settings/test-bachs", async (req, res) => {
+    try {
+      const actor = await verifyFirebaseAdminAuth(req.headers);
+      if (!actor?.isAdmin) {
+        res.status(actor ? 403 : 401).json({ error: "Admin authorization required." });
+        return;
+      }
+      const result = await testBachsConnection();
+      res.json(result);
+    } catch (err) {
+      handleServerError(res, err, "Bachs connection test failed.");
+    }
+  });
+
+  app.post("/api/admin/settings/create-test-checkout", async (req, res) => {
+    try {
+      const actor = await verifyFirebaseAdminAuth(req.headers);
+      if (!actor?.isAdmin) {
+        res.status(actor ? 403 : 401).json({ error: "Admin authorization required." });
+        return;
+      }
+      const result = await createBachsTestCheckout(actor, getOrigin(req));
+      res.json(result);
+    } catch (err) {
+      handleServerError(res, err, "Unable to create test checkout.");
+    }
+  });
+
+  app.post("/api/admin/settings/test-email", async (req, res) => {
+    try {
+      const actor = await verifyFirebaseAdminAuth(req.headers);
+      if (!actor?.isAdmin) {
+        res.status(actor ? 403 : 401).json({ error: "Admin authorization required." });
+        return;
+      }
+      const body = (req.body || {}) as { to?: string };
+      const targetEmail = sanitizeHeaderText(body.to || actor.email || ADMIN_EMAIL).toLowerCase();
+      if (!targetEmail.includes("@")) {
+        res.status(400).json({ error: "Valid recipient email required." });
+        return;
+      }
+      const origin = getOrigin(req);
+      const result = await dispatchTransactionalEmail(
+        targetEmail,
+        {
+          subject: "ShipWell Email Delivery Test (info.shipwell.cc)",
+          preheader: "Resend outbound settings verified",
+          html: `<!DOCTYPE html><html><body style="background:#07090F;color:#F1F5F9;font-family:sans-serif;padding:24px"><div style="max-width:520px;margin:0 auto;background:#0D1117;border:1px solid #1E293B;border-radius:16px;padding:28px"><h2 style="margin:0 0 12px;color:#10B981">ShipWell Test Email</h2><p style="color:#CBD5E1;font-size:14.5px;line-height:1.6">Your Resend outbound email configuration on <strong>info.shipwell.cc</strong> is working properly.</p><p style="color:#94A3B8;font-size:12.5px">Origin: ${escapeHtml(origin)} · Sent by ${escapeHtml(actor.email)}</p></div></body></html>`,
+          text: `ShipWell Test Email\nYour Resend outbound email configuration is working.\nSent by ${actor.email}`,
+        },
+        {
+          template: "admin_test_email",
+          code: null,
+          createdBy: actor.uid,
+        }
+      );
+      res.json(result);
+    } catch (err) {
+      handleServerError(res, err, "Unable to send test email.");
+    }
+  });
+
+  app.post("/api/admin/refund", async (req, res) => {
+    try {
+      const actor = await verifyFirebaseAdminAuth(req.headers);
+      if (!actor?.isAdmin) {
+        res.status(actor ? 403 : 401).json({ error: "Admin authorization required." });
+        return;
+      }
+      if (!requireRecentAuth(actor, 900)) {
+        res.status(403).json({
+          error: "Please confirm your password before issuing a refund.",
+          code: "RECENT_AUTH_REQUIRED",
+        });
+        return;
+      }
+      const body = (req.body || {}) as {
+        code?: string;
+        alertId?: string;
+        reason?: string;
+      };
+      const result = await issueCustomsRefund({
+        code: String(body.code || ""),
+        alertId: String(body.alertId || ""),
+        actor,
+        reason: body.reason,
+      });
+      res.json(result);
+    } catch (err) {
+      handleServerError(res, err, "Refund failed.");
+    }
+  });
+
+  // ── SUPPORT CONTACT & INBOX ROUTES ──
+  app.post("/api/support/contact", async (req, res) => {
+    try {
+      const ip = getClientIp(req);
+      if (!checkRateLimit(`support:${ip}`, 10, 60 * 60 * 1000)) {
+        res.status(429).json({ error: "Too many messages sent. Please try again later." });
+        return;
+      }
+
+      const actor = await verifyFirebaseAdminAuth(req.headers);
+      const body = (req.body || {}) as {
+        name?: string;
+        email?: string;
+        code?: string;
+        subject?: string;
+        message?: string;
+        _hp?: string;
+      };
+
+      // Honeypot check
+      if (body._hp && String(body._hp).trim().length > 0) {
+        res.json({ ok: true, ticketCode: "TKT-RECEIVED" });
+        return;
+      }
+
+      const name = sanitizeHeaderText(body.name || "").slice(0, 120);
+      const email = normalizeEmail(body.email || actor?.email || "");
+      const codeRaw = sanitizeHeaderText(body.code || "").toUpperCase();
+      const code = isValidTrackingCode(codeRaw) ? codeRaw : null;
+      const subject = sanitizeHeaderText(body.subject || "").slice(0, 160);
+      const message = String(body.message || "").trim().slice(0, 4000);
+
+      if (!name || !email.includes("@") || !subject || !message) {
+        res
+          .status(400)
+          .json({ error: "Name, email, subject, and message are required." });
+        return;
+      }
+
+      const db = getAdminDb();
+      const ticketCode = makeTicketCode();
+      const now = Date.now();
+      const threadRef = db.collection("supportThreads").doc();
+      const msgRef = threadRef.collection("messages").doc();
+
+      const batch = db.batch();
+      batch.set(threadRef, {
+        ticketCode,
+        uid: actor?.uid || null,
+        userName: name,
+        userEmail: email,
+        subject,
+        code,
+        status: "open",
+        source: "web",
+        unreadAdmin: true,
+        unreadUser: false,
+        lastMessageAt: now,
+        lastMessagePreview: message.slice(0, 140),
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      batch.set(msgRef, {
+        from: "user",
+        senderName: name,
+        senderEmail: email,
+        body: message,
+        source: "web",
+        ts: now,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      await batch.commit();
+
+      const { publicSettings } = await loadSettingsBundle();
+      const supportInbox = publicSettings.resend.supportInbox || ADMIN_EMAIL;
+      await dispatchTransactionalEmail(
+        supportInbox,
+        buildSupportInboundAdminEmail({
+          baseUrl: getOrigin(req),
+          ticketCode,
+          senderName: name,
+          senderEmail: email,
+          subject,
+          body: message,
+          trackingCode: code,
+          threadId: threadRef.id,
+        }),
+        {
+          template: "support_contact",
+          code,
+          replyToOverride: email,
+          createdBy: actor?.uid || "public_contact",
+        }
+      );
+
+      res.json({
+        ok: true,
+        threadId: threadRef.id,
+        ticketCode,
+      });
+    } catch (err) {
+      handleServerError(res, err, "Unable to submit support message.");
+    }
+  });
+
+  app.post("/api/support/reply", async (req, res) => {
+    try {
+      const actor = await verifyFirebaseAdminAuth(req.headers);
+      if (!actor) {
+        res.status(401).json({ error: "Please log in to reply." });
+        return;
+      }
+
+      const body = (req.body || {}) as {
+        threadId?: string;
+        message?: string;
+        status?: "open" | "closed";
+      };
+      const threadId = String(body.threadId || "").trim();
+      const message = String(body.message || "").trim().slice(0, 4000);
+      if (!threadId) {
+        res.status(400).json({ error: "Thread ID is required." });
+        return;
+      }
+
+      const db = getAdminDb();
+      const threadRef = db.collection("supportThreads").doc(threadId);
+      const threadSnap = await threadRef.get();
+      if (!threadSnap.exists) {
+        res.status(404).json({ error: "Support thread not found." });
+        return;
+      }
+
+      const thread = threadSnap.data() as {
+        uid?: string | null;
+        userEmail: string;
+        userName: string;
+        ticketCode: string;
+        subject: string;
+        code?: string | null;
+        status: "open" | "closed";
+      };
+
+      const isOwner =
+        (thread.uid && thread.uid === actor.uid) ||
+        normalizeEmail(thread.userEmail) === actor.email;
+      if (!actor.isAdmin && !isOwner) {
+        res.status(403).json({ error: "You cannot reply to this support thread." });
+        return;
+      }
+
+      const now = Date.now();
+      const batch = db.batch();
+      const nextStatus =
+        actor.isAdmin && (body.status === "open" || body.status === "closed")
+          ? body.status
+          : "open";
+
+      if (message) {
+        const msgRef = threadRef.collection("messages").doc();
+        batch.set(msgRef, {
+          from: actor.isAdmin ? "admin" : "user",
+          senderName: actor.isAdmin ? "ShipWell Support" : thread.userName || actor.email,
+          senderEmail: actor.email,
+          body: message,
+          source: "web",
+          ts: now,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+        batch.update(threadRef, {
+          status: nextStatus,
+          unreadAdmin: !actor.isAdmin,
+          unreadUser: actor.isAdmin,
+          lastMessageAt: now,
+          lastMessagePreview: message.slice(0, 140),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      } else if (actor.isAdmin && (body.status === "open" || body.status === "closed")) {
+        batch.update(threadRef, {
+          status: nextStatus,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+
+      await batch.commit();
+
+      if (message) {
+        const { publicSettings } = await loadSettingsBundle();
+        if (actor.isAdmin) {
+          await dispatchTransactionalEmail(
+            thread.userEmail,
+            buildSupportReplyEmail({
+              baseUrl: getOrigin(req),
+              ticketCode: thread.ticketCode,
+              recipientName: thread.userName || "Customer",
+              subject: thread.subject,
+              replyBody: message,
+              trackingCode: thread.code,
+              threadId,
+            }),
+            {
+              template: "support_reply",
+              code: thread.code || null,
+              createdBy: actor.uid,
+            }
+          );
+        } else {
+          await dispatchTransactionalEmail(
+            publicSettings.resend.supportInbox || ADMIN_EMAIL,
+            buildSupportInboundAdminEmail({
+              baseUrl: getOrigin(req),
+              ticketCode: thread.ticketCode,
+              senderName: thread.userName || actor.email,
+              senderEmail: actor.email,
+              subject: thread.subject,
+              body: message,
+              trackingCode: thread.code,
+              threadId,
+            }),
+            {
+              template: "support_customer_reply",
+              code: thread.code || null,
+              replyToOverride: actor.email,
+              createdBy: actor.uid,
+            }
+          );
+        }
+      }
+
+      res.json({ ok: true });
+    } catch (err) {
+      handleServerError(res, err, "Unable to send reply.");
+    }
+  });
+
+  // ── RESEND INBOUND & DELIVERY WEBHOOKS ──
+  app.post("/api/inbound-email", async (req, res) => {
+    try {
+      const { publicSettings, secrets } = await loadSettingsBundle();
+      if (secrets.resendInboundSecret) {
+        const sigHeader =
+          String(req.headers["svix-signature"] || req.headers["x-resend-signature"] || "");
+        const authQuery = String(req.query.secret || "");
+        if (!sigHeader && authQuery !== secrets.resendInboundSecret) {
+          res.status(401).json({ error: "Inbound webhook secret mismatch." });
+          return;
+        }
+      }
+
+      const payload = (req.body || {}) as {
+        type?: string;
+        data?: Record<string, unknown>;
+        from?: string;
+        subject?: string;
+        text?: string;
+        html?: string;
+      };
+
+      const inner = payload.data && typeof payload.data === "object" ? payload.data : payload;
+      const fromRaw = String(inner.from || payload.from || "");
+      const emailMatch = fromRaw.match(/<([^>]+)>/);
+      const fromEmail = normalizeEmail(emailMatch ? emailMatch[1] : fromRaw);
+      const fromName =
+        (emailMatch ? fromRaw.replace(emailMatch[0], "").replace(/["']/g, "").trim() : "") ||
+        fromEmail.split("@")[0] ||
+        "Customer";
+
+      const subject = sanitizeHeaderText(
+        String(inner.subject || payload.subject || "(No subject)")
+      );
+      const rawText = String(inner.text || payload.text || "").trim();
+      const rawHtml = String(inner.html || payload.html || "").trim();
+      const cleanBody = (rawText || stripHtmlTags(rawHtml) || "(Empty message)").slice(
+        0,
+        4000
+      );
+
+      if (!fromEmail.includes("@")) {
+        res.status(200).json({ ok: true, ignored: true });
+        return;
+      }
+
+      const db = getAdminDb();
+      const tktMatch = subject.match(/\[(TKT-[A-Z0-9]+)\]/i);
+      const codeMatch = `${subject} ${cleanBody}`.match(/\b(SW-\d{8}-[A-F0-9]{8})\b/i);
+      const matchedCode = codeMatch ? codeMatch[1].toUpperCase() : null;
+
+      let targetThreadRef: FirebaseFirestore.DocumentReference | null = null;
+      let ticketCode = tktMatch ? tktMatch[1].toUpperCase() : makeTicketCode();
+
+      if (tktMatch) {
+        const snap = await db
+          .collection("supportThreads")
+          .where("ticketCode", "==", ticketCode)
+          .limit(1)
+          .get();
+        if (!snap.empty) {
+          targetThreadRef = snap.docs[0].ref;
+        }
+      }
+
+      if (!targetThreadRef) {
+        const byEmailSnap = await db
+          .collection("supportThreads")
+          .where("userEmail", "==", fromEmail)
+          .where("status", "==", "open")
+          .limit(1)
+          .get();
+        if (!byEmailSnap.empty) {
+          targetThreadRef = byEmailSnap.docs[0].ref;
+          ticketCode = String(byEmailSnap.docs[0].data().ticketCode || ticketCode);
+        }
+      }
+
+      const now = Date.now();
+      if (!targetThreadRef) {
+        targetThreadRef = db.collection("supportThreads").doc();
+        await targetThreadRef.set({
+          ticketCode,
+          uid: null,
+          userName: fromName,
+          userEmail: fromEmail,
+          subject: subject.replace(/\[TKT-[A-Z0-9]+\]/gi, "").trim() || "Email enquiry",
+          code: matchedCode,
+          status: "open",
+          source: "email",
+          unreadAdmin: true,
+          unreadUser: false,
+          lastMessageAt: now,
+          lastMessagePreview: cleanBody.slice(0, 140),
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      } else {
+        await targetThreadRef.update({
+          status: "open",
+          unreadAdmin: true,
+          lastMessageAt: now,
+          lastMessagePreview: cleanBody.slice(0, 140),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+
+      await targetThreadRef.collection("messages").add({
+        from: "user",
+        senderName: fromName,
+        senderEmail: fromEmail,
+        body: cleanBody,
+        source: "email",
+        ts: now,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+
+      await db.collection("webhookLogs").add({
+        provider: "resend-inbound",
+        eventType: "email.received",
+        reference: ticketCode,
+        result: "processed",
+        detail: `Inbound reply from ${fromEmail}`,
+        ts: now,
+      });
+
+      await dispatchTransactionalEmail(
+        publicSettings.resend.supportInbox || ADMIN_EMAIL,
+        buildSupportInboundAdminEmail({
+          baseUrl: getOrigin(req),
+          ticketCode,
+          senderName: fromName,
+          senderEmail: fromEmail,
+          subject,
+          body: cleanBody,
+          trackingCode: matchedCode,
+          threadId: targetThreadRef.id,
+        }),
+        {
+          template: "inbound_email_alert",
+          code: matchedCode,
+          replyToOverride: fromEmail,
+          createdBy: "resend-inbound",
+        }
+      );
+
+      res.status(200).json({ ok: true, threadId: targetThreadRef.id, ticketCode });
+    } catch (err) {
+      handleServerError(res, err, "Inbound email webhook failed.");
+    }
+  });
+
+  app.post("/api/resend-webhook", async (req, res) => {
+    try {
+      const payload = (req.body || {}) as {
+        type?: string;
+        data?: { email_id?: string };
+      };
+      const eventType = String(payload.type || "");
+      const emailId = String(payload.data?.email_id || "").trim();
+      if (!emailId) {
+        res.status(200).json({ ok: true, ignored: true });
+        return;
+      }
+
+      const db = getAdminDb();
+      const nextStatus =
+        eventType === "email.delivered"
+          ? "delivered"
+          : eventType === "email.bounced" || eventType === "email.delivery_delayed"
+            ? "bounced"
+            : null;
+
+      if (nextStatus) {
+        const snap = await db
+          .collection("emailLogs")
+          .where("providerId", "==", emailId)
+          .limit(3)
+          .get();
+        await Promise.all(
+          snap.docs.map((d) => d.ref.update({ status: nextStatus }))
+        );
+      }
+
+      await db.collection("webhookLogs").add({
+        provider: "resend",
+        eventType,
+        reference: emailId,
+        result: "processed",
+        detail: `Updated delivery state (${nextStatus || "ignored"})`,
+        ts: Date.now(),
+      });
+
+      res.status(200).json({ ok: true });
+    } catch (err) {
+      handleServerError(res, err, "Resend webhook error.");
+    }
+  });
+
+  // ── INVITE VERIFICATION & EMAIL ROUTES ──
   app.post("/api/invites/verify", (req, res) => {
     try {
       const body = (req.body || {}) as { token?: string; code?: string };
@@ -177,7 +894,7 @@ async function startServer() {
 
   app.post("/api/invites/create", async (req, res) => {
     try {
-      const authUser = await verifyFirebaseIdTokenFromHeaders(req.headers);
+      const authUser = await verifyFirebaseAdminAuth(req.headers);
       if (!authUser) {
         res.status(401).json({ error: "Authentication required." });
         return;
@@ -246,6 +963,12 @@ async function startServer() {
       });
 
       const receiverHasAccount = Boolean(body.receiverHasAccount);
+      const templateName = receiverHasAccount
+        ? "on_its_way"
+        : body.isReminder
+          ? "reminder"
+          : "invite";
+
       const receiverPayload = receiverHasAccount
         ? buildReceiverOnItsWayEmail({
             baseUrl,
@@ -275,7 +998,12 @@ async function startServer() {
 
       const receiverDispatch = await dispatchTransactionalEmail(
         receiverEmail,
-        receiverPayload
+        receiverPayload,
+        {
+          template: templateName,
+          code,
+          createdBy: authUser.uid,
+        }
       );
 
       let senderDispatch = null;
@@ -293,17 +1021,17 @@ async function startServer() {
           totalFormatted: String(body.totalFormatted || "$0.00"),
         });
         senderSubject = senderPayload.subject;
-        senderDispatch = await dispatchTransactionalEmail(senderEmail, senderPayload);
+        senderDispatch = await dispatchTransactionalEmail(senderEmail, senderPayload, {
+          template: "sender_booking",
+          code,
+          createdBy: authUser.uid,
+        });
       }
 
       res.json({
         tokenHash,
         expiresAt,
-        template: receiverHasAccount
-          ? "on_its_way"
-          : body.isReminder
-            ? "reminder"
-            : "invite",
+        template: templateName,
         invitePath: `/track/${code}?invite=${token}`,
         receiverEmailResult: {
           status: receiverDispatch.status,
@@ -327,7 +1055,7 @@ async function startServer() {
 
   app.post("/api/shipments/notify", async (req, res) => {
     try {
-      const authUser = await verifyFirebaseIdTokenFromHeaders(req.headers);
+      const authUser = await verifyFirebaseAdminAuth(req.headers);
       if (!authUser) {
         res.status(401).json({ error: "Authentication required." });
         return;
@@ -383,7 +1111,11 @@ async function startServer() {
         inviteToken,
       });
 
-      const result = await dispatchTransactionalEmail(toEmail, payload);
+      const result = await dispatchTransactionalEmail(toEmail, payload, {
+        template: `shipment_${updateType}`,
+        code,
+        createdBy: authUser.uid,
+      });
       res.json({
         status: result.status,
         providerId: result.providerId,
@@ -458,12 +1190,21 @@ Monthly volume: ${volume}
 
 ${message}`;
 
-      const result = await dispatchTransactionalEmail(ADMIN_EMAIL, {
-        subject,
-        preheader: `${company} (${plan})`,
-        html,
-        text,
-      });
+      const result = await dispatchTransactionalEmail(
+        ADMIN_EMAIL,
+        {
+          subject,
+          preheader: `${company} (${plan})`,
+          html,
+          text,
+        },
+        {
+          template: "business_lead",
+          code: null,
+          replyToOverride: email,
+          createdBy: "lead_form",
+        }
+      );
 
       res.json({
         status: result.status,

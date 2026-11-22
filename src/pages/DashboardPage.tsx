@@ -11,6 +11,7 @@ import { DashboardParcelList } from "@/components/dashboard/DashboardParcelList"
 import { DashboardTrack } from "@/components/dashboard/DashboardTrack";
 import { DashboardAlerts } from "@/components/dashboard/DashboardAlerts";
 import { DashboardAccount } from "@/components/dashboard/DashboardAccount";
+import { DashboardSupport } from "@/components/dashboard/DashboardSupport";
 import { formatTrackingCode } from "@/types/tracking";
 
 export default function DashboardPage({
@@ -19,8 +20,9 @@ export default function DashboardPage({
   section?: DashboardSection;
 }) {
   const { user, profile, isAdmin } = useShipWell();
-  const params = useParams<{ code?: string }>();
+  const params = useParams<{ code?: string; threadId?: string }>();
   const routeCode = params.code ? formatTrackingCode(params.code) : "";
+  const routeThreadId = params.threadId || "";
 
   const {
     loading,
@@ -74,10 +76,16 @@ export default function DashboardPage({
           : "Nothing pending",
       };
     }
+    if (section === "support") {
+      return {
+        title: "SUPPORT",
+        subtitle: "Messages with ShipWell operations",
+      };
+    }
     if (section === "account") {
       return {
         title: "ACCOUNT",
-        subtitle: "Your details and notifications",
+        subtitle: "Your details, notifications and appearance",
       };
     }
     return {
@@ -98,7 +106,13 @@ export default function DashboardPage({
       incomingActiveCount={incomingActiveCount}
       sentCount={sent.length}
       openAlertsCount={openAlerts.length}
-      loading={Boolean(user && loading && section !== "track" && section !== "account")}
+      loading={Boolean(
+        user &&
+          loading &&
+          section !== "track" &&
+          section !== "account" &&
+          section !== "support"
+      )}
     >
       {user && section === "overview" && (
         <DashboardOverview
@@ -143,6 +157,15 @@ export default function DashboardPage({
         <DashboardAlerts
           openAlerts={openAlerts}
           resolvedAlerts={resolvedAlerts}
+        />
+      )}
+
+      {user && section === "support" && (
+        <DashboardSupport
+          user={user}
+          displayName={displayName}
+          allUnique={allUnique}
+          routeThreadId={routeThreadId}
         />
       )}
 

@@ -21,6 +21,7 @@ import {
 import toast from "react-hot-toast";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
 import { RouteArcMap, StageStepper } from "@/components/dashboard/RouteArcMap";
+import { CustomsLedger } from "@/components/tracking/CustomsLedger";
 import {
   getEtaSummary,
   myOpenAlertsForShipment,
@@ -608,6 +609,13 @@ function FullTrackedContent({
                 ))}
               </div>
             </div>
+          )}
+          {(shipment.alerts || []).some((a) => a.kind === "duty") && (
+            <CustomsLedger
+              shipment={shipment}
+              viewerRole={role}
+              isAdmin={isAdmin}
+            />
           )}
         </div>
       </div>

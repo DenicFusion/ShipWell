@@ -31,7 +31,7 @@ function getBaseUrl(origin?: string): string {
     process.env.APP_URL ||
     process.env.VITE_APP_URL ||
     process.env.NEXT_PUBLIC_APP_URL ||
-    "http://localhost:3000";
+    "https://shipwell.cc";
   return base.replace(/\/+$/, "");
 }
 
@@ -59,12 +59,12 @@ function renderEmailShell(opts: ShellOptions): string {
 <title>${escapeHtml(opts.heading)}</title>
 <style>
   @media (prefers-color-scheme: light) {
-    body, .sw-outer { background-color: #F8FAFC !important; color: #0F172A !important; }
-    .sw-card { background-color: #FFFFFF !important; border-color: #E2E8F0 !important; }
+    body, .sw-outer { background-color: #F3F6FA !important; color: #0F172A !important; }
+    .sw-card { background-color: #FFFFFF !important; border-color: #DCE3EC !important; }
     .sw-heading, .sw-brand, .sw-strong { color: #0F172A !important; }
     .sw-copy { color: #334155 !important; }
     .sw-muted { color: #64748B !important; }
-    .sw-link-box { background-color: #F1F5F9 !important; border-color: #E2E8F0 !important; }
+    .sw-link-box { background-color: #F1F5F9 !important; border-color: #DCE3EC !important; }
   }
   @media only screen and (max-width: 600px) {
     .sw-pad { padding: 28px 20px !important; }
@@ -82,7 +82,6 @@ function renderEmailShell(opts: ShellOptions): string {
         <table role="presentation" class="sw-card" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;background-color:#0D1117;border:1px solid #1E293B;border-radius:18px;overflow:hidden;">
           <tr>
             <td class="sw-pad" style="padding:36px 32px;">
-              <!-- Logo Lockup -->
               <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:26px;">
                 <tr>
                   <td valign="middle" style="padding-right:11px;">
@@ -95,17 +94,14 @@ function renderEmailShell(opts: ShellOptions): string {
                 </tr>
               </table>
 
-              <!-- Heading -->
               <h1 class="sw-heading" style="margin:0 0 20px 0;font-size:26px;font-weight:700;line-height:1.25;color:#F1F5F9;letter-spacing:-0.01em;">
                 ${escapeHtml(opts.heading)}
               </h1>
 
-              <!-- Body -->
               <div class="sw-copy" style="font-size:15.5px;line-height:1.65;color:#E2E8F0;">
                 ${opts.bodyHtml}
               </div>
 
-              <!-- Primary CTA -->
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:26px 0 22px 0;">
                 <tr>
                   <td align="left">
@@ -116,7 +112,6 @@ function renderEmailShell(opts: ShellOptions): string {
                 </tr>
               </table>
 
-              <!-- Fallback URL -->
               <p class="sw-muted" style="margin:0 0 6px 0;font-size:13px;line-height:1.5;color:#94A3B8;">
                 Or copy this link into your browser:
               </p>
@@ -130,7 +125,6 @@ function renderEmailShell(opts: ShellOptions): string {
                   : ""
               }
 
-              <!-- Footer -->
               <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px solid #1E293B;padding-top:20px;margin-top:8px;">
                 <tr>
                   <td class="sw-muted" style="font-size:12.5px;line-height:1.6;color:#64748B;">
@@ -382,7 +376,7 @@ export function buildShipmentUpdateEmail(params: {
   const first = sanitizeHeaderText(firstName(params.recipientName));
   const deepUrl =
     params.updateType === "action_required" && params.hasAccount
-      ? `${baseUrl}/dashboard?tab=alerts`
+      ? `${baseUrl}/dashboard/track/${encodeURIComponent(code)}`
       : params.inviteToken && !params.hasAccount
         ? `${baseUrl}/track/${encodeURIComponent(code)}?invite=${encodeURIComponent(params.inviteToken)}`
         : `${baseUrl}/track/${encodeURIComponent(code)}`;
@@ -428,5 +422,221 @@ export function buildShipmentUpdateEmail(params: {
         "You are receiving updates for an active ShipWell shipment. Questions? Reply to this email.",
     }),
     text: `${params.headline}\n\nHello ${first}, update for ${code}:\n${params.details}\n\nOpen: ${deepUrl}`,
+  };
+}
+
+export function buildCustomsChargeEmail(params: {
+  baseUrl?: string;
+  trackingCode: string;
+  recipientName: string;
+  chargeType: string;
+  amountFormatted: string;
+  note: string;
+  held: boolean;
+  hasAccount: boolean;
+}): EmailPayload {
+  const baseUrl = getBaseUrl(params.baseUrl);
+  const code = sanitizeHeaderText(params.trackingCode).toUpperCase();
+  const first = sanitizeHeaderText(firstName(params.recipientName));
+  const payUrl = `${baseUrl}/dashboard/track/${encodeURIComponent(code)}`;
+
+  const bodyHtml = `
+    <p style="margin:0 0 16px 0;">Hello ${escapeHtml(first)}.</p>
+    <p style="margin:0 0 16px 0;">
+      Customs &amp; clearance on shipment <strong style="font-family:'JetBrains Mono',Consolas,monospace;color:#34D399;">${escapeHtml(code)}</strong> requires payment before ${params.held ? "movement can resume" : "final release"}:
+    </p>
+    <p style="margin:0 0 16px 0;">
+      Charge: <strong class="sw-strong" style="color:#F1F5F9;">${escapeHtml(params.chargeType)}</strong><br>
+      Amount due: <strong style="font-family:'JetBrains Mono',Consolas,monospace;color:#34D399;font-size:18px;">${escapeHtml(params.amountFormatted)}</strong>
+      ${params.note ? `<br>Note: ${escapeHtml(params.note)}` : ""}
+    </p>
+    <p style="margin:0;">
+      Pay securely via Bachs Checkout from your ShipWell dashboard. Hold clears automatically once all required charges are settled.
+    </p>
+  `;
+
+  return {
+    subject: sanitizeHeaderText(
+      `Action required (${code}): ${params.chargeType} (${params.amountFormatted})`
+    ),
+    preheader: `${params.chargeType} · ${params.amountFormatted} due on ${code}`,
+    html: renderEmailShell({
+      baseUrl,
+      preheader: `${params.chargeType} · ${params.amountFormatted} due`,
+      heading: `${params.chargeType} due (${params.amountFormatted})`,
+      bodyHtml,
+      ctaLabel: params.hasAccount ? "Pay customs charge" : "Sign in to pay",
+      ctaUrl: payUrl,
+      fallbackUrl: payUrl,
+      footerHtml:
+        "Mandatory clearance payment notification for an active ShipWell shipment. Questions? Reply to this email.",
+    }),
+    text: `Action required on ${code}: ${params.chargeType} (${params.amountFormatted})\n\n${params.note || ""}\nPay at: ${payUrl}`,
+  };
+}
+
+export function buildChargePaidEmail(params: {
+  baseUrl?: string;
+  trackingCode: string;
+  recipientName: string;
+  chargeType: string;
+  amountFormatted: string;
+  paymentId: string;
+  holdReleased: boolean;
+  remainingCount: number;
+}): EmailPayload {
+  const baseUrl = getBaseUrl(params.baseUrl);
+  const code = sanitizeHeaderText(params.trackingCode).toUpperCase();
+  const first = sanitizeHeaderText(firstName(params.recipientName));
+  const trackUrl = `${baseUrl}/dashboard/track/${encodeURIComponent(code)}`;
+
+  const statusLine = params.holdReleased
+    ? "All holds have been released and your parcel is cleared to move forward."
+    : `Your parcel remains on hold with ${params.remainingCount} pending item(s) still open.`;
+
+  const bodyHtml = `
+    <p style="margin:0 0 16px 0;">Hello ${escapeHtml(first)}.</p>
+    <p style="margin:0 0 16px 0;">
+      Your payment of <strong style="font-family:'JetBrains Mono',Consolas,monospace;color:#34D399;">${escapeHtml(params.amountFormatted)}</strong> for <strong class="sw-strong" style="color:#F1F5F9;">${escapeHtml(params.chargeType)}</strong> on shipment <strong style="font-family:'JetBrains Mono',Consolas,monospace;color:#34D399;">${escapeHtml(code)}</strong> is confirmed.
+    </p>
+    <p style="margin:0 0 16px 0;">
+      Receipt reference: <strong style="font-family:'JetBrains Mono',Consolas,monospace;">${escapeHtml(params.paymentId)}</strong><br>
+      Status: <strong class="sw-strong" style="color:#F1F5F9;">${escapeHtml(statusLine)}</strong>
+    </p>
+  `;
+
+  return {
+    subject: sanitizeHeaderText(
+      `Payment confirmed (${code}) — ${params.amountFormatted}`
+    ),
+    preheader: `${params.chargeType} paid (${params.amountFormatted})`,
+    html: renderEmailShell({
+      baseUrl,
+      preheader: `Payment confirmed for ${code}`,
+      heading: params.holdReleased ? "Payment confirmed & hold released" : "Payment confirmed",
+      bodyHtml,
+      ctaLabel: "View shipment & receipt",
+      ctaUrl: trackUrl,
+      fallbackUrl: trackUrl,
+      footerHtml:
+        "Thank you for using ShipWell. Questions? Reply to this email.",
+    }),
+    text: `Payment confirmed for ${code}: ${params.chargeType} (${params.amountFormatted})\nRef: ${params.paymentId}\n${statusLine}\nView: ${trackUrl}`,
+  };
+}
+
+export function buildHoldReleasedEmail(params: {
+  baseUrl?: string;
+  trackingCode: string;
+  recipientName: string;
+  etaLabel: string;
+}): EmailPayload {
+  const baseUrl = getBaseUrl(params.baseUrl);
+  const code = sanitizeHeaderText(params.trackingCode).toUpperCase();
+  const first = sanitizeHeaderText(firstName(params.recipientName));
+  const trackUrl = `${baseUrl}/track/${encodeURIComponent(code)}`;
+
+  const bodyHtml = `
+    <p style="margin:0 0 16px 0;">Hello ${escapeHtml(first)}.</p>
+    <p style="margin:0 0 16px 0;">
+      Good news — the hold on shipment <strong style="font-family:'JetBrains Mono',Consolas,monospace;color:#34D399;">${escapeHtml(code)}</strong> has been released.
+    </p>
+    <p style="margin:0;">Estimated delivery remains <strong class="sw-strong" style="color:#F1F5F9;">${escapeHtml(params.etaLabel)}</strong>.</p>
+  `;
+
+  return {
+    subject: sanitizeHeaderText(`Hold released — ${code} is moving again`),
+    preheader: `${code} hold cleared · Est. delivery ${params.etaLabel}`,
+    html: renderEmailShell({
+      baseUrl,
+      preheader: `${code} hold released`,
+      heading: "Hold released — moving again",
+      bodyHtml,
+      ctaLabel: "Track live",
+      ctaUrl: trackUrl,
+      fallbackUrl: trackUrl,
+      footerHtml: "ShipWell Logistics Ltd. · Questions? Reply to this email.",
+    }),
+    text: `Hold released for ${code}. Estimated delivery: ${params.etaLabel}\nTrack: ${trackUrl}`,
+  };
+}
+
+export function buildSupportReplyEmail(params: {
+  baseUrl?: string;
+  ticketCode: string;
+  recipientName: string;
+  subject: string;
+  replyBody: string;
+  trackingCode?: string | null;
+  threadId: string;
+}): EmailPayload {
+  const baseUrl = getBaseUrl(params.baseUrl);
+  const first = sanitizeHeaderText(firstName(params.recipientName));
+  const threadUrl = `${baseUrl}/dashboard/support/${encodeURIComponent(params.threadId)}`;
+  const codeNote = params.trackingCode ? ` · Parcel ${params.trackingCode}` : "";
+
+  const bodyHtml = `
+    <p style="margin:0 0 14px 0;">Hello ${escapeHtml(first)},</p>
+    <div style="margin:0 0 16px 0;padding:16px 18px;border-radius:12px;background:#111827;border:1px solid #1E293B;white-space:pre-wrap;color:#F1F5F9;font-size:14.5px;line-height:1.6;">${escapeHtml(params.replyBody)}</div>
+    <p style="margin:0;font-size:13.5px;color:#94A3B8;">Reply directly to this email or continue the conversation in your ShipWell Support inbox.</p>
+  `;
+
+  return {
+    subject: sanitizeHeaderText(
+      `Re: ${params.subject} [${params.ticketCode}]${codeNote}`
+    ),
+    preheader: params.replyBody.slice(0, 90),
+    html: renderEmailShell({
+      baseUrl,
+      preheader: `Reply on ${params.ticketCode}`,
+      heading: `Support reply (${params.ticketCode})`,
+      bodyHtml,
+      ctaLabel: "View in dashboard",
+      ctaUrl: threadUrl,
+      fallbackUrl: threadUrl,
+      footerHtml: `Ticket ${escapeHtml(params.ticketCode)} · Reply directly to support@info.shipwell.cc`,
+    }),
+    text: `Hello ${first},\n\n${params.replyBody}\n\n---\nTicket ${params.ticketCode}\nView conversation: ${threadUrl}`,
+  };
+}
+
+export function buildSupportInboundAdminEmail(params: {
+  baseUrl?: string;
+  ticketCode: string;
+  senderName: string;
+  senderEmail: string;
+  subject: string;
+  body: string;
+  trackingCode?: string | null;
+  threadId: string;
+}): EmailPayload {
+  const baseUrl = getBaseUrl(params.baseUrl);
+  const adminUrl = `${baseUrl}/admin/thread/${encodeURIComponent(params.threadId)}`;
+
+  const bodyHtml = `
+    <p style="margin:0 0 12px 0;">
+      From: <strong class="sw-strong" style="color:#F1F5F9;">${escapeHtml(params.senderName)}</strong> (${escapeHtml(params.senderEmail)})<br>
+      Ticket: <strong style="font-family:'JetBrains Mono',Consolas,monospace;color:#34D399;">${escapeHtml(params.ticketCode)}</strong>
+      ${params.trackingCode ? `<br>Shipment: <strong style="font-family:'JetBrains Mono',Consolas,monospace;color:#34D399;">${escapeHtml(params.trackingCode)}</strong>` : ""}
+    </p>
+    <div style="margin:0 0 12px 0;padding:16px 18px;border-radius:12px;background:#111827;border:1px solid #1E293B;white-space:pre-wrap;color:#F1F5F9;font-size:14.5px;line-height:1.6;">${escapeHtml(params.body)}</div>
+  `;
+
+  return {
+    subject: sanitizeHeaderText(
+      `[Support ${params.ticketCode}] ${params.subject}`
+    ),
+    preheader: `${params.senderName}: ${params.body.slice(0, 80)}`,
+    html: renderEmailShell({
+      baseUrl,
+      preheader: `New message from ${params.senderEmail}`,
+      heading: `New support message (${params.ticketCode})`,
+      bodyHtml,
+      ctaLabel: "Open in Admin Inbox",
+      ctaUrl: adminUrl,
+      fallbackUrl: adminUrl,
+      footerHtml: "ShipWell Operations Inbox",
+    }),
+    text: `New support message ${params.ticketCode}\nFrom: ${params.senderName} (${params.senderEmail})\n${params.trackingCode ? `Shipment: ${params.trackingCode}\n` : ""}\n${params.body}\n\nOpen: ${adminUrl}`,
   };
 }

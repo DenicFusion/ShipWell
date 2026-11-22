@@ -30,6 +30,7 @@ import {
   type AlertKind,
   type AlertTarget,
   type BusinessLead,
+  type ChargeType,
   type NotificationPrefs,
   type PartyInfo,
   type ServiceTier,
@@ -37,6 +38,7 @@ import {
   type ShipmentInviteRecord,
   type ShipmentRecord,
   type ShipmentStage,
+  type ThemePreference,
   type TrackingEvent,
   type TrackingTeaser,
   type UserProfile,
@@ -74,6 +76,7 @@ export async function syncUserProfileDoc(params: {
   email: string;
   phone?: string;
   company?: string;
+  theme?: ThemePreference;
 }): Promise<void> {
   const cleanEmail = normalizeEmail(params.email);
   const userRef = doc(db, "users", params.uid);
@@ -86,6 +89,7 @@ export async function syncUserProfileDoc(params: {
         email: cleanEmail,
         phone: params.phone?.trim() || "",
         company: params.company?.trim() || "",
+        ...(params.theme ? { theme: params.theme } : {}),
         prefs: { onway: true, scan: true, action: true },
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -95,6 +99,7 @@ export async function syncUserProfileDoc(params: {
         name: params.name.trim() || snap.data().name || "ShipWell Customer",
         phone: params.phone?.trim() ?? snap.data().phone ?? "",
         company: params.company?.trim() ?? snap.data().company ?? "",
+        ...(params.theme ? { theme: params.theme } : {}),
         updatedAt: serverTimestamp(),
       });
     }
@@ -108,6 +113,7 @@ export async function updateUserAccountProfile(params: {
   uid: string;
   name?: string;
   phone?: string;
+  theme?: ThemePreference;
   prefs?: NotificationPrefs;
 }): Promise<void> {
   const userRef = doc(db, "users", params.uid);
@@ -119,6 +125,9 @@ export async function updateUserAccountProfile(params: {
   }
   if (typeof params.phone === "string") {
     patch.phone = params.phone.trim();
+  }
+  if (params.theme) {
+    patch.theme = params.theme;
   }
   if (params.prefs) {
     patch.prefs = {
@@ -553,29 +562,77 @@ export async function resolveShipmentAlert(params: {
     const shipUpdates: Record<string, unknown> = {
       updatedAt: serverTimestamp(),
     };
-    const isLinkedHold = shipment.hold && shipment.hold.alertId === alert.id;
+    const isLinkedHold =
+      Boolean(shipment.hold) &&
+      (shipment.hold?.alertId === alert.id || alert.holdShipment === true);
+
     if (isLinkedHold) {
-      shipUpdates.hold = null;
-      const relId = `ev_${(nowTs + 1).toString(36)}_rel`;
-      batch.set(doc(db, "shipments", code, "events", relId), {
-        stage: shipment.status,
-        label: "Hold released",
-        loc: "",
-        note: "Shipment is moving again",
-        kind: "info",
-        ts: nowTs + 1,
-        createdBy: actorUid,
-        createdAt: serverTimestamp(),
-      });
-      batch.update(doc(db, "trackingTeasers", code), {
-        holdType: null,
-        latestEvent: {
+      const openSnap = await getDocs(
+        query(
+          collection(db, "shipments", code, "alerts"),
+          where("status", "==", "open")
+        )
+      );
+      const remainingHoldAlerts = openSnap.docs.filter(
+        (d) =>
+          d.id !== alert.id &&
+          (d.data().holdShipment === true ||
+            d.data().kind === "duty" ||
+            shipment.hold?.alertId === d.id)
+      );
+
+      if (remainingHoldAlerts.length === 0) {
+        shipUpdates.hold = null;
+        const relId = `ev_${(nowTs + 1).toString(36)}_rel`;
+        batch.set(doc(db, "shipments", code, "events", relId), {
+          stage: shipment.status,
           label: "Hold released",
           loc: "",
+          note: "Shipment is moving again",
+          kind: "info",
           ts: nowTs + 1,
-        },
-        updatedAt: serverTimestamp(),
-      });
+          createdBy: actorUid,
+          createdAt: serverTimestamp(),
+        });
+        batch.update(doc(db, "trackingTeasers", code), {
+          holdType: null,
+          latestEvent: {
+            label: "Hold released",
+            loc: "",
+            ts: nowTs + 1,
+          },
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        const nextHoldDoc = remainingHoldAlerts[0];
+        const nextData = nextHoldDoc.data();
+        shipUpdates.hold = {
+          type: shipment.hold?.type || "On Hold",
+          reason: `Waiting for ${nextData.to || "receiver"}: ${nextData.title || "Action pending"}`,
+          at: shipment.hold?.at || nowTs,
+          alertId: nextHoldDoc.id,
+        };
+        const stillId = `ev_${(nowTs + 1).toString(36)}_hold`;
+        batch.set(doc(db, "shipments", code, "events", stillId), {
+          stage: shipment.status,
+          label: "Still on hold",
+          loc: "",
+          note: "Another action is still pending",
+          kind: "info",
+          ts: nowTs + 1,
+          createdBy: actorUid,
+          createdAt: serverTimestamp(),
+        });
+        batch.update(doc(db, "trackingTeasers", code), {
+          holdType: shipment.hold?.type || "On Hold",
+          latestEvent: {
+            label: "Still on hold",
+            loc: "",
+            ts: nowTs + 1,
+          },
+          updatedAt: serverTimestamp(),
+        });
+      }
     } else {
       batch.update(doc(db, "trackingTeasers", code), {
         holdType: shipment.hold?.type || null,
@@ -790,6 +847,7 @@ export async function adminFlagShipmentItem(params: {
     batch.set(doc(db, "shipments", code, "alerts", alertId), {
       to: "sender",
       kind: "item",
+      holdShipment: true,
       title: "Item needs attention",
       message: reason.trim(),
       amount: 0,
@@ -1113,6 +1171,7 @@ export async function adminSendAlert(params: {
     batch.set(doc(db, "shipments", code, "alerts", alertId), {
       to,
       kind,
+      holdShipment: Boolean(holdShipment),
       title: title.trim(),
       message: message.trim(),
       amount: Number(amount || 0),
@@ -1191,6 +1250,146 @@ export async function adminSendAlert(params: {
     }).catch(() => null);
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, `shipments/${code}`);
+  }
+}
+
+export async function adminAddCustomsCharge(params: {
+  shipment: ShipmentRecord;
+  chargeType: ChargeType | string;
+  amount: number;
+  currency?: string;
+  note?: string;
+  holdShipment: boolean;
+  to?: AlertTarget;
+  actorUid: string;
+  actorEmail: string;
+}): Promise<string> {
+  const {
+    shipment,
+    chargeType,
+    amount,
+    currency = "USD",
+    note = "",
+    holdShipment,
+    to = "receiver",
+    actorUid,
+    actorEmail,
+  } = params;
+
+  const cleanAmount = Number(Number(amount).toFixed(2));
+  if (!Number.isFinite(cleanAmount) || cleanAmount <= 0) {
+    throw new Error("Enter an amount greater than 0");
+  }
+
+  const code = shipment.code;
+  const nowTs = Date.now();
+  const alertId = `chg_${nowTs.toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  const cleanCurrency = currency.trim().toUpperCase() || "USD";
+  const cleanNote =
+    note.trim() || `${chargeType} assessed by customs clearance`;
+
+  const customsIdx = STAGES.indexOf("Customs");
+  const currentIdx = STAGES.indexOf(shipment.status);
+  const nextStage: ShipmentStage =
+    currentIdx >= 0 && currentIdx < customsIdx ? "Customs" : shipment.status;
+
+  try {
+    const batch = writeBatch(db);
+    batch.set(doc(db, "shipments", code, "alerts", alertId), {
+      to,
+      kind: "duty",
+      chargeType,
+      currency: cleanCurrency,
+      holdShipment: Boolean(holdShipment),
+      title: `${chargeType} ($${cleanAmount.toFixed(2)})`,
+      message: cleanNote,
+      amount: cleanAmount,
+      status: "open",
+      payment: {
+        provider: "bachs",
+        environment: "sandbox",
+        status: "unpaid",
+        currency: cleanCurrency,
+        events: [],
+      },
+      createdAt: serverTimestamp(),
+    });
+
+    const evLabel = `${chargeType} added ($${cleanAmount.toFixed(2)})`;
+    batch.set(doc(db, "shipments", code, "events", `ev_${nowTs.toString(36)}`), {
+      stage: nextStage,
+      label: evLabel,
+      loc: `${shipment.receiver.city}, ${shipment.receiver.country}`,
+      note: cleanNote,
+      kind: "action",
+      ts: nowTs,
+      createdBy: actorUid,
+      createdAt: serverTimestamp(),
+    });
+
+    const shipPatch: Record<string, unknown> = {
+      status: nextStage,
+      updatedAt: serverTimestamp(),
+    };
+    const teaserPatch: Record<string, unknown> = {
+      status: nextStage,
+      latestEvent: {
+        label: evLabel,
+        loc: `${shipment.receiver.city}, ${shipment.receiver.country}`,
+        ts: nowTs,
+      },
+      updatedAt: serverTimestamp(),
+    };
+
+    if (holdShipment) {
+      shipPatch.hold = {
+        type: "On Hold",
+        reason: `${chargeType} due ($${cleanAmount.toFixed(2)} ${cleanCurrency})`,
+        at: nowTs,
+        alertId,
+      };
+      teaserPatch.holdType = "On Hold";
+    }
+
+    batch.update(doc(db, "shipments", code), shipPatch);
+    batch.update(doc(db, "trackingTeasers", code), teaserPatch);
+    await batch.commit();
+
+    await logAdminAudit({
+      actorUid,
+      actorEmail,
+      action: "add_customs_charge",
+      code,
+      detail: `${chargeType} $${cleanAmount.toFixed(2)} ${cleanCurrency}${holdShipment ? " (held)" : ""}`,
+    });
+
+    const targetEmail =
+      to === "sender" ? shipment.senderEmail : shipment.receiverEmail;
+    const targetName =
+      to === "sender" ? shipment.sender.name : shipment.receiver.name;
+    const hasAccount =
+      to === "sender" ? true : await checkAccountExists(targetEmail);
+
+    const headers = await getAuthHeaders();
+    await fetch("/api/shipments/notify", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        code,
+        toEmail: targetEmail,
+        recipientName: targetName,
+        senderFullName: shipment.sender.name,
+        updateType: "action_required",
+        headline: `${chargeType} due ($${cleanAmount.toFixed(2)})`,
+        details: cleanNote,
+        hasAccount,
+      }),
+    }).catch(() => null);
+
+    return alertId;
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `shipments/${code}`);
+    return alertId;
   }
 }
 

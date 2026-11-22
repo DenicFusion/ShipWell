@@ -1,15 +1,21 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { collection, onSnapshot, query, where } from "firebase/firestore";
 import {
   ArrowUpRight,
   Bell,
   LayoutDashboard,
   Loader2,
   LogOut,
+  Mail,
+  MessageSquare,
   Package,
+  Settings,
   Users,
 } from "lucide-react";
+import { db } from "@/lib/firebase";
 import { ShipwellLogo } from "@/components/ShipwellLogo";
+import { ThemeSwitch } from "@/components/ThemeSwitch";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
 import { getInitials } from "@/types/tracking";
 import toast from "react-hot-toast";
@@ -30,12 +36,27 @@ export function AdminShell({
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const { user, profile, authReady, isAdmin, signOutUser } = useShipWell();
+  const [rawUnreadMessagesCount, setRawUnreadMessagesCount] = useState(0);
 
   useEffect(() => {
     if (authReady && (!user || !isAdmin)) {
       navigate("/admin/login", { replace: true });
     }
   }, [authReady, user, isAdmin, navigate]);
+
+  useEffect(() => {
+    if (!authReady || !user || !isAdmin) {
+      return;
+    }
+    const unsub = onSnapshot(
+      query(collection(db, "supportThreads"), where("unreadAdmin", "==", true)),
+      (snap) => setRawUnreadMessagesCount(snap.size),
+      () => undefined
+    );
+    return () => unsub();
+  }, [authReady, user, isAdmin]);
+
+  const unreadMessagesCount = authReady && user && isAdmin ? rawUnreadMessagesCount : 0;
 
   if (!authReady || !user || !isAdmin) {
     return (
@@ -76,10 +97,33 @@ export function AdminShell({
       badge: openAlertsCount,
     },
     {
+      href: "/admin/messages",
+      label: "Messages",
+      icon: MessageSquare,
+      active:
+        pathname.startsWith("/admin/messages") ||
+        pathname.startsWith("/admin/thread/"),
+      badge: unreadMessagesCount,
+    },
+    {
+      href: "/admin/mail",
+      label: "Email log",
+      icon: Mail,
+      active: pathname.startsWith("/admin/mail"),
+      badge: 0,
+    },
+    {
       href: "/admin/customers",
       label: "Customers",
       icon: Users,
       active: pathname.startsWith("/admin/customers"),
+      badge: 0,
+    },
+    {
+      href: "/admin/settings",
+      label: "Settings",
+      icon: Settings,
+      active: pathname.startsWith("/admin/settings"),
       badge: 0,
     },
   ];
@@ -115,6 +159,22 @@ export function AdminShell({
         </nav>
 
         <div className="ad-foot">
+          <div style={{ marginBottom: 10 }}>
+            <div
+              style={{
+                fontSize: 10,
+                letterSpacing: "0.14em",
+                textTransform: "uppercase",
+                color: "var(--faint)",
+                fontWeight: 700,
+                marginBottom: 6,
+              }}
+            >
+              Appearance
+            </div>
+            <ThemeSwitch compact />
+          </div>
+
           <div className="ad-user">
             <div className="av">{initials}</div>
             <div className="min-w-0">

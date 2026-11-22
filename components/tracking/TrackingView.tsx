@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { db } from "@/lib/firebase";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
+import { CustomsLedger } from "@/components/tracking/CustomsLedger";
 import {
   checkAccountExists,
   fetchFullShipmentBundle,
@@ -845,6 +846,19 @@ export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
           )}
         </div>
 
+        {/* DUTIES & CHARGES (BACHS) */}
+        {canSeePrivate &&
+          shipment &&
+          (shipment.alerts || []).some((a) => a.kind === "duty") && (
+            <div className="tk-sec">
+              <CustomsLedger
+                shipment={shipment}
+                viewerRole={viewerRole}
+                isAdmin={isAdmin}
+              />
+            </div>
+          )}
+
         {/* LIVE TIMELINE */}
         {canSeePrivate && (
           <div className="tl">
@@ -915,7 +929,7 @@ export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
   return (
     <div className="trk">
       <section className="thero">
-        <div className="glow g1" />
+        <div className="glow gl1" />
         <div className="wrap">
           <div className="eyebrow c">Live tracking system</div>
           <h1>

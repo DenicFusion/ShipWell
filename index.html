@@ -1,9 +1,11 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>ShipWell — The World's Goods. Delivered With Precision.</title>
+    <meta name="theme-color" content="#07090F" />
+    <meta name="color-scheme" content="dark light" />
     <meta
       name="description"
       content="Global luxury logistics platform with live tracking, instant quotes, dual sender/receiver dashboards, and automated parcel alerts."
@@ -16,6 +18,31 @@
       property="og:description"
       content="Global luxury logistics platform with live tracking, instant quotes, dual sender/receiver dashboards, and automated parcel alerts."
     />
+    <script>
+      (function () {
+        try {
+          var pref = localStorage.getItem("sw_theme") || "system";
+          var resolved =
+            pref === "light" || pref === "dark"
+              ? pref
+              : window.matchMedia &&
+                  window.matchMedia("(prefers-color-scheme: light)").matches
+                ? "light"
+                : "dark";
+          document.documentElement.setAttribute("data-theme", resolved);
+          document.documentElement.style.colorScheme = resolved;
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) {
+            meta.setAttribute(
+              "content",
+              resolved === "light" ? "#F3F6FA" : "#07090F"
+            );
+          }
+        } catch (e) {
+          document.documentElement.setAttribute("data-theme", "dark");
+        }
+      })();
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -23,7 +50,7 @@
       rel="stylesheet"
     />
   </head>
-  <body class="bg-bg-base text-text-base font-sans antialiased">
+  <body class="font-sans antialiased">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

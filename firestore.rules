@@ -101,12 +101,13 @@ service cloud.firestore {
 
     function isValidUser(data, uid) {
       return data.keys().hasAll(['uid', 'name', 'email', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'name', 'email', 'phone', 'company', 'prefs', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'name', 'email', 'phone', 'company', 'theme', 'prefs', 'createdAt', 'updatedAt'])
         && data.uid == uid
         && data.name is string && data.name.size() > 0 && data.name.size() <= 120
         && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
         && (!data.keys().hasAny(['phone']) || (data.phone is string && data.phone.size() <= 40))
         && (!data.keys().hasAny(['company']) || (data.company is string && data.company.size() <= 160))
+        && (!data.keys().hasAny(['theme']) || data.theme in ['system', 'dark', 'light'])
         && (!data.keys().hasAny(['prefs']) || isValidUserPrefs(data.prefs));
     }
 
@@ -208,16 +209,20 @@ service cloud.firestore {
 
     function isValidAlert(data) {
       return data.keys().hasAll(['to', 'kind', 'title', 'message', 'amount', 'status', 'createdAt'])
-        && data.keys().hasOnly(['to', 'kind', 'title', 'message', 'amount', 'status', 'response', 'attachmentName', 'attachmentUrl', 'createdAt', 'resolvedAt'])
+        && data.keys().hasOnly(['to', 'kind', 'chargeType', 'currency', 'holdShipment', 'title', 'message', 'amount', 'status', 'response', 'attachmentName', 'attachmentUrl', 'payment', 'createdAt', 'resolvedAt'])
         && data.to in ['receiver', 'sender']
         && data.kind in ['duty', 'address', 'id', 'reschedule', 'custom', 'item']
+        && (!data.keys().hasAny(['chargeType']) || data.chargeType == null || (data.chargeType is string && data.chargeType.size() <= 80))
+        && (!data.keys().hasAny(['currency']) || (data.currency is string && data.currency.size() <= 8))
+        && (!data.keys().hasAny(['holdShipment']) || data.holdShipment is bool)
         && data.title is string && data.title.size() > 0 && data.title.size() <= 160
         && data.message is string && data.message.size() > 0 && data.message.size() <= 600
         && data.amount is number && data.amount >= 0
         && data.status in ['open', 'resolved']
         && (!data.keys().hasAny(['response']) || (data.response is string && data.response.size() <= 600))
         && (!data.keys().hasAny(['attachmentName']) || (data.attachmentName is string && data.attachmentName.size() <= 160))
-        && (!data.keys().hasAny(['attachmentUrl']) || (data.attachmentUrl is string && data.attachmentUrl.size() <= 1024));
+        && (!data.keys().hasAny(['attachmentUrl']) || (data.attachmentUrl is string && data.attachmentUrl.size() <= 1024))
+        && (!data.keys().hasAny(['payment']) || data.payment == null || data.payment is map);
     }
 
     function isValidInvite(data) {
@@ -250,13 +255,15 @@ service cloud.firestore {
 
     function isValidEmailLog(data) {
       return data.keys().hasAll(['to', 'template', 'subject', 'status', 'createdBy', 'createdAt'])
-        && data.keys().hasOnly(['to', 'code', 'template', 'subject', 'status', 'providerId', 'createdBy', 'createdAt'])
+        && data.keys().hasOnly(['to', 'from', 'code', 'template', 'subject', 'status', 'providerId', 'htmlPreview', 'createdBy', 'createdAt'])
         && data.to is string && data.to.size() <= 160
+        && (!data.keys().hasAny(['from']) || (data.from is string && data.from.size() <= 160))
         && (!data.keys().hasAny(['code']) || (data.code is string && data.code.size() <= 24))
         && data.template is string && data.template.size() <= 60
         && data.subject is string && data.subject.size() <= 240
-        && data.status in ['sent', 'queued_preview', 'failed']
+        && data.status in ['sent', 'queued_preview', 'failed', 'delivered', 'bounced']
         && (!data.keys().hasAny(['providerId']) || (data.providerId is string && data.providerId.size() <= 128))
+        && (!data.keys().hasAny(['htmlPreview']) || (data.htmlPreview is string && data.htmlPreview.size() <= 25000))
         && data.createdBy is string && data.createdBy.size() <= 128
         && data.createdAt == request.time;
     }
@@ -298,7 +305,7 @@ service cloud.firestore {
                     && isValidUser(incoming(), uid)
                     && incoming().createdAt == existing().createdAt
                     && incoming().updatedAt == request.time
-                    && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'company', 'prefs', 'updatedAt']);
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'company', 'theme', 'prefs', 'updatedAt']);
       allow delete: if isAdmin();
     }
 
@@ -404,6 +411,7 @@ service cloud.firestore {
                         isAdmin() ||
                         (
                           existing().status == 'open' &&
+                          existing().kind != 'duty' &&
                           incoming().status == 'resolved' &&
                           incoming().resolvedAt == request.time &&
                           incoming().diff(existing()).affectedKeys().hasOnly(['status', 'resolvedAt', 'response', 'attachmentName', 'attachmentUrl']) &&
@@ -462,6 +470,55 @@ service cloud.firestore {
       allow get, list: if isAdmin();
       allow create: if isAdmin() && isValidId(logId) && isValidAuditLog(incoming());
       allow update, delete: if false;
+    }
+
+    match /supportThreads/{threadId} {
+      allow get, list: if isAdmin() || (
+        isSignedIn() && (
+          existing().uid == request.auth.uid ||
+          (isVerified() && request.auth.token.email is string && existing().userEmail == request.auth.token.email.lower())
+        )
+      );
+      allow update: if isAdmin() || (
+        isSignedIn() && (
+          existing().uid == request.auth.uid ||
+          (isVerified() && request.auth.token.email is string && existing().userEmail == request.auth.token.email.lower())
+        ) && incoming().diff(existing()).affectedKeys().hasOnly(['unreadUser', 'updatedAt'])
+      );
+      allow create, delete: if isAdmin();
+
+      match /messages/{messageId} {
+        allow get, list: if isAdmin() || (
+          isSignedIn() && (
+            get(/databases/$(database)/documents/supportThreads/$(threadId)).data.uid == request.auth.uid ||
+            (isVerified() && request.auth.token.email is string && get(/databases/$(database)/documents/supportThreads/$(threadId)).data.userEmail == request.auth.token.email.lower())
+          )
+        );
+        allow create: if isAdmin();
+        allow update, delete: if false;
+      }
+    }
+
+    match /adminSettings/{docId} {
+      allow get: if isSignedIn() && isValidId(docId);
+      allow list, create, update, delete: if isAdmin();
+    }
+
+    match /adminSecrets/{docId} {
+      allow read, write: if false;
+    }
+
+    match /bachsEvents/{eventId} {
+      allow read, write: if false;
+    }
+
+    match /emailDedup/{dedupKey} {
+      allow read, write: if false;
+    }
+
+    match /webhookLogs/{logId} {
+      allow get, list: if isAdmin();
+      allow create, update, delete: if false;
     }
   }
 }

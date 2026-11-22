@@ -1,8 +1,8 @@
 import React, { useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { Clock, DollarSign, Shield, TrendingUp, Zap } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
+import { useShipWell } from "@/components/providers/ShipWellProvider";
 import {
   addBusinessDays,
   calculateShippingPricing,
@@ -15,7 +15,7 @@ import {
 import type { ServiceTier } from "@/types/tracking";
 
 export default function QuotePage() {
-  const navigate = useNavigate();
+  const { requireAuthForShip } = useShipWell();
   const [from, setFrom] = useState("Nigeria");
   const [to, setTo] = useState("United Kingdom");
   const [kg, setKg] = useState("1.5");
@@ -46,7 +46,7 @@ export default function QuotePage() {
       val: String(valueNum),
       svc: selectedSvc,
     });
-    navigate(`/ship?${params.toString()}`);
+    requireAuthForShip(`/ship?${params.toString()}`);
   };
 
   return (

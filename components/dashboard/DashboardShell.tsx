@@ -5,12 +5,14 @@ import {
   Home,
   LayoutGrid,
   Lock,
+  MessageSquare,
   Plus,
   Search,
   Truck,
   User as UserIcon,
 } from "lucide-react";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
+import { ThemeSwitch } from "@/components/ThemeSwitch";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
 import { formatTrackingCode, getInitials } from "@/types/tracking";
@@ -21,6 +23,7 @@ export type DashboardSection =
   | "sent"
   | "track"
   | "alerts"
+  | "support"
   | "account";
 
 export function DashboardShell({
@@ -42,7 +45,8 @@ export function DashboardShell({
   loading?: boolean;
   children: React.ReactNode;
 }) {
-  const { user, profile, authReady, openAuth, signOutUser } = useShipWell();
+  const { user, profile, authReady, unreadSupportCount, openAuth, signOutUser } =
+    useShipWell();
   const navigate = useNavigate();
   const location = useLocation();
   const [quickCode, setQuickCode] = useState("");
@@ -189,6 +193,13 @@ export function DashboardShell({
       count: openAlertsCount,
       hot: true,
     },
+    {
+      key: "support",
+      label: "Support",
+      href: "/dashboard/support",
+      icon: <MessageSquare className="w-[19px] h-[19px]" />,
+      count: unreadSupportCount,
+    },
   ];
 
   const mobileTabs: {
@@ -234,6 +245,13 @@ export function DashboardShell({
       href: "/dashboard/alerts",
       icon: <Bell className="w-[22px] h-[22px]" />,
       count: openAlertsCount,
+    },
+    {
+      key: "support",
+      label: "Support",
+      href: "/dashboard/support",
+      icon: <MessageSquare className="w-[22px] h-[22px]" />,
+      count: unreadSupportCount,
     },
   ];
 
@@ -294,6 +312,22 @@ export function DashboardShell({
           </Link>
         </div>
 
+        <div style={{ margin: "12px 0 10px" }}>
+          <div
+            style={{
+              fontSize: 10,
+              letterSpacing: "0.14em",
+              textTransform: "uppercase",
+              color: "var(--faint)",
+              fontWeight: 700,
+              marginBottom: 6,
+            }}
+          >
+            Appearance
+          </div>
+          <ThemeSwitch compact />
+        </div>
+
         <div className="dx-user">
           <div className="dx-av">{initials}</div>
           <div>
@@ -343,6 +377,17 @@ export function DashboardShell({
             />
             <button type="submit">Track</button>
           </form>
+
+          <Link
+            className="dx-ib"
+            to="/dashboard/support"
+            aria-label="Support messages"
+          >
+            <span className="ic">
+              <MessageSquare className="w-[19px] h-[19px]" />
+            </span>
+            {unreadSupportCount > 0 && <em>{unreadSupportCount}</em>}
+          </Link>
 
           <Link
             className="dx-ib"

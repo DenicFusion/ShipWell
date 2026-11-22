@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { updateProfile, type User } from "firebase/auth";
 import toast from "react-hot-toast";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
+import { ThemeSwitch } from "@/components/ThemeSwitch";
 import { updateUserAccountProfile } from "@/lib/firestore-shipments";
 import {
   firestoreTimeToMs,
@@ -167,6 +168,26 @@ export function DashboardAccount({
       </div>
 
       <div className="dx-col">
+        <div className="dx-card">
+          <div className="dx-ch">
+            <h3>Appearance</h3>
+          </div>
+          <div className="dx-cb">
+            <p
+              style={{
+                fontSize: 13,
+                color: "var(--muted)",
+                marginBottom: 12,
+                lineHeight: 1.55,
+              }}
+            >
+              Choose System to match your device theme automatically, or pick
+              Dark or Light across all your devices.
+            </p>
+            <ThemeSwitch />
+          </div>
+        </div>
+
         <div className="dx-card">
           <div className="dx-ch">
             <h3>Email notifications</h3>

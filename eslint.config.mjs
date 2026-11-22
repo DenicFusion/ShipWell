@@ -11,7 +11,7 @@ export default defineConfig([
     },
   },
   {
-    ignores: ["dist/**/*", ".next/**/*"],
+    ignores: ["dist/**/*", ".next/**/*", "functions/**/*"],
   },
   firebaseRulesPlugin.configs["flat/recommended"],
 ]);

@@ -38,9 +38,6 @@ export function ActionModal({
 }) {
   const [address, setAddress] = useState(shipment.receiver.address || "");
   const [city, setCity] = useState(shipment.receiver.city || "");
-  const [cardNumber, setCardNumber] = useState("");
-  const [cardExpiry, setCardExpiry] = useState("");
-  const [cardCvc, setCardCvc] = useState("");
   const [idFile, setIdFile] = useState<File | null>(null);
   const [fileName, setFileName] = useState("");
   const [dateOptions] = useState<{ value: string; label: string }[]>(() => {
@@ -79,21 +76,47 @@ export function ActionModal({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+
+    if (alert.kind === "duty") {
+      setBusy(true);
+      try {
+        const idToken = await auth.currentUser?.getIdToken().catch(() => null);
+        if (!idToken) {
+          throw new Error("Please log in to settle customs charges.");
+        }
+        const res = await fetch("/api/customs/create-checkout", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({
+            code: shipment.code,
+            alertId: alert.id,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.checkoutUrl) {
+          throw new Error(
+            data.error || "Unable to create hosted payment session."
+          );
+        }
+        window.location.href = data.checkoutUrl;
+      } catch (err) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : "Could not start payment checkout."
+        );
+        setBusy(false);
+      }
+      return;
+    }
+
     let response = "";
     let updatedAddress: string | undefined;
 
-    if (alert.kind === "duty") {
-      const digits = cardNumber.replace(/\D/g, "");
-      if (digits.length < 12) {
-        setError("Enter a valid card number to settle import duty.");
-        return;
-      }
-      if (!/^\d{2}\s*\/\s*\d{2}$/.test(cardExpiry.trim()) || cardCvc.replace(/\D/g, "").length < 3) {
-        setError("Enter valid expiry (MM/YY) and security code.");
-        return;
-      }
-      response = `Paid ${formatMoney(alert.amount || 0)} import duty (card ending ${digits.slice(-4)})`;
-    } else if (alert.kind === "address") {
+    if (alert.kind === "address") {
       if (!address.trim() || !city.trim()) {
         setError("Please enter both street address and city.");
         return;
@@ -210,11 +233,15 @@ export function ActionModal({
                 }}
               >
                 <div className="flex justify-between">
-                  <span style={{ color: "var(--muted)" }}>Customs duty</span>
+                  <span style={{ color: "var(--muted)" }}>
+                    {alert.chargeType || "Customs duty"}
+                  </span>
                   <b>{formatMoney(dutyBreakdown.customs)}</b>
                 </div>
                 <div className="flex justify-between">
-                  <span style={{ color: "var(--muted)" }}>Import VAT &amp; handling</span>
+                  <span style={{ color: "var(--muted)" }}>
+                    Clearance &amp; processing
+                  </span>
                   <b>{formatMoney(dutyBreakdown.vat)}</b>
                 </div>
                 <hr style={{ borderColor: "var(--border)" }} />
@@ -228,53 +255,11 @@ export function ActionModal({
                   </b>
                 </div>
               </div>
-              <div className="fw">
-                <label className="lbl" htmlFor="act-card">
-                  Card number
-                </label>
-                <input
-                  id="act-card"
-                  className="field mono"
-                  inputMode="numeric"
-                  autoComplete="cc-number"
-                  value={cardNumber}
-                  onChange={(e) => setCardNumber(e.target.value)}
-                  placeholder="0000 0000 0000 0000"
-                  required
-                />
-              </div>
-              <div className="g2 keep">
-                <div className="fw">
-                  <label className="lbl" htmlFor="act-exp">
-                    Expiry (MM/YY)
-                  </label>
-                  <input
-                    id="act-exp"
-                    className="field mono"
-                    inputMode="numeric"
-                    autoComplete="cc-exp"
-                    value={cardExpiry}
-                    onChange={(e) => setCardExpiry(e.target.value)}
-                    placeholder="MM/YY"
-                    required
-                  />
-                </div>
-                <div className="fw">
-                  <label className="lbl" htmlFor="act-cvc">
-                    CVC
-                  </label>
-                  <input
-                    id="act-cvc"
-                    className="field mono"
-                    inputMode="numeric"
-                    autoComplete="cc-csc"
-                    value={cardCvc}
-                    onChange={(e) => setCardCvc(e.target.value)}
-                    placeholder="123"
-                    required
-                  />
-                </div>
-              </div>
+              <p style={{ fontSize: 12.5, color: "var(--muted)", lineHeight: 1.55 }}>
+                You will be redirected to Bachs&apos; secure hosted checkout.
+                ShipWell never stores card numbers, and your parcel hold clears
+                automatically once payment settles.
+              </p>
             </>
           )}
 
@@ -393,11 +378,13 @@ export function ActionModal({
           >
             {busy ? (
               <Loader2 className="w-4 h-4 animate-spin" />
+            ) : alert.kind === "duty" ? (
+              <CreditCard className="w-4 h-4" />
             ) : (
               <Check className="w-4 h-4" />
             )}
             {alert.kind === "duty"
-              ? `Pay ${formatMoney(alert.amount || 0)} & Release`
+              ? `Pay with Bachs · ${formatMoney(alert.amount || 0)}`
               : "Submit & Continue"}
           </button>
         </form>

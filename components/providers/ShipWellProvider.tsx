@@ -7,6 +7,7 @@ import React, {
   useEffect,
   useState,
 } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   onAuthStateChanged,
   signOut,
@@ -17,21 +18,36 @@ import {
   doc,
   getDoc,
   getDocs,
+  onSnapshot,
   query,
   where,
 } from "firebase/firestore";
 import { auth, db, testConnection } from "@/lib/firebase";
 import {
+  applyThemeToDocument,
+  getStoredThemePreference,
+  normalizeThemePreference,
+  resolveTheme,
+  saveThemePreferenceLocal,
+  subscribeSystemTheme,
+} from "@/lib/theme";
+import {
   ADMIN_EMAIL,
   normalizeEmail,
+  type ResolvedTheme,
   type ShipmentAlert,
   type ShipmentRecord,
+  type ThemePreference,
   type UserProfile,
 } from "@/types/tracking";
-import { syncUserProfileDoc } from "@/lib/firestore-shipments";
+import {
+  syncUserProfileDoc,
+  updateUserAccountProfile,
+} from "@/lib/firestore-shipments";
 import { AuthModal, type AuthModalOptions } from "@/components/modals/AuthModal";
 import { ActionModal } from "@/components/modals/ActionModal";
 import { PhotoZoomModal } from "@/components/modals/PhotoZoomModal";
+import { ContactModal } from "@/components/modals/ContactModal";
 
 interface ShipWellContextValue {
   user: User | null;
@@ -39,8 +55,15 @@ interface ShipWellContextValue {
   authReady: boolean;
   isAdmin: boolean;
   openAlertsCount: number;
+  unreadSupportCount: number;
+  themePreference: ThemePreference;
+  resolvedTheme: ResolvedTheme;
+  setThemePreference: (pref: ThemePreference) => void;
   openAuth: (opts?: AuthModalOptions) => void;
   closeAuth: () => void;
+  requireAuthForShip: (targetPath?: string) => void;
+  openContact: (initialCode?: string) => void;
+  closeContact: () => void;
   openAction: (
     shipment: ShipmentRecord,
     alert: ShipmentAlert,
@@ -55,13 +78,31 @@ interface ShipWellContextValue {
 const ShipWellContext = createContext<ShipWellContextValue | null>(null);
 
 export function ShipWellProvider({ children }: { children: React.ReactNode }) {
+  const navigate = useNavigate();
   const [user, setUser] = useState<User | null>(null);
   const [hasAdminClaim, setHasAdminClaim] = useState(false);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [openAlertsCount, setOpenAlertsCount] = useState(0);
+  const [rawUnreadSupportCount, setRawUnreadSupportCount] = useState(0);
+
+  const [themePreference, setThemePrefState] = useState<ThemePreference>(() =>
+    getStoredThemePreference()
+  );
+  const [systemResolvedTheme, setSystemResolvedTheme] = useState<ResolvedTheme>(() =>
+    resolveTheme("system")
+  );
+  const resolvedTheme: ResolvedTheme =
+    themePreference === "system"
+      ? systemResolvedTheme
+      : themePreference === "dark"
+      ? "dark"
+      : "light";
 
   const [authModalOpts, setAuthModalOpts] = useState<AuthModalOptions | null>(
+    null
+  );
+  const [contactState, setContactState] = useState<{ initialCode?: string } | null>(
     null
   );
   const [actionModalState, setActionModalState] = useState<{
@@ -79,6 +120,34 @@ export function ShipWellProvider({ children }: { children: React.ReactNode }) {
     (Boolean(user?.emailVerified) &&
       normalizeEmail(user?.email || "") === ADMIN_EMAIL);
 
+  // Sync resolved theme to <html> and subscribe to OS theme changes when on "system"
+  useEffect(() => {
+    applyThemeToDocument(themePreference, false);
+    if (themePreference !== "system") return;
+    return subscribeSystemTheme((nextResolved) => {
+      applyThemeToDocument("system", true);
+      setSystemResolvedTheme(nextResolved);
+    });
+  }, [themePreference]);
+
+  const setThemePreference = useCallback(
+    (pref: ThemePreference) => {
+      const normalized = normalizeThemePreference(pref);
+      saveThemePreferenceLocal(normalized);
+      applyThemeToDocument(normalized, true);
+      setThemePrefState(normalized);
+
+      const active = auth.currentUser;
+      if (active) {
+        updateUserAccountProfile({
+          uid: active.uid,
+          theme: normalized,
+        }).catch(() => null);
+      }
+    },
+    []
+  );
+
   const refreshProfile = useCallback(async (u?: User | null) => {
     const active = u ?? auth.currentUser;
     if (!active) {
@@ -88,12 +157,19 @@ export function ShipWellProvider({ children }: { children: React.ReactNode }) {
     try {
       const snap = await getDoc(doc(db, "users", active.uid));
       if (snap.exists()) {
-        setProfile(snap.data() as UserProfile);
+        const data = snap.data() as UserProfile;
+        setProfile(data);
+        if (data.theme && (data.theme === "system" || data.theme === "dark" || data.theme === "light")) {
+          saveThemePreferenceLocal(data.theme);
+          setThemePrefState(data.theme);
+        }
       } else if (active.email) {
+        const localTheme = getStoredThemePreference();
         await syncUserProfileDoc({
           uid: active.uid,
           name: active.displayName || "ShipWell Customer",
           email: active.email,
+          theme: localTheme !== "system" ? localTheme : undefined,
         });
         const retry = await getDoc(doc(db, "users", active.uid));
         if (retry.exists()) setProfile(retry.data() as UserProfile);
@@ -163,10 +239,67 @@ export function ShipWellProvider({ children }: { children: React.ReactNode }) {
         setHasAdminClaim(false);
         setProfile(null);
         setOpenAlertsCount(0);
+        setRawUnreadSupportCount(0);
       }
     });
     return () => unsub();
   }, [refreshProfile, refreshOpenAlerts]);
+
+  // Live unread support badge listener
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
+    const cleanEmail = normalizeEmail(user.email || "");
+    const uidUnread = new Map<string, boolean>();
+    const emailUnread = new Map<string, boolean>();
+
+    const recompute = () => {
+      const combined = new Set<string>();
+      uidUnread.forEach((flag, id) => {
+        if (flag) combined.add(id);
+      });
+      emailUnread.forEach((flag, id) => {
+        if (flag) combined.add(id);
+      });
+      setRawUnreadSupportCount(combined.size);
+    };
+
+    const unsubUid = onSnapshot(
+      query(collection(db, "supportThreads"), where("uid", "==", user.uid)),
+      (snap) => {
+        uidUnread.clear();
+        snap.docs.forEach((d) => {
+          uidUnread.set(d.id, Boolean(d.data()?.unreadUser));
+        });
+        recompute();
+      },
+      () => undefined
+    );
+
+    const unsubEmail =
+      user.emailVerified && cleanEmail
+        ? onSnapshot(
+            query(
+              collection(db, "supportThreads"),
+              where("userEmail", "==", cleanEmail)
+            ),
+            (snap) => {
+              emailUnread.clear();
+              snap.docs.forEach((d) => {
+                emailUnread.set(d.id, Boolean(d.data()?.unreadUser));
+              });
+              recompute();
+            },
+            () => undefined
+          )
+        : () => undefined;
+
+    return () => {
+      unsubUid();
+      unsubEmail();
+    };
+  }, [user]);
 
   // Re-check email verification when customer returns from verification link tab
   useEffect(() => {
@@ -195,6 +328,30 @@ export function ShipWellProvider({ children }: { children: React.ReactNode }) {
     setAuthModalOpts(null);
   }, []);
 
+  const requireAuthForShip = useCallback(
+    (targetPath = "/ship") => {
+      if (auth.currentUser) {
+        navigate(targetPath);
+        return;
+      }
+      openAuth({
+        mode: "login",
+        prompt:
+          "Log in or create a free account to ship a parcel. Your tracking number and the receiver link are kept on your account.",
+        onDone: () => navigate(targetPath),
+      });
+    },
+    [navigate, openAuth]
+  );
+
+  const openContact = useCallback((initialCode = "") => {
+    setContactState({ initialCode });
+  }, []);
+
+  const closeContact = useCallback(() => {
+    setContactState(null);
+  }, []);
+
   const openAction = useCallback(
     (
       shipment: ShipmentRecord,
@@ -215,7 +372,10 @@ export function ShipWellProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
     setProfile(null);
     setOpenAlertsCount(0);
+    setRawUnreadSupportCount(0);
   }, []);
+
+  const unreadSupportCount = user ? rawUnreadSupportCount : 0;
 
   return (
     <ShipWellContext.Provider
@@ -225,8 +385,15 @@ export function ShipWellProvider({ children }: { children: React.ReactNode }) {
         authReady,
         isAdmin,
         openAlertsCount,
+        unreadSupportCount,
+        themePreference,
+        resolvedTheme,
+        setThemePreference,
         openAuth,
         closeAuth,
+        requireAuthForShip,
+        openContact,
+        closeContact,
         openAction,
         openPhotoZoom,
         signOutUser,
@@ -247,6 +414,13 @@ export function ShipWellProvider({ children }: { children: React.ReactNode }) {
             setAuthModalOpts(null);
             if (cb) cb(authedUser, isNew);
           }}
+        />
+      )}
+
+      {contactState && (
+        <ContactModal
+          initialCode={contactState.initialCode}
+          onClose={closeContact}
         />
       )}
 
