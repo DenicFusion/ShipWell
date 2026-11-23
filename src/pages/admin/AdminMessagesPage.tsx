@@ -22,7 +22,6 @@ import {
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { auth, db } from "@/lib/firebase";
-import { adminPath } from "@/lib/host";
 import { AdminShell } from "@/components/admin/AdminShell";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
 import { formatDateTime } from "@/lib/quote-engine";
@@ -245,7 +244,7 @@ export default function AdminMessagesPage() {
                   key={t.id}
                   type="button"
                   className={`sp-th ${activeThread?.id === t.id ? "on" : ""}`}
-                  onClick={() => navigate(adminPath(`thread/${t.id}`))}
+                  onClick={() => navigate(`/admin/thread/${t.id}`)}
                 >
                   <div className="sp-av">
                     <MessageSquare className="w-4 h-4" />
@@ -277,7 +276,7 @@ export default function AdminMessagesPage() {
                   <button
                     type="button"
                     className="sp-back"
-                    onClick={() => navigate(adminPath("messages"))}
+                    onClick={() => navigate("/admin/messages")}
                   >
                     <ArrowLeft className="w-3.5 h-3.5" />
                     Back to inbox
@@ -290,7 +289,7 @@ export default function AdminMessagesPage() {
                       <>
                         {" · "}
                         <Link
-                          to={adminPath(`shipment/${activeThread.code}`)}
+                          to={`/admin/shipment/${activeThread.code}`}
                           style={{ color: "var(--em2)", fontWeight: 600 }}
                         >
                           {activeThread.code} →
@@ -358,7 +357,7 @@ export default function AdminMessagesPage() {
                   className="field"
                   value={replyText}
                   onChange={(e) => setReplyText(e.target.value)}
-                  placeholder={`Reply to ${activeThread.userEmail} (emailed via support@mail.shipwell.cc)...`}
+                  placeholder={`Reply to ${activeThread.userEmail} (emailed via support@info.shipwell.cc)...`}
                   rows={2}
                 />
                 <button
@@ -383,7 +382,7 @@ export default function AdminMessagesPage() {
               <h3>SELECT A CONVERSATION</h3>
               <p>
                 Every message submitted through the Contact modal, Dashboard
-                Support, or emailed to <code>support@mail.shipwell.cc</code>{" "}
+                Support, or emailed to <code>support@info.shipwell.cc</code>{" "}
                 threads here live.
               </p>
             </div>

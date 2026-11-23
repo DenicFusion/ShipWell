@@ -8,7 +8,7 @@ import { auth } from "@/lib/firebase";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
 import { formatTrackingCode } from "@/types/tracking";
 
-const SUPPORT_EMAIL = "support@mail.shipwell.cc";
+const SUPPORT_EMAIL = "support@info.shipwell.cc";
 
 export function ContactModal({
   initialCode = "",

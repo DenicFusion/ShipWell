@@ -3,13 +3,11 @@ import express from "express";
 import { getApps, initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { FieldValue, getFirestore, type Firestore } from "firebase-admin/firestore";
-import { getStorage } from "firebase-admin/storage";
 import { onRequest } from "firebase-functions/v2/https";
 import {
   onDocumentCreated,
   onDocumentWritten,
 } from "firebase-functions/v2/firestore";
-import { onSchedule } from "firebase-functions/v2/scheduler";
 import { parsePhoneNumberFromString } from "libphonenumber-js";
 
 if (getApps().length === 0) {
@@ -26,31 +24,10 @@ function db(): Firestore {
 
 const ADMIN_EMAIL = "denic9426@gmail.com";
 const DEFAULT_APP_URL = "https://shipwell.cc";
-const DEFAULT_EMAIL_FROM = "ShipWell <notifications@mail.shipwell.cc>";
-const DEFAULT_EMAIL_REPLY_TO = "support@mail.shipwell.cc";
-const DEFAULT_SUPPORT_INBOX = "support@mail.shipwell.cc";
-const DEFAULT_FROM_SECURITY = "ShipWell Security <noreply@mail.shipwell.cc>";
-const DEFAULT_FROM_TRACKING = "ShipWell Tracking <tracking@mail.shipwell.cc>";
-const DEFAULT_FROM_BILLING = "ShipWell Billing <billing@mail.shipwell.cc>";
-const DEFAULT_FROM_PAYMENTS = "ShipWell Payments <payments@mail.shipwell.cc>";
-const DEFAULT_FROM_NOTIFICATIONS = "ShipWell <notifications@mail.shipwell.cc>";
-const DEFAULT_FROM_SUPPORT = "ShipWell Support <support@mail.shipwell.cc>";
+const DEFAULT_EMAIL_FROM = "ShipWell <notifications@info.shipwell.cc>";
+const DEFAULT_EMAIL_REPLY_TO = "support@info.shipwell.cc";
+const DEFAULT_SUPPORT_INBOX = "support@info.shipwell.cc";
 const CODE_RE = /^SW-\d{8}-[A-F0-9]{8}$/;
-const fnRateMap = new Map<string, number[]>();
-function checkFnRateLimit(key: string, max: number, windowMs: number): boolean {
-  const now = Date.now();
-  const prev = (fnRateMap.get(key) || []).filter((t) => now - t < windowMs);
-  if (prev.length >= max) return false;
-  prev.push(now);
-  fnRateMap.set(key, prev);
-  return true;
-}
-
-function upgradeLegacyDomain(val: unknown, fallback: string): string {
-  const s = String(val || "").trim();
-  if (!s) return fallback;
-  return s.replace(/@info\.shipwell\.cc\b/gi, "@mail.shipwell.cc");
-}
 
 // ── Shared Shipping Rate Calculator (must match client lib/quote-engine.ts) ──
 const PLACES: Record<string, { city: string; lat: number; lon: number }> = {
@@ -205,12 +182,6 @@ interface SettingsBundle {
   emailFrom: string;
   emailReplyTo: string;
   supportInbox: string;
-  fromSecurity: string;
-  fromTracking: string;
-  fromBilling: string;
-  fromPayments: string;
-  fromNotifications: string;
-  fromSupport: string;
 }
 
 let bundleCache: { data: SettingsBundle; expiresAt: number } | null = null;
@@ -243,28 +214,6 @@ async function loadSettings(): Promise<SettingsBundle> {
   const enableBachsBooking = routingObj.enableBachsBooking !== false;
   const enablePayOnPickup = routingObj.enablePayOnPickup !== false;
 
-  const emailFrom = upgradeLegacyDomain(
-    resendObj.from || process.env.EMAIL_FROM,
-    DEFAULT_EMAIL_FROM
-  );
-  const emailReplyTo = upgradeLegacyDomain(
-    resendObj.replyTo || process.env.EMAIL_REPLY_TO,
-    DEFAULT_EMAIL_REPLY_TO
-  );
-  const supportInbox = upgradeLegacyDomain(
-    resendObj.supportInbox || process.env.SUPPORT_INBOX,
-    DEFAULT_SUPPORT_INBOX
-  );
-  const fromSecurity = upgradeLegacyDomain(resendObj.fromSecurity || process.env.FROM_SECURITY, DEFAULT_FROM_SECURITY);
-  const fromTracking = upgradeLegacyDomain(resendObj.fromTracking || process.env.FROM_TRACKING, DEFAULT_FROM_TRACKING);
-  const fromBilling = upgradeLegacyDomain(resendObj.fromBilling || process.env.FROM_BILLING, DEFAULT_FROM_BILLING);
-  const fromPayments = upgradeLegacyDomain(resendObj.fromPayments || process.env.FROM_PAYMENTS, DEFAULT_FROM_PAYMENTS);
-  const fromNotifications = upgradeLegacyDomain(
-    resendObj.fromNotifications || resendObj.from || process.env.FROM_NOTIFICATIONS || process.env.EMAIL_FROM,
-    DEFAULT_FROM_NOTIFICATIONS
-  );
-  const fromSupport = upgradeLegacyDomain(resendObj.fromSupport || process.env.FROM_SUPPORT, DEFAULT_FROM_SUPPORT);
-
   const bundle: SettingsBundle = {
     pub: {
       bachs: {
@@ -284,18 +233,14 @@ async function loadSettings(): Promise<SettingsBundle> {
         },
       },
       resend: {
-        from: emailFrom,
-        replyTo: emailReplyTo,
-        supportInbox,
-        fromSecurity,
-        fromTracking,
-        fromBilling,
-        fromPayments,
-        fromNotifications,
-        fromSupport,
+        from: (resendObj.from as string) || process.env.EMAIL_FROM || DEFAULT_EMAIL_FROM,
+        replyTo:
+          (resendObj.replyTo as string) || process.env.EMAIL_REPLY_TO || DEFAULT_EMAIL_REPLY_TO,
+        supportInbox:
+          (resendObj.supportInbox as string) || process.env.SUPPORT_INBOX || DEFAULT_SUPPORT_INBOX,
         secrets: (resendObj.secrets as Record<string, unknown>) || {
           apiKey: { configured: Boolean(process.env.RESEND_API_KEY) },
-          inboundWebhookSecret: { configured: Boolean(process.env.RESEND_INBOUND_SECRET) },
+          inboundWebhookSecret: { configured: false },
         },
       },
       stripe: (pubData.stripe as Record<string, unknown>) || {
@@ -326,8 +271,7 @@ async function loadSettings(): Promise<SettingsBundle> {
       bachsLiveWebhook: dec("bachsLiveWebhook"),
       bachsPreviousWebhook: dec("bachsPreviousWebhook"),
       resendApiKey: dec("resendApiKey") || process.env.RESEND_API_KEY || "",
-      resendInboundSecret:
-        dec("resendInboundSecret") || process.env.RESEND_INBOUND_SECRET || "",
+      resendInboundSecret: dec("resendInboundSecret"),
       stripeSecretKey: dec("stripeSecretKey"),
       stripeWebhookSecret: dec("stripeWebhookSecret"),
       paystackSecretKey: dec("paystackSecretKey"),
@@ -340,15 +284,13 @@ async function loadSettings(): Promise<SettingsBundle> {
     checkoutExpiryMinutes: Number(bachsObj.checkoutExpiryMinutes || 60),
     enableBachsBooking,
     enablePayOnPickup,
-    emailFrom,
-    emailReplyTo,
-    supportInbox,
-    fromSecurity,
-    fromTracking,
-    fromBilling,
-    fromPayments,
-    fromNotifications,
-    fromSupport,
+    emailFrom: String(resendObj.from || process.env.EMAIL_FROM || DEFAULT_EMAIL_FROM),
+    emailReplyTo: String(
+      resendObj.replyTo || process.env.EMAIL_REPLY_TO || DEFAULT_EMAIL_REPLY_TO
+    ),
+    supportInbox: String(
+      resendObj.supportInbox || process.env.SUPPORT_INBOX || DEFAULT_SUPPORT_INBOX
+    ),
   };
 
   bundleCache = { data: bundle, expiresAt: Date.now() + 180_000 };
@@ -623,39 +565,19 @@ async function sendResendEmail(params: {
   html: string;
   text: string;
   template: string;
-  category?: "security" | "tracking" | "billing" | "payments" | "notifications" | "support";
-  prefKey?: "onway" | "scan" | "action";
   code?: string | null;
-  from?: string;
   replyTo?: string;
-  omitReplyTo?: boolean;
   createdBy?: string;
   dedupKey?: string;
-}): Promise<{ status: "sent" | "queued_preview" | "failed" | "skipped_prefs"; providerId?: string }> {
+}): Promise<{ status: "sent" | "queued_preview" | "failed"; providerId?: string }> {
   const database = db();
-  const cleanTo = params.to.trim().toLowerCase();
-
-  if (params.category !== "security" && params.prefKey) {
-    try {
-      const uSnap = await database.collection("users").where("email", "==", cleanTo).limit(1).get();
-      if (!uSnap.empty) {
-        const prefs = uSnap.docs[0].data()?.prefs as Record<string, boolean> | undefined;
-        if (prefs && prefs[params.prefKey] === false) {
-          return { status: "skipped_prefs" };
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }
-
   if (params.dedupKey) {
     const dedupRef = database.collection("emailDedup").doc(params.dedupKey);
     const alreadySent = await database.runTransaction(async (tx) => {
       const snap = await tx.get(dedupRef);
       if (snap.exists) return true;
       tx.set(dedupRef, {
-        to: cleanTo,
+        to: params.to,
         template: params.template,
         createdAt: FieldValue.serverTimestamp(),
       });
@@ -667,40 +589,25 @@ async function sendResendEmail(params: {
   }
 
   const settings = await loadSettings();
-  const categoryFromMap = {
-    security: settings.fromSecurity,
-    tracking: settings.fromTracking,
-    billing: settings.fromBilling,
-    payments: settings.fromPayments,
-    notifications: settings.fromNotifications,
-    support: settings.fromSupport,
-  };
-  const effectiveFrom =
-    params.from || (params.category ? categoryFromMap[params.category] : settings.emailFrom);
-  const effectiveReplyTo =
-    params.omitReplyTo || params.category === "security"
-      ? undefined
-      : params.replyTo || settings.supportInbox || settings.emailReplyTo;
   let status: "sent" | "queued_preview" | "failed" = "queued_preview";
   let providerId = `preview_${Date.now().toString(36)}`;
 
   if (settings.sec.resendApiKey) {
     try {
-      const bodyPayload: Record<string, unknown> = {
-        from: effectiveFrom,
-        to: [cleanTo],
-        subject: params.subject,
-        html: params.html,
-        text: params.text,
-      };
-      if (effectiveReplyTo) bodyPayload.reply_to = effectiveReplyTo;
       const res = await fetch("https://api.resend.com/emails", {
         method: "POST",
         headers: {
           Authorization: `Bearer ${settings.sec.resendApiKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(bodyPayload),
+        body: JSON.stringify({
+          from: settings.emailFrom,
+          to: [params.to],
+          reply_to: params.replyTo || settings.emailReplyTo,
+          subject: params.subject,
+          html: params.html,
+          text: params.text,
+        }),
       });
       if (res.ok) {
         const json = (await res.json()) as { id?: string };
@@ -717,8 +624,8 @@ async function sendResendEmail(params: {
   await database
     .collection("emailLogs")
     .add({
-      to: cleanTo.slice(0, 160),
-      from: effectiveFrom.slice(0, 160),
+      to: params.to.slice(0, 160),
+      from: settings.emailFrom.slice(0, 160),
       code: (params.code || "").slice(0, 24),
       template: params.template,
       subject: params.subject.slice(0, 240),
@@ -726,17 +633,6 @@ async function sendResendEmail(params: {
       providerId,
       htmlPreview: params.html.slice(0, 24000),
       createdBy: params.createdBy || "cloud-function",
-      createdAt: FieldValue.serverTimestamp(),
-    })
-    .catch(() => null);
-  await database
-    .collection("mail")
-    .add({
-      to: cleanTo.slice(0, 160),
-      from: effectiveFrom.slice(0, 160),
-      template: params.template,
-      subject: params.subject.slice(0, 240),
-      status,
       createdAt: FieldValue.serverTimestamp(),
     })
     .catch(() => null);
@@ -801,7 +697,7 @@ async function sendBookingEmails(
         bodyHtml: `<p>Hello ${escapeHtml(receiverName.split(" ")[0])}. <strong>${escapeHtml(senderName)}</strong> has shipped <strong>${escapeHtml(String(shipment.contents || "a parcel"))}</strong> to you (${escapeHtml(code)}).</p><p>Use <strong>${escapeHtml(receiverEmail)}</strong> and your parcel finds you.</p>`,
         ctaLabel: hasAccount ? "Track my parcel" : "Create my account",
         ctaUrl: hasAccount ? `${baseUrl}/track/${code}` : inviteUrl,
-        footer: "Questions? Email support@mail.shipwell.cc · ShipWell Logistics Ltd.",
+        footer: "Questions? Reply to this email. · ShipWell Logistics Ltd.",
       }),
       text: `A parcel is on its way to you (${code}). Open ${hasAccount ? `${baseUrl}/track/${code}` : inviteUrl}`,
       template: hasAccount ? "on_its_way" : "invite",
@@ -821,7 +717,7 @@ async function sendBookingEmails(
         bodyHtml: `<p>Tracking code: <strong>${escapeHtml(code)}</strong></p><p>We emailed ${escapeHtml(receiverEmail)} so they can follow it too.</p>`,
         ctaLabel: "View shipment",
         ctaUrl: `${baseUrl}/track/${code}`,
-        footer: "Need help? support@mail.shipwell.cc · ShipWell Logistics Ltd.",
+        footer: "ShipWell Logistics Ltd.",
       }),
       text: `Booking confirmed ${code}`,
       template: "sender_booking",
@@ -1181,42 +1077,21 @@ app.post(
   }
 );
 
-app.use(
-  express.json({
-    limit: "2mb",
-    verify: (req, _res, buf) => {
-      (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
-    },
-  })
-);
+app.use(express.json({ limit: "2mb" }));
 
 app.get("/api/checkout/options", async (_req, res) => {
-  try {
-    const settings = await loadSettings();
-    const apiKey =
-      settings.environment === "live" ? settings.sec.bachsLiveKey : settings.sec.bachsSandboxKey;
-    const productId =
-      settings.environment === "live" ? settings.liveProductId : settings.sandboxProductId;
-    res.json({
-      ok: true,
-      bachsEnabled: settings.enableBachsBooking,
-      bachsConfigured: Boolean(apiKey && productId),
-      bachsProductConfigured: Boolean(productId),
-      payOnPickupEnabled: settings.enablePayOnPickup,
-      environment: settings.environment,
-      currency: settings.defaultCurrency,
-    });
-  } catch {
-    res.json({
-      ok: true,
-      bachsEnabled: true,
-      bachsConfigured: false,
-      bachsProductConfigured: false,
-      payOnPickupEnabled: true,
-      environment: "sandbox",
-      currency: "USD",
-    });
-  }
+  const settings = await loadSettings();
+  const apiKey =
+    settings.environment === "live" ? settings.sec.bachsLiveKey : settings.sec.bachsSandboxKey;
+  const productId =
+    settings.environment === "live" ? settings.liveProductId : settings.sandboxProductId;
+  res.json({
+    bachsEnabled: settings.enableBachsBooking,
+    bachsConfigured: Boolean(apiKey && productId),
+    payOnPickupEnabled: settings.enablePayOnPickup,
+    environment: settings.environment,
+    currency: settings.defaultCurrency,
+  });
 });
 
 app.post("/api/bookings", async (req, res) => {
@@ -1234,147 +1109,91 @@ app.post("/api/bookings", async (req, res) => {
     const existing = await bookingRef.get();
     if (existing.exists) {
       const ex = existing.data() as Record<string, unknown>;
-      const exShipSnap = ex.code
-        ? await database.collection("shipments").doc(String(ex.code)).get().catch(() => null)
-        : null;
-      const isPayLater = ex.paymentStatus === "pay_on_pickup";
       res.json({
         ok: true,
-        awaitingPayment: !isPayLater && ex.paymentStatus === "awaiting_payment",
         code: ex.code,
-        trackingCode: ex.code,
         bookingId: ex.id,
         total: ex.total,
-        totalUsd: ex.total,
         currency: ex.currency,
         paymentMethod: ex.paymentMethod,
-        paymentChannel: ex.paymentChannel,
         paymentStatus: ex.paymentStatus,
         checkoutUrl: ex.checkoutUrl || null,
         checkoutId: ex.checkoutId || null,
-        ...(isPayLater && exShipSnap?.exists ? { shipment: exShipSnap.data() } : {}),
       });
       return;
     }
 
-    const sIn = (b.sender && typeof b.sender === "object" ? b.sender : {}) as Record<string, unknown>;
-    const rIn = (b.receiver && typeof b.receiver === "object" ? b.receiver : {}) as Record<string, unknown>;
-
-    const senderName = String(sIn.name ?? b.senderName ?? "").trim();
-    const senderEmail = String(sIn.email ?? b.senderEmail ?? actor.email).trim().toLowerCase();
-    const senderPhoneRaw = String(sIn.phone ?? b.senderPhone ?? "").trim();
-    const senderAddress = String(sIn.address ?? b.senderAddress ?? "").trim();
-    const senderCity = String(sIn.city ?? b.senderCity ?? "").trim();
-    const senderPostal = String(sIn.postal ?? b.senderPostal ?? "").trim();
-    const senderCountry = String(sIn.country ?? b.senderCountry ?? "").trim();
-
-    const receiverName = String(rIn.name ?? b.receiverName ?? "").trim();
-    const receiverEmail = String(rIn.email ?? b.receiverEmail ?? "").trim().toLowerCase();
-    const receiverPhoneRaw = String(rIn.phone ?? b.receiverPhone ?? "").trim();
-    const receiverAddress = String(rIn.address ?? b.receiverAddress ?? "").trim();
-    const receiverCity = String(rIn.city ?? b.receiverCity ?? "").trim();
-    const receiverPostal = String(rIn.postal ?? b.receiverPostal ?? "").trim();
-    const receiverCountry = String(rIn.country ?? b.receiverCountry ?? "").trim();
-
-    if (!senderName || !senderEmail.includes("@") || !senderAddress || !senderCity || !PLACES[senderCountry]) {
-      res.status(400).json({ error: "Please complete all required sender details." });
+    const senderCountry = String(b.senderCountry || "");
+    const receiverCountry = String(b.receiverCountry || "");
+    if (!PLACES[senderCountry] || !PLACES[receiverCountry]) {
+      res.status(400).json({ error: "Select valid origin and destination countries." });
       return;
     }
-    if (!receiverName || !receiverEmail.includes("@") || !receiverAddress || !receiverCity || !PLACES[receiverCountry]) {
-      res.status(400).json({ error: "Please complete all required receiver details." });
-      return;
-    }
-
-    const pSender = parsePhoneNumberFromString(senderPhoneRaw);
-    const pReceiver = parsePhoneNumberFromString(receiverPhoneRaw);
+    const pSender = parsePhoneNumberFromString(String(b.senderPhone || ""));
+    const pReceiver = parsePhoneNumberFromString(String(b.receiverPhone || ""));
     if (!pSender?.isValid() || !pReceiver?.isValid()) {
       res.status(400).json({ error: "Enter valid international phone numbers." });
       return;
     }
 
-    const actualKg = Number(b.weightKg);
-    const volKg =
-      ((Number(b.lengthCm) || 0) * (Number(b.widthCm) || 0) * (Number(b.heightCm) || 0)) / 5000;
-    const weightKg = Math.max(actualKg || 0, volKg || 0);
+    const weightKg = Number(b.weightKg);
     const declaredValue = Math.max(0, Number(b.declaredValue) || 0);
     const service =
       b.service === "economy" || b.service === "express" ? b.service : ("standard" as const);
     const photos = Array.isArray(b.photos)
-      ? b.photos
-          .filter(
-            (u): u is string =>
-              typeof u === "string" &&
-              ((/^https?:\/\//i.test(u) && u.length <= 2048) ||
-                (/^data:image\/(jpeg|jpg|png|webp);base64,/i.test(u) && u.length <= 345000))
-          )
-          .slice(0, 4)
+      ? b.photos.filter((u): u is string => typeof u === "string" && /^https?:\/\//i.test(u)).slice(0, 4)
       : [];
-    if (!actualKg || actualKg < 0.1 || weightKg > 50000 || photos.length === 0) {
+    if (!weightKg || weightKg < 0.1 || photos.length === 0) {
       res.status(400).json({ error: "Valid weight and at least 1 photo required." });
       return;
     }
 
     const settings = await loadSettings();
-    const rawMethod = String(b.paymentMethod || b.paymentChannel || "").trim().toLowerCase();
-    const isPayOnDelivery =
-      rawMethod.includes("delivery") ||
-      rawMethod.includes("pickup") ||
-      rawMethod.includes("later");
-    const channel = isPayOnDelivery ? "pay_on_pickup" : "pay_now";
-
-    if (!isPayOnDelivery && !settings.enableBachsBooking) {
+    const channel =
+      b.paymentChannel === "pay_on_pickup"
+        ? "pay_on_pickup"
+        : b.paymentChannel === "bank_transfer"
+          ? "bank_transfer"
+          : "card";
+    const isPayOnPickup = channel === "pay_on_pickup";
+    if (!isPayOnPickup && !settings.enableBachsBooking) {
       res.status(400).json({ error: "Online checkout is currently disabled." });
       return;
     }
-    if (isPayOnDelivery && !settings.enablePayOnPickup) {
-      res.status(400).json({ error: "Pay on delivery is currently disabled." });
+    if (isPayOnPickup && !settings.enablePayOnPickup) {
+      res.status(400).json({ error: "Pay on pickup is currently disabled." });
       return;
     }
 
     const quote = calcServerQuote(senderCountry, receiverCountry, weightKg, declaredValue, service);
-    let code = generateTrackingCode();
-    const candidateCode = String(b.code || "").trim().toUpperCase();
-    if (CODE_RE.test(candidateCode)) {
-      const existShip = await database.collection("shipments").doc(candidateCode).get().catch(() => null);
-      if (existShip && !existShip.exists) {
-        code = candidateCode;
-      }
-    }
-
+    const code = generateTrackingCode();
     const now = Date.now();
     const eta = addBusinessDays(now, quote.days[1]);
     const baseUrl = getBaseUrl(req);
     const reference = `booking_${bookingId}`;
+    const senderEmail = String(b.senderEmail || actor.email).trim().toLowerCase();
+    const receiverEmail = String(b.receiverEmail || "").trim().toLowerCase();
 
     let checkoutId: string | null = null;
     let checkoutUrl: string | null = null;
     let checkoutExpiresAt: number | null = null;
 
-    if (!isPayOnDelivery) {
+    if (!isPayOnPickup) {
       const apiKey =
         settings.environment === "live"
           ? settings.sec.bachsLiveKey
           : settings.sec.bachsSandboxKey;
       const productId =
         settings.environment === "live" ? settings.liveProductId : settings.sandboxProductId;
-      if (!apiKey || !productId) {
-        res.status(400).json({
-          error: actor.isAdmin
-            ? `Bachs is not configured: save your ${settings.environment} secret key and custom-amount product ID in Admin → Settings → Bachs.`
-            : "Online checkout is temporarily unavailable (Bachs is not configured). Please choose Pay on delivery.",
-        });
-        return;
-      }
-      const cancelPath = b.embedded ? "/dashboard/ship?cancelled=1" : "/ship?cancelled=1";
       const session = await createBachsCheckoutSession({
         apiKey,
         env: settings.environment,
         productId,
         amount: quote.total,
         customerEmail: senderEmail,
-        customerName: senderName || "Customer",
+        customerName: String(b.senderName || "Customer"),
         returnUrl: `${baseUrl}/dashboard/track/${encodeURIComponent(code)}?paid=1&booking=1`,
-        cancelUrl: `${baseUrl}${cancelPath}`,
+        cancelUrl: `${baseUrl}/dashboard/ship?cancelled=1`,
         reference,
         metadata: { kind: "booking", bookingId, trackingCode: code, uid: actor.uid, channel },
         expiresInMinutes: settings.checkoutExpiryMinutes || 60,
@@ -1391,50 +1210,46 @@ app.post("/api/bookings", async (req, res) => {
       senderEmail,
       receiverEmail,
       sender: {
-        name: senderName,
+        name: String(b.senderName || ""),
         email: senderEmail,
         phone: pSender.formatInternational(),
-        address: senderAddress,
-        city: senderCity,
-        postal: senderPostal,
+        address: String(b.senderAddress || ""),
+        city: String(b.senderCity || ""),
+        postal: String(b.senderPostal || ""),
         country: senderCountry,
       },
       receiver: {
-        name: receiverName,
+        name: String(b.receiverName || ""),
         email: receiverEmail,
         phone: pReceiver.formatInternational(),
-        address: receiverAddress,
-        city: receiverCity,
-        postal: receiverPostal,
+        address: String(b.receiverAddress || ""),
+        city: String(b.receiverCity || ""),
+        postal: String(b.receiverPostal || ""),
         country: receiverCountry,
       },
       service,
       weightKg,
       packageType: String(b.packageType || "Parcel"),
-      contents: String(b.contents || "").trim().slice(0, 240),
+      contents: String(b.contents || ""),
       declaredValue,
       priceTotal: quote.total,
-      paymentMethod: isPayOnDelivery ? "Booked, payment due at pickup" : "Pay now (Bachs)",
+      paymentMethod: isPayOnPickup ? "Pay on pickup" : channel === "bank_transfer" ? "Bank transfer (Bachs)" : "Card (Bachs)",
       bookingId,
-      paymentStatus: isPayOnDelivery ? "pay_on_pickup" : "awaiting_payment",
+      paymentStatus: isPayOnPickup ? "pay_on_pickup" : "awaiting_payment",
       paymentReference: reference,
       checkoutExpiresAt,
-      bookingStatus: isPayOnDelivery ? "confirmed" : "awaiting_payment",
+      bookingStatus: isPayOnPickup ? "confirmed" : "awaiting_payment",
       status: "Booked",
       eta,
       photos,
       hold: null,
       nextStop: {
-        label: isPayOnDelivery ? "Booked, payment due at pickup" : "Awaiting booking payment confirmation",
-        loc: `${senderCity || "Origin"} Origin`,
+        label: isPayOnPickup ? "Awaiting item review & pickup dispatch" : "Awaiting booking payment confirmation",
+        loc: `${String(b.senderCity || "Origin")} Origin`,
         eta: now + 86400000,
       },
       review: { state: "pending", note: "" },
     };
-
-    const eventLabel = isPayOnDelivery
-      ? "Booked, payment due at pickup"
-      : "Booking started — awaiting payment";
 
     const batch = database.batch();
     batch.set(bookingRef, {
@@ -1448,10 +1263,10 @@ app.post("/api/bookings", async (req, res) => {
       declaredValue,
       total: quote.total,
       currency: settings.defaultCurrency,
-      paymentMethod: isPayOnDelivery ? "Pay on delivery" : "Pay now",
+      paymentMethod: isPayOnPickup ? "pay_on_pickup" : "bachs",
       paymentChannel: channel,
-      paymentStatus: isPayOnDelivery ? "pay_on_pickup" : "awaiting_payment",
-      bookingStatus: isPayOnDelivery ? "confirmed" : "awaiting_payment",
+      paymentStatus: isPayOnPickup ? "pay_on_pickup" : "awaiting_payment",
+      bookingStatus: isPayOnPickup ? "confirmed" : "awaiting_payment",
       environment: settings.environment,
       checkoutId,
       checkoutUrl,
@@ -1471,55 +1286,38 @@ app.post("/api/bookings", async (req, res) => {
       senderId: actor.uid,
       status: "Booked",
       holdType: null,
-      originCity: senderCity,
+      originCity: String(b.senderCity || ""),
       originCountry: senderCountry,
-      destinationCity: receiverCity,
+      destinationCity: String(b.receiverCity || ""),
       destinationCountry: receiverCountry,
       service,
       weightKg,
-      contents: String(b.contents || "").trim().slice(0, 240),
+      contents: String(b.contents || ""),
       eta,
       latestEvent: {
-        label: eventLabel,
-        loc: `${senderCity}, ${senderCountry}`,
+        label: isPayOnPickup ? "Booked (pay on pickup)" : "Awaiting booking payment",
+        loc: `${String(b.senderCity || "")}, ${senderCountry}`,
         ts: now,
       },
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
-    batch.set(database.collection("shipments").doc(code).collection("events").doc(), {
-      stage: "Booked",
-      label: eventLabel,
-      loc: `${senderCity}, ${senderCountry}`,
-      note: isPayOnDelivery
-        ? `Parcel ${code} booked with payment due at pickup ($${quote.total.toFixed(2)}).`
-        : `Booking checkout created for $${quote.total.toFixed(2)} via Bachs.`,
-      kind: "info",
-      ts: now,
-      createdBy: senderName || actor.email,
-      createdAt: FieldValue.serverTimestamp(),
-    });
     await batch.commit();
 
-    if (isPayOnDelivery) {
-      await sendBookingEmails(database, baseUrl, shipDoc, actor.uid).catch(() => null);
+    if (isPayOnPickup) {
+      await sendBookingEmails(database, baseUrl, shipDoc, actor.uid);
     }
 
     res.json({
       ok: true,
-      awaitingPayment: !isPayOnDelivery,
       code,
-      trackingCode: code,
       bookingId,
       total: quote.total,
-      totalUsd: quote.total,
       currency: settings.defaultCurrency,
-      paymentMethod: isPayOnDelivery ? "Pay on delivery" : "Pay now",
-      paymentChannel: channel,
-      paymentStatus: isPayOnDelivery ? "pay_on_pickup" : "awaiting_payment",
+      paymentMethod: isPayOnPickup ? "pay_on_pickup" : "bachs",
+      paymentStatus: isPayOnPickup ? "pay_on_pickup" : "awaiting_payment",
       checkoutUrl,
       checkoutId,
-      ...(isPayOnDelivery ? { shipment: shipDoc } : {}),
     });
   } catch (err) {
     const status =
@@ -1754,15 +1552,6 @@ app.post("/api/admin/settings", async (req, res) => {
       if (typeof patch.resend.from === "string") nextPub.resend.from = patch.resend.from;
       if (typeof patch.resend.replyTo === "string") nextPub.resend.replyTo = patch.resend.replyTo;
       if (typeof patch.resend.supportInbox === "string") nextPub.resend.supportInbox = patch.resend.supportInbox;
-      if (typeof patch.resend.fromSecurity === "string") nextPub.resend.fromSecurity = patch.resend.fromSecurity;
-      if (typeof patch.resend.fromTracking === "string") nextPub.resend.fromTracking = patch.resend.fromTracking;
-      if (typeof patch.resend.fromBilling === "string") nextPub.resend.fromBilling = patch.resend.fromBilling;
-      if (typeof patch.resend.fromPayments === "string") nextPub.resend.fromPayments = patch.resend.fromPayments;
-      if (typeof patch.resend.fromNotifications === "string") {
-        nextPub.resend.fromNotifications = patch.resend.fromNotifications;
-        nextPub.resend.from = patch.resend.fromNotifications;
-      }
-      if (typeof patch.resend.fromSupport === "string") nextPub.resend.fromSupport = patch.resend.fromSupport;
     }
 
     if (patch.stripe) {
@@ -1912,17 +1701,17 @@ app.post("/api/admin/settings/test-email", async (req, res) => {
   const to = String((req.body as { to?: string })?.to || actor.email).trim();
   const result = await sendResendEmail({
     to,
-    subject: "ShipWell Email Delivery Test (mail.shipwell.cc)",
+    subject: "ShipWell Email Delivery Test (info.shipwell.cc)",
     html: renderSimpleMailHtml({
       baseUrl: getBaseUrl(req),
       heading: "ShipWell Email Test",
       bodyHtml:
-        "<p>Your Resend configuration on <strong>mail.shipwell.cc</strong> is operational.</p>",
+        "<p>Your Resend configuration on <strong>info.shipwell.cc</strong> is operational.</p>",
       ctaLabel: "Open ShipWell",
       ctaUrl: getBaseUrl(req),
-      footer: `Triggered by ${actor.email} · Support: support@mail.shipwell.cc`,
+      footer: `Triggered by ${actor.email}`,
     }),
-    text: "Your Resend configuration on mail.shipwell.cc is operational.",
+    text: "Your Resend configuration on info.shipwell.cc is operational.",
     template: "admin_test_email",
     createdBy: actor.uid,
   });
@@ -2049,8 +1838,6 @@ app.post("/api/support/reply", async (req, res) => {
       updatedAt: FieldValue.serverTimestamp(),
     });
     if (message && actor.isAdmin) {
-      const settings = await loadSettings();
-      const supportAddr = settings.supportInbox || DEFAULT_SUPPORT_INBOX;
       await sendResendEmail({
         to: String(thread.userEmail),
         subject: `Re: ${String(thread.subject)} [${String(thread.ticketCode)}]`,
@@ -2060,13 +1847,11 @@ app.post("/api/support/reply", async (req, res) => {
           bodyHtml: `<p>${escapeHtml(message)}</p>`,
           ctaLabel: "Open Dashboard Inbox",
           ctaUrl: `${getBaseUrl(req)}/dashboard/support/${threadId}`,
-          footer: `Reply directly to ${supportAddr} · ${String(thread.ticketCode)}`,
+          footer: `Reply directly to support@info.shipwell.cc · ${String(thread.ticketCode)}`,
         }),
         text: message,
         template: "support_reply",
         code: (thread.code as string) || null,
-        from: `ShipWell Support <${supportAddr}>`,
-        replyTo: supportAddr,
       });
     }
     res.json({ ok: true });
@@ -2075,172 +1860,25 @@ app.post("/api/support/reply", async (req, res) => {
   }
 });
 
-async function handleInboundEmailRequest(req: express.Request, res: express.Response) {
+app.post("/api/inbound-email", async (req, res) => {
   try {
-    const settings = await loadSettings();
-    const database = db();
-    const rawBuf = (req as express.Request & { rawBody?: Buffer }).rawBody;
-    const rawStr = rawBuf ? rawBuf.toString("utf8") : JSON.stringify(req.body || {});
-    const svixId = headerStr(req.headers, "svix-id") || "";
-    const svixTs = headerStr(req.headers, "svix-timestamp") || "";
-    const svixSig = headerStr(req.headers, "svix-signature") || "";
-
-    const inboundSecret = settings.sec.resendInboundSecret || "";
-    if (inboundSecret) {
-      let verified = false;
-      if (svixId && svixTs && svixSig) {
-        const tsNum = Number(svixTs);
-        const nowSec = Math.floor(Date.now() / 1000);
-        if (Number.isFinite(tsNum) && Math.abs(nowSec - tsNum) <= 300) {
-          const keyBytes = inboundSecret.startsWith("whsec_")
-            ? Buffer.from(inboundSecret.slice(6), "base64")
-            : Buffer.from(inboundSecret, "utf8");
-          const expectedB64 = crypto
-            .createHmac("sha256", keyBytes)
-            .update(`${svixId}.${svixTs}.${rawStr}`, "utf8")
-            .digest("base64");
-          const expectedBuf = Buffer.from(expectedB64, "utf8");
-          for (const part of svixSig.split(/\s+/)) {
-            const idx = part.indexOf(",");
-            const sigVal = idx >= 0 ? part.slice(idx + 1).trim() : part.trim();
-            const sigBuf = Buffer.from(sigVal, "utf8");
-            if (sigBuf.length === expectedBuf.length && crypto.timingSafeEqual(sigBuf, expectedBuf)) {
-              verified = true;
-              break;
-            }
-          }
-        }
-      } else if (req.headers["x-resend-signature"]) {
-        const provided = String(req.headers["x-resend-signature"]).trim().toLowerCase();
-        const expected = crypto
-          .createHmac("sha256", inboundSecret)
-          .update(rawStr, "utf8")
-          .digest("hex")
-          .toLowerCase();
-        const pBuf = Buffer.from(provided, "utf8");
-        const eBuf = Buffer.from(expected, "utf8");
-        if (pBuf.length === eBuf.length && crypto.timingSafeEqual(pBuf, eBuf)) {
-          verified = true;
-        }
-      }
-
-      if (!verified) {
-        await database
-          .collection("webhookLogs")
-          .add({
-            provider: "resend-inbound",
-            eventType: "signature_error",
-            reference: svixId,
-            result: "rejected-signature",
-            detail: "Invalid or missing Svix/Resend inbound signature",
-            ts: Date.now(),
-          })
-          .catch(() => null);
-        res.status(401).json({ error: "Inbound webhook signature verification failed." });
-        return;
-      }
-    }
-
-    const payload = (typeof req.body === "object" && req.body && !Buffer.isBuffer(req.body)
-      ? req.body
-      : JSON.parse(rawStr || "{}")) as Record<string, unknown>;
+    const payload = (req.body || {}) as Record<string, unknown>;
     const inner = (payload.data as Record<string, unknown>) || payload;
-
-    const eventKey = String(
-      svixId ||
-        payload.id ||
-        inner.email_id ||
-        crypto.createHash("sha256").update(rawStr).digest("hex").slice(0, 32)
-    ).replace(/[^a-zA-Z0-9_-]/g, "_");
-
-    const dedupRef = database.collection("emailDedup").doc(`inbound_${eventKey}`);
-    const isDuplicate = await database.runTransaction(async (tx) => {
-      const snap = await tx.get(dedupRef);
-      if (snap.exists) return true;
-      tx.set(dedupRef, {
-        provider: "resend-inbound",
-        eventId: eventKey,
-        createdAt: FieldValue.serverTimestamp(),
-      });
-      return false;
-    });
-
-    if (isDuplicate) {
-      await database
-        .collection("webhookLogs")
-        .add({
-          provider: "resend-inbound",
-          eventType: String(payload.type || "email.received"),
-          reference: eventKey,
-          result: "duplicate",
-          detail: "Duplicate inbound email ignored",
-          ts: Date.now(),
-        })
-        .catch(() => null);
-      res.status(200).json({ ok: true, duplicate: true });
-      return;
-    }
-
     const fromRaw = String(inner.from || payload.from || "");
     const m = fromRaw.match(/<([^>]+)>/);
     const fromEmail = (m ? m[1] : fromRaw).trim().toLowerCase();
-    const fromName =
-      (m ? fromRaw.replace(m[0], "").replace(/["']/g, "").trim() : "") ||
-      fromEmail.split("@")[0] ||
-      "Customer";
     const subject = String(inner.subject || payload.subject || "Email enquiry");
     const bodyText = String(inner.text || inner.html || "(Empty email)")
       .replace(/<[^>]+>/g, " ")
       .trim()
       .slice(0, 4000);
-
-    if (!fromEmail.includes("@") || fromEmail.endsWith("@mail.shipwell.cc")) {
+    if (!fromEmail.includes("@")) {
       res.json({ ok: true, ignored: true });
       return;
     }
-
-    const rawTo = inner.to ?? payload.to;
-    const rawToArr: unknown[] = Array.isArray(rawTo) ? rawTo : rawTo ? [rawTo] : [];
-    const toList = rawToArr
-      .map((item: unknown) => {
-        const s = String(item || "");
-        const mm = s.match(/<([^>]+)>/);
-        return (mm ? mm[1] : s).trim().toLowerCase();
-      })
-      .filter((x: string) => x.includes("@"));
-    const supportAddr = String(settings.supportInbox || DEFAULT_SUPPORT_INBOX).trim().toLowerCase();
-    if (toList.length > 0 && !toList.includes(supportAddr)) {
-      const attemptedAddress = toList[0];
-      if (checkFnRateLimit(`unmonitored:${fromEmail}`, 1, 24 * 60 * 60 * 1000)) {
-        await sendResendEmail({
-          to: fromEmail,
-          subject: "This ShipWell email address is not monitored",
-          html: renderSimpleMailHtml({
-            baseUrl: DEFAULT_APP_URL,
-            heading: "Please message support@mail.shipwell.cc",
-            bodyHtml: `<p>Your message to <code>${escapeHtml(attemptedAddress)}</code> reached an unmonitored automated address. Please write to <a href="mailto:support@mail.shipwell.cc" style="color:#34D399;">support@mail.shipwell.cc</a> instead.</p>`,
-            ctaLabel: "Open Support",
-            ctaUrl: `${DEFAULT_APP_URL}/dashboard/support`,
-            footer: "Automated notice · max 1 notice per 24 hours",
-          }),
-          text: `Your message to ${attemptedAddress} was sent to an unmonitored address. Please contact support@mail.shipwell.cc instead.`,
-          template: "unmonitored_redirect",
-          category: "security",
-          omitReplyTo: true,
-          createdBy: "resend-inbound",
-        }).catch(() => null);
-      }
-      res.json({ ok: true, ignored: true, reason: "unmonitored_address" });
-      return;
-    }
-
+    const database = db();
     const tkt = subject.match(/\[(TKT-[A-Z0-9]+)\]/i)?.[1]?.toUpperCase();
-    const codeMatch = `${subject} ${bodyText}`.match(/\b(SW-\d{8}-[A-F0-9]{8})\b/i);
-    const matchedCode = codeMatch ? codeMatch[1].toUpperCase() : null;
-
     let ref: FirebaseFirestore.DocumentReference | null = null;
-    let ticketCode = tkt || `TKT-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
-
     if (tkt) {
       const q = await database
         .collection("supportThreads")
@@ -2249,30 +1887,17 @@ async function handleInboundEmailRequest(req: express.Request, res: express.Resp
         .get();
       if (!q.empty) ref = q.docs[0].ref;
     }
-
-    if (!ref) {
-      const byEmail = await database
-        .collection("supportThreads")
-        .where("userEmail", "==", fromEmail)
-        .where("status", "==", "open")
-        .limit(1)
-        .get();
-      if (!byEmail.empty) {
-        ref = byEmail.docs[0].ref;
-        ticketCode = String(byEmail.docs[0].data().ticketCode || ticketCode);
-      }
-    }
-
     const now = Date.now();
+    const ticketCode = tkt || `TKT-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
     if (!ref) {
       ref = database.collection("supportThreads").doc();
       await ref.set({
         ticketCode,
         uid: null,
-        userName: fromName,
+        userName: fromEmail.split("@")[0],
         userEmail: fromEmail,
-        subject: subject.replace(/\[TKT-[A-Z0-9]+\]/gi, "").trim() || "Email enquiry",
-        code: matchedCode,
+        subject,
+        code: null,
         status: "open",
         source: "email",
         unreadAdmin: true,
@@ -2293,29 +1918,18 @@ async function handleInboundEmailRequest(req: express.Request, res: express.Resp
     }
     await ref.collection("messages").add({
       from: "user",
-      senderName: fromName,
+      senderName: fromEmail.split("@")[0],
       senderEmail: fromEmail,
       body: bodyText,
       source: "email",
       ts: now,
       createdAt: FieldValue.serverTimestamp(),
     });
-    await database.collection("webhookLogs").add({
-      provider: "resend-inbound",
-      eventType: "email.received",
-      reference: ticketCode,
-      result: "processed",
-      detail: `Inbound email from ${fromEmail}`,
-      ts: now,
-    }).catch(() => null);
-
     res.json({ ok: true, threadId: ref.id, ticketCode });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : "Inbound failed" });
   }
-}
-
-app.post("/api/inbound-email", handleInboundEmailRequest);
+});
 
 app.post("/api/resend-webhook", async (req, res) => {
   try {
@@ -2566,15 +2180,6 @@ export const api = onRequest(
   app
 );
 
-export const inboundEmail = onRequest(
-  {
-    region: "us-central1",
-    cors: true,
-    secrets: ["SETTINGS_ENCRYPTION_KEY"],
-  },
-  handleInboundEmailRequest
-);
-
 export const onShipmentEventCreated = onDocumentCreated(
   {
     document: "shipments/{code}/events/{eventId}",
@@ -2718,260 +2323,8 @@ export const onShipmentAlertCreated = onDocumentCreated(
       }),
       text: `${chargeLabel} ${amtStr}: ${String(alert.message || "")}`,
       template: isDuty ? "trigger_customs_charge" : "trigger_action_required",
-      category: isDuty ? "billing" : "tracking",
-      prefKey: "action",
       code,
       dedupKey: `alert_${code}_${alertId}`,
     });
   }
 );
-
-app.post("/api/auth/send-verification", async (req, res) => {
-  try {
-    const actor = await verifyActor(req);
-    if (!actor || !actor.email) {
-      res.status(401).json({ error: "Please log in first." });
-      return;
-    }
-    if (!checkFnRateLimit(`verify:${actor.uid}`, 1, 60_000)) {
-      res.status(429).json({ error: "Please wait 60 seconds before requesting another verification email." });
-      return;
-    }
-    const baseUrl = getBaseUrl(req);
-    const verifyUrl = await getAuth().generateEmailVerificationLink(actor.email, {
-      url: `${baseUrl}/auth/action`,
-      handleCodeInApp: false,
-    });
-    const name = String((req.body as { name?: string })?.name || actor.email.split("@")[0]);
-    const result = await sendResendEmail({
-      to: actor.email,
-      subject: "Verify your email address for ShipWell",
-      html: renderSimpleMailHtml({
-        baseUrl,
-        heading: "Verify your email address",
-        bodyHtml: `<p>Hello ${escapeHtml(name.split(/\s+/)[0])},</p><p>Confirm your email address to unlock your ShipWell dashboard and live shipment tracking.</p>`,
-        ctaLabel: "Verify email",
-        ctaUrl: verifyUrl,
-        footer: "Sent from an unmonitored security address. Need help? Email support@mail.shipwell.cc.",
-      }),
-      text: `Verify your ShipWell email: ${verifyUrl}`,
-      template: "auth_verification",
-      category: "security",
-      omitReplyTo: true,
-      createdBy: actor.uid,
-    });
-    res.json({ ok: true, status: result.status });
-  } catch (err) {
-    res.status(500).json({ error: err instanceof Error ? err.message : "Failed to send verification email." });
-  }
-});
-
-app.post("/api/auth/send-password-reset", async (req, res) => {
-  try {
-    const email = String((req.body as { email?: string })?.email || "").trim().toLowerCase();
-    if (!email.includes("@")) {
-      res.status(400).json({ error: "Valid email required." });
-      return;
-    }
-    if (!checkFnRateLimit(`pwreset:${email}`, 1, 30_000)) {
-      res.status(429).json({ error: "Please wait before requesting another reset link." });
-      return;
-    }
-    const baseUrl = getBaseUrl(req);
-    try {
-      const user = await getAuth().getUserByEmail(email);
-      const resetUrl = await getAuth().generatePasswordResetLink(email, {
-        url: `${baseUrl}/auth/action`,
-        handleCodeInApp: false,
-      });
-      await sendResendEmail({
-        to: email,
-        subject: "Reset your ShipWell password",
-        html: renderSimpleMailHtml({
-          baseUrl,
-          heading: "Reset your password",
-          bodyHtml: `<p>Hello ${escapeHtml((user.displayName || "there").split(/\s+/)[0])},</p><p>Use the button below to choose a new password for your ShipWell account.</p>`,
-          ctaLabel: "Reset password",
-          ctaUrl: resetUrl,
-          footer: "Sent from an unmonitored security address. Need help? Email support@mail.shipwell.cc.",
-        }),
-        text: `Reset your ShipWell password: ${resetUrl}`,
-        template: "auth_password_reset",
-        category: "security",
-        omitReplyTo: true,
-        createdBy: "password_reset",
-      });
-    } catch {
-      // Do not reveal account existence
-    }
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err instanceof Error ? err.message : "Failed" });
-  }
-});
-
-export const draftReminder24h = onSchedule(
-  {
-    schedule: "every 1 hours",
-    region: "us-central1",
-    secrets: ["SETTINGS_ENCRYPTION_KEY"],
-  },
-  async () => {
-    const database = db();
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-    const snap = await database
-      .collection("draftSummaries")
-      .where("updatedAtMs", "<=", cutoff)
-      .limit(100)
-      .get();
-
-    for (const d of snap.docs) {
-      const data = d.data() as {
-        uid: string;
-        draftId: string;
-        email?: string;
-        originCountry?: string;
-        destCountry?: string;
-        reminderSent?: boolean;
-      };
-      if (data.reminderSent || !data.email) continue;
-      const route =
-        data.originCountry && data.destCountry
-          ? `${data.originCountry} → ${data.destCountry}`
-          : "your saved shipment";
-      const draftUrl = `${DEFAULT_APP_URL}/dashboard?view=ship&draft=${encodeURIComponent(data.draftId)}`;
-      const res = await sendResendEmail({
-        to: data.email,
-        subject: "You left a shipment draft on ShipWell",
-        html: renderSimpleMailHtml({
-          baseUrl: DEFAULT_APP_URL,
-          heading: "Continue your shipment draft",
-          bodyHtml: `<p>You left an unfinished shipment (${escapeHtml(route)}) on ShipWell. Your details are still saved.</p>`,
-          ctaLabel: "Continue draft",
-          ctaUrl: draftUrl,
-          footer: "Manage notification preferences in Account settings.",
-        }),
-        text: `You left a shipment draft (${route}) on ShipWell. Continue here: ${draftUrl}`,
-        template: "draft_reminder_24h",
-        category: "notifications",
-        prefKey: "action",
-        dedupKey: `draft_rem_${d.id}`,
-      });
-      if (res.status !== "failed") {
-        await d.ref.update({ reminderSent: true }).catch(() => null);
-        await database
-          .collection("drafts")
-          .doc(data.uid)
-          .collection("items")
-          .doc(data.draftId)
-          .update({ reminderSent: true })
-          .catch(() => null);
-      }
-    }
-  }
-);
-
-export const draftCleanup30d = onSchedule(
-  {
-    schedule: "every 24 hours",
-    region: "us-central1",
-  },
-  async () => {
-    const database = db();
-    const bucket = getStorage().bucket();
-    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
-    const snap = await database
-      .collection("draftSummaries")
-      .where("updatedAtMs", "<=", cutoff)
-      .limit(100)
-      .get();
-
-    for (const d of snap.docs) {
-      const data = d.data() as { uid: string; draftId: string };
-      await bucket
-        .deleteFiles({ prefix: `drafts/${data.uid}/${data.draftId}/` })
-        .catch(() => null);
-      await database
-        .collection("drafts")
-        .doc(data.uid)
-        .collection("items")
-        .doc(data.draftId)
-        .delete()
-        .catch(() => null);
-      await d.ref.delete().catch(() => null);
-    }
-  }
-);
-
-export const expireOverduePayments = onSchedule(
-  {
-    schedule: "every 30 minutes",
-    region: "us-central1",
-    secrets: ["SETTINGS_ENCRYPTION_KEY"],
-  },
-  async () => {
-    const database = db();
-    const now = Date.now();
-    const paySnap = await database
-      .collection("payments")
-      .where("status", "==", "awaiting_payment")
-      .limit(100)
-      .get();
-
-    for (const docSnap of paySnap.docs) {
-      const p = docSnap.data() as Record<string, unknown>;
-      const exp = Number(p.expiresAt || 0);
-      if (!exp || exp > now) continue;
-      const code = String(p.trackingCode || "");
-      const ref = String(p.reference || "");
-      const userEmail = String(p.userEmail || "");
-      await docSnap.ref.update({
-        status: "expired",
-        updatedAtMs: now,
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-      if (p.bookingId) {
-        await database
-          .collection("bookings")
-          .doc(String(p.bookingId))
-          .update({
-            paymentStatus: "expired",
-            bookingStatus: "expired",
-            lastError: "Payment window elapsed.",
-          })
-          .catch(() => null);
-      }
-      if (code) {
-        await database
-          .collection("shipments")
-          .doc(code)
-          .update({
-            paymentStatus: "expired",
-            bookingStatus: "expired",
-            updatedAt: FieldValue.serverTimestamp(),
-          })
-          .catch(() => null);
-      }
-      if (userEmail.includes("@")) {
-        await sendResendEmail({
-          to: userEmail,
-          subject: `Payment window expired (${ref}) — ${code}`,
-          html: renderSimpleMailHtml({
-            baseUrl: DEFAULT_APP_URL,
-            heading: "Payment window expired",
-            bodyHtml: `<p>The payment window for ${escapeHtml(ref)} (${escapeHtml(code)}) expired before payment was completed, so dispatch did not start.</p>`,
-            ctaLabel: "Start a new booking",
-            ctaUrl: `${DEFAULT_APP_URL}/dashboard/ship`,
-            footer: "Need help? Email support@mail.shipwell.cc",
-          }),
-          text: `Payment window expired for ${ref} (${code}).`,
-          template: "payment_expired",
-          category: "billing",
-          code,
-          dedupKey: `pay_exp_${docSnap.id}`,
-        }).catch(() => null);
-      }
-    }
-  }
-);
-

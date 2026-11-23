@@ -1,7 +1,8 @@
 import React, { useState } from "react";
 import { Link } from "react-router-dom";
+import { sendPasswordResetEmail } from "firebase/auth";
 import { Loader2, Lock, Mail } from "lucide-react";
-import { apiFetch } from "@/lib/api-client";
+import { auth } from "@/lib/firebase";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
 import { normalizeEmail } from "@/types/tracking";
@@ -22,12 +23,7 @@ export default function ForgotPasswordPage() {
     }
     setBusy(true);
     try {
-      await apiFetch("/api/auth/send-password-reset", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: clean }),
-        step: "send_password_reset",
-      });
+      await sendPasswordResetEmail(auth, clean);
       setSentTo(clean);
     } catch (err) {
       setError(

@@ -12,14 +12,11 @@ import {
   type CustomsPaymentEvent,
   type CustomsPaymentInfo,
   type GatewayId,
-  type ManualPaymentRecord,
-  type PaymentMethodRecord,
   type ServiceTier,
   type ShipmentAlert,
   type ShipmentRecord,
 } from "../../types/tracking.ts";
 import { createSignedInviteToken } from "../invites.ts";
-import { calculateMethodAmounts, DEFAULT_PAYMENT_METHODS } from "../payment-methods.ts";
 import {
   COUNTRIES,
   addBusinessDays,
@@ -34,7 +31,6 @@ import {
   buildReceiverOnItsWayEmail,
   buildSenderBookingEmail,
 } from "../email/templates.ts";
-import { logServerError } from "./error-log.ts";
 import {
   AdminSdkUnavailableError,
   getAdminAuth,
@@ -42,10 +38,6 @@ import {
   isAdminIamError,
   type VerifiedServerUser,
 } from "./firebase-admin.ts";
-import {
-  createManualPaymentRecord,
-  listAllPaymentMethodsServer,
-} from "./payment-methods.ts";
 import { loadSettingsBundle } from "./settings-store.ts";
 
 function getActiveBachsApiKey(
@@ -462,8 +454,6 @@ export async function dispatchBookingConfirmationEmails(params: {
 
       const res = await dispatchTransactionalEmail(receiverEmail, payload, {
         template: hasAccount ? "on_its_way" : "invite",
-        category: "tracking",
-        prefKey: "onway",
         code,
         createdBy: actorUid,
       });
@@ -517,7 +507,6 @@ export async function dispatchBookingConfirmationEmails(params: {
       });
       await dispatchTransactionalEmail(senderEmail, payload, {
         template: "sender_booking",
-        category: "billing",
         code,
         createdBy: actorUid,
       });
@@ -645,13 +634,7 @@ export async function reconcileShipmentHoldAfterResolution(
         recipientName: shipment.receiver?.name || "Recipient",
         etaLabel,
       }),
-      {
-        template: "hold_released",
-        category: "tracking",
-        prefKey: "action",
-        code,
-        createdBy: opts.actorLabel,
-      }
+      { template: "hold_released", code, createdBy: opts.actorLabel }
     );
   }
   if (
@@ -667,13 +650,7 @@ export async function reconcileShipmentHoldAfterResolution(
         recipientName: shipment.sender?.name || "Sender",
         etaLabel,
       }),
-      {
-        template: "hold_released",
-        category: "tracking",
-        prefKey: "action",
-        code,
-        createdBy: opts.actorLabel,
-      }
+      { template: "hold_released", code, createdBy: opts.actorLabel }
     );
   }
   if (
@@ -688,12 +665,7 @@ export async function reconcileShipmentHoldAfterResolution(
         recipientName: "ShipWell Support",
         etaLabel,
       }),
-      {
-        template: "hold_released_ops",
-        category: "notifications",
-        code,
-        createdBy: opts.actorLabel,
-      }
+      { template: "hold_released_ops", code, createdBy: opts.actorLabel }
     );
   }
 
@@ -706,14 +678,12 @@ export async function createCustomsCheckout(params: {
   actor: VerifiedServerUser;
   origin: string;
   gateway?: GatewayId;
-  paymentMethodId?: string;
 }): Promise<{
   checkoutUrl: string;
   checkoutId: string;
   reference: string;
-  provider: GatewayId | "manual";
+  provider: GatewayId;
   environment: "sandbox" | "live";
-  manualPayment?: ManualPaymentRecord;
 }> {
   const code = String(params.code || "").trim().toUpperCase();
   const alertId = String(params.alertId || "").trim();
@@ -822,66 +792,6 @@ export async function createCustomsCheckout(params: {
     alert.to === "sender"
       ? shipment.sender?.name || "ShipWell Sender"
       : shipment.receiver?.name || "ShipWell Customer";
-
-  // Check if customer selected a manual payment method configured by Admin
-  if (params.paymentMethodId) {
-    const allMethods = await listAllPaymentMethodsServer();
-    const chosenMethod = allMethods.find((m) => m.id === params.paymentMethodId);
-    if (!chosenMethod || !chosenMethod.enabled) {
-      throw Object.assign(new Error("Selected payment method is not available."), {
-        status: 400,
-      });
-    }
-    if (chosenMethod.type === "cash") {
-      throw Object.assign(
-        new Error("Pay on delivery cannot be used for customs clearance holds."),
-        { status: 400 }
-      );
-    }
-    if (chosenMethod.type !== "automatic") {
-      const manualPayment = await createManualPaymentRecord({
-        db,
-        kind: "customs",
-        trackingCode: code,
-        alertId,
-        actor: params.actor,
-        userEmail: payerEmail,
-        userName: payerName,
-        baseUsd: amount,
-        method: chosenMethod,
-        baseUrl: baseOrigin,
-      });
-
-      const paymentDoc: CustomsPaymentInfo = {
-        provider: "manual",
-        environment: publicSettings.bachs.environment,
-        checkoutId: manualPayment.id,
-        checkoutUrl: "",
-        paymentId: manualPayment.id,
-        reference: manualPayment.reference,
-        status: "pending",
-        currency: manualPayment.currency,
-        expiresAt: manualPayment.expiresAt,
-        events: [
-          ...(Array.isArray(alert.payment?.events) ? alert.payment.events : []),
-          {
-            type: "manual.payment.created",
-            at: Date.now(),
-            detail: `${chosenMethod.name} · ${manualPayment.reference}`,
-          },
-        ],
-      };
-      await alertSnap.ref.update({ payment: paymentDoc });
-      return {
-        checkoutUrl: "",
-        checkoutId: manualPayment.id,
-        reference: manualPayment.reference,
-        provider: "manual",
-        environment: publicSettings.bachs.environment,
-        manualPayment,
-      };
-    }
-  }
 
   if (chosenGateway === "stripe") {
     const bodyParams = new URLSearchParams({
@@ -1076,69 +986,37 @@ export async function getCheckoutOptions() {
   const apiKey = getActiveBachsApiKey(env, secrets);
   const productId = getActiveBachsProductId(env, publicSettings.bachs);
   return {
-    ok: true,
     bachsEnabled: publicSettings.routing.enableBachsBooking !== false,
     bachsConfigured: Boolean(apiKey && productId),
-    bachsProductConfigured: Boolean(productId),
     payOnPickupEnabled: publicSettings.routing.enablePayOnPickup !== false,
     environment: env,
     currency: publicSettings.bachs.defaultCurrency || "USD",
   };
 }
 
-export interface CreateBookingPartyInput {
-  name?: string;
-  email?: string;
-  phone?: string;
-  address?: string;
-  city?: string;
-  postal?: string;
-  country?: string;
-}
-
 export interface CreateBookingInput {
-  code?: string;
   idempotencyKey?: string;
-  embedded?: boolean;
-  sender?: CreateBookingPartyInput;
-  receiver?: CreateBookingPartyInput;
-  senderName?: string;
-  senderEmail?: string;
-  senderPhone?: string;
-  senderAddress?: string;
-  senderCity?: string;
+  senderName: string;
+  senderEmail: string;
+  senderPhone: string;
+  senderAddress: string;
+  senderCity: string;
   senderPostal?: string;
-  senderCountry?: string;
-  receiverName?: string;
-  receiverEmail?: string;
-  receiverPhone?: string;
-  receiverAddress?: string;
-  receiverCity?: string;
+  senderCountry: string;
+  receiverName: string;
+  receiverEmail: string;
+  receiverPhone: string;
+  receiverAddress: string;
+  receiverCity: string;
   receiverPostal?: string;
-  receiverCountry?: string;
-  service?: ServiceTier;
-  weightKg?: number;
-  lengthCm?: number;
-  widthCm?: number;
-  heightCm?: number;
-  packageType?: string;
-  contents?: string;
-  declaredValue?: number;
-  photos?: string[];
-  paymentMethodId?: string;
-  paymentMethod?: string;
-  paymentChannel?: BookingPaymentChannel;
-}
-
-function isAcceptedPhotoUrl(val: unknown): val is string {
-  if (typeof val !== "string") return false;
-  const s = val.trim();
-  if (!s) return false;
-  if (/^https?:\/\//i.test(s)) return s.length <= 2048;
-  if (/^data:image\/(jpeg|jpg|png|webp);base64,/i.test(s)) {
-    return s.length <= 345000;
-  }
-  return false;
+  receiverCountry: string;
+  service: ServiceTier;
+  weightKg: number;
+  packageType: string;
+  contents: string;
+  declaredValue: number;
+  photos: string[];
+  paymentChannel: BookingPaymentChannel;
 }
 
 export async function createServerBooking(params: {
@@ -1147,24 +1025,14 @@ export async function createServerBooking(params: {
   origin: string;
 }): Promise<{
   ok: boolean;
-  awaitingPayment: boolean;
   code: string;
-  trackingCode: string;
   bookingId: string;
-  status: string;
   total: number;
-  totalUsd: number;
-  feeAmount?: number;
   currency: string;
-  convertedAmount?: number;
-  paymentMethod: string;
-  paymentMethodId?: string;
-  paymentChannel: BookingPaymentChannel;
+  paymentMethod: "bachs" | "pay_on_pickup";
   paymentStatus: BookingRecord["paymentStatus"];
   checkoutUrl?: string | null;
   checkoutId?: string | null;
-  shipment: ShipmentRecord;
-  payment?: ManualPaymentRecord | null;
 }> {
   const { actor, body, origin } = params;
   let db: Firestore;
@@ -1179,257 +1047,89 @@ export async function createServerBooking(params: {
     throw err;
   }
 
-  const rawIdem = String(body.idempotencyKey || "")
-    .replace(/[^a-zA-Z0-9_-]/g, "")
-    .slice(0, 64);
-  const bookingId =
-    rawIdem.length >= 8 ? rawIdem : `bk_${crypto.randomBytes(8).toString("hex")}`;
+  const rawIdem = String(body.idempotencyKey || "").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64);
+  const bookingId = rawIdem.length >= 8 ? rawIdem : `bk_${crypto.randomBytes(8).toString("hex")}`;
   const bookingRef = db.collection("bookings").doc(bookingId);
 
-  let existingBookingSnap;
-  try {
-    existingBookingSnap = await bookingRef.get();
-  } catch (err) {
-    if (isAdminIamError(err)) {
-      throw new AdminSdkUnavailableError(
-        "Creating bookings requires Firebase Admin SDK access on your Blaze-plan project."
-      );
-    }
-    throw err;
-  }
-
   // Return existing booking cleanly on duplicate request / double-click
+  const existingBookingSnap = await bookingRef.get();
   if (existingBookingSnap.exists) {
     const existing = existingBookingSnap.data() as BookingRecord;
     if (existing.uid !== actor.uid && !actor.isAdmin) {
       throw Object.assign(new Error("Booking reference mismatch."), { status: 403 });
     }
-    const [existingShipSnap, existingPaySnap] = await Promise.all([
-      db.collection("shipments").doc(existing.code).get().catch(() => null),
-      existing.paymentId
-        ? db.collection("payments").doc(existing.paymentId).get().catch(() => null)
-        : Promise.resolve(null),
-    ]);
-    const existingShipment =
-      existingShipSnap && existingShipSnap.exists
-        ? (existingShipSnap.data() as ShipmentRecord)
-        : ({
-            code: existing.code,
-            senderId: existing.uid,
-            senderEmail: existing.senderEmail,
-            receiverEmail: existing.receiverEmail,
-            sender: {
-              name: "Sender",
-              email: existing.senderEmail,
-              phone: "",
-              address: "",
-              city: "",
-              postal: "",
-              country: "",
-            },
-            receiver: {
-              name: "Recipient",
-              email: existing.receiverEmail,
-              phone: "",
-              address: "",
-              city: "",
-              postal: "",
-              country: "",
-            },
-            service: existing.service,
-            weightKg: existing.weightKg,
-            packageType: "Parcel",
-            contents: "Shipment",
-            declaredValue: existing.declaredValue,
-            priceTotal: existing.total,
-            paymentMethod: existing.paymentMethod,
-            bookingId: existing.id,
-            paymentStatus: existing.paymentStatus,
-            bookingStatus: existing.bookingStatus,
-            status: "Booked",
-            eta: Date.now() + 5 * 86400000,
-            photos: [],
-            hold: null,
-            nextStop: null,
-            review: { state: "pending", note: "" },
-          } as ShipmentRecord);
-    const existingPayment =
-      existingPaySnap && existingPaySnap.exists
-        ? (existingPaySnap.data() as ManualPaymentRecord)
-        : null;
-    const isPayLater = existing.paymentStatus === "pay_on_pickup";
     return {
       ok: true,
-      awaitingPayment: !isPayLater && existing.paymentStatus === "awaiting_payment",
       code: existing.code,
-      trackingCode: existing.code,
       bookingId: existing.id,
-      status: existing.bookingStatus,
       total: existing.total,
-      totalUsd: existing.total,
-      feeAmount: existing.feeAmount || 0,
       currency: existing.currency,
-      convertedAmount: existing.convertedAmount || existing.total,
       paymentMethod: existing.paymentMethod,
-      paymentMethodId: existing.paymentMethodId,
-      paymentChannel: existing.paymentChannel,
       paymentStatus: existing.paymentStatus,
       checkoutUrl: existing.checkoutUrl || null,
       checkoutId: existing.checkoutId || null,
-      shipment: existingShipment,
-      ...(existingPayment ? { payment: existingPayment } : {}),
     };
   }
 
-  const sIn = body.sender || {};
-  const rIn = body.receiver || {};
+  const senderName = String(body.senderName || "").trim();
+  const senderEmail = normalizeEmail(body.senderEmail || actor.email);
+  const senderAddress = String(body.senderAddress || "").trim();
+  const senderCity = String(body.senderCity || "").trim();
+  const senderCountry = String(body.senderCountry || "").trim();
 
-  const senderName = String(sIn.name ?? body.senderName ?? "").trim();
-  const senderEmail = normalizeEmail(sIn.email ?? body.senderEmail ?? actor.email);
-  const senderPhoneRaw = String(sIn.phone ?? body.senderPhone ?? "").trim();
-  const senderAddress = String(sIn.address ?? body.senderAddress ?? "").trim();
-  const senderCity = String(sIn.city ?? body.senderCity ?? "").trim();
-  const senderPostal = String(sIn.postal ?? body.senderPostal ?? "").trim();
-  const senderCountry = String(sIn.country ?? body.senderCountry ?? "").trim();
+  const receiverName = String(body.receiverName || "").trim();
+  const receiverEmail = normalizeEmail(body.receiverEmail || "");
+  const receiverAddress = String(body.receiverAddress || "").trim();
+  const receiverCity = String(body.receiverCity || "").trim();
+  const receiverCountry = String(body.receiverCountry || "").trim();
 
-  const receiverName = String(rIn.name ?? body.receiverName ?? "").trim();
-  const receiverEmail = normalizeEmail(rIn.email ?? body.receiverEmail ?? "");
-  const receiverPhoneRaw = String(rIn.phone ?? body.receiverPhone ?? "").trim();
-  const receiverAddress = String(rIn.address ?? body.receiverAddress ?? "").trim();
-  const receiverCity = String(rIn.city ?? body.receiverCity ?? "").trim();
-  const receiverPostal = String(rIn.postal ?? body.receiverPostal ?? "").trim();
-  const receiverCountry = String(rIn.country ?? body.receiverCountry ?? "").trim();
-
-  if (
-    !senderName ||
-    !senderEmail.includes("@") ||
-    !senderAddress ||
-    !senderCity ||
-    !COUNTRIES.includes(senderCountry)
-  ) {
-    throw Object.assign(new Error("Please complete all required sender details."), {
-      status: 400,
-    });
+  if (!senderName || !senderEmail.includes("@") || !senderAddress || !senderCity || !COUNTRIES.includes(senderCountry)) {
+    throw Object.assign(new Error("Please complete all required sender details."), { status: 400 });
   }
-  if (
-    !receiverName ||
-    !receiverEmail.includes("@") ||
-    !receiverAddress ||
-    !receiverCity ||
-    !COUNTRIES.includes(receiverCountry)
-  ) {
-    throw Object.assign(new Error("Please complete all required receiver details."), {
-      status: 400,
-    });
+  if (!receiverName || !receiverEmail.includes("@") || !receiverAddress || !receiverCity || !COUNTRIES.includes(receiverCountry)) {
+    throw Object.assign(new Error("Please complete all required receiver details."), { status: 400 });
   }
 
-  const parsedSenderPhone = parsePhoneNumberFromString(senderPhoneRaw);
+  const parsedSenderPhone = parsePhoneNumberFromString(String(body.senderPhone || "").trim());
   if (!parsedSenderPhone || !parsedSenderPhone.isValid()) {
-    throw Object.assign(
-      new Error("Enter a valid sender phone number with country code."),
-      { status: 400 }
-    );
+    throw Object.assign(new Error("Enter a valid sender phone number with country code."), { status: 400 });
   }
-  const parsedReceiverPhone = parsePhoneNumberFromString(receiverPhoneRaw);
+  const parsedReceiverPhone = parsePhoneNumberFromString(String(body.receiverPhone || "").trim());
   if (!parsedReceiverPhone || !parsedReceiverPhone.isValid()) {
-    throw Object.assign(
-      new Error("Enter a valid receiver phone number with country code."),
-      { status: 400 }
-    );
+    throw Object.assign(new Error("Enter a valid receiver phone number with country code."), { status: 400 });
   }
 
   const contents = String(body.contents || "").trim().slice(0, 240);
   const packageType = String(body.packageType || "Parcel").trim().slice(0, 60);
-  const actualKg = Number(body.weightKg);
-  const volKg =
-    ((Number(body.lengthCm) || 0) *
-      (Number(body.widthCm) || 0) *
-      (Number(body.heightCm) || 0)) /
-    5000;
-  const weightKg = Math.max(actualKg || 0, volKg || 0);
+  const weightKg = Number(body.weightKg);
   const declaredValue = Math.max(0, Number(body.declaredValue) || 0);
   const service: ServiceTier =
-    body.service === "economy" ||
-    body.service === "express" ||
-    body.service === "standard"
+    body.service === "economy" || body.service === "express" || body.service === "standard"
       ? body.service
       : "standard";
 
-  if (!contents || !Number.isFinite(actualKg) || actualKg < 0.1 || weightKg > 50000) {
-    throw Object.assign(
-      new Error("Enter valid parcel contents and weight (0.1–50,000 kg)."),
-      { status: 400 }
-    );
+  if (!contents || !Number.isFinite(weightKg) || weightKg < 0.1 || weightKg > 50000) {
+    throw Object.assign(new Error("Enter valid parcel contents and weight (0.1–50,000 kg)."), { status: 400 });
   }
 
   const photos = Array.isArray(body.photos)
-    ? body.photos.filter(isAcceptedPhotoUrl).slice(0, 4)
+    ? body.photos.filter((u): u is string => typeof u === "string" && /^https?:\/\//i.test(u)).slice(0, 4)
     : [];
   if (photos.length === 0) {
-    throw Object.assign(new Error("At least 1 uploaded item photo is required."), {
-      status: 400,
-    });
+    throw Object.assign(new Error("At least 1 uploaded item photo is required."), { status: 400 });
   }
 
-  const [{ publicSettings, secrets }, allMethods] = await Promise.all([
-    loadSettingsBundle(),
-    listAllPaymentMethodsServer(),
-  ]);
+  const rawMethod = String(body.paymentMethod || body.paymentChannel || "").trim().toLowerCase();
+  const isPayOnDelivery =
+    rawMethod.includes("delivery") ||
+    rawMethod.includes("pickup") ||
+    rawMethod.includes("later");
+  const isPayOnPickup = isPayOnDelivery;
 
-  const rawMethodId = String(body.paymentMethodId || "").trim();
-  const rawMethod = String(body.paymentMethod || body.paymentChannel || "")
-    .trim()
-    .toLowerCase();
+  const paymentMethodLabel = isPayOnDelivery ? "Pay on delivery" : "Pay now";
+  const channel: BookingPaymentChannel = isPayOnDelivery ? "pay_on_delivery" : "pay_now";
 
-  let chosenMethod: PaymentMethodRecord | undefined = rawMethodId
-    ? allMethods.find((m) => m.id === rawMethodId)
-    : undefined;
-
-  if (!chosenMethod) {
-    const wantsPickup =
-      rawMethod.includes("delivery") ||
-      rawMethod.includes("pickup") ||
-      rawMethod.includes("later") ||
-      rawMethod === "cash";
-    chosenMethod =
-      allMethods.find((m) => (wantsPickup ? m.type === "cash" : m.type === "automatic")) ||
-      DEFAULT_PAYMENT_METHODS.find((m) =>
-        wantsPickup ? m.type === "cash" : m.type === "automatic"
-      );
-  }
-
-  if (!chosenMethod || !chosenMethod.enabled) {
-    throw Object.assign(
-      new Error("The selected payment method is not currently available."),
-      { status: 400 }
-    );
-  }
-
-  if (chosenMethod.rules?.appliesTo === "customs") {
-    throw Object.assign(
-      new Error("This payment method is restricted to customs charges."),
-      { status: 400 }
-    );
-  }
-
-  const isCash = chosenMethod.type === "cash";
-  const isAutomatic = chosenMethod.type === "automatic";
-  const isManual = !isCash && !isAutomatic;
-
-  if (isCash && publicSettings.routing.enablePayOnPickup === false) {
-    throw Object.assign(
-      new Error("Pay on delivery is currently disabled in store settings."),
-      { status: 400 }
-    );
-  }
-  if (isAutomatic && publicSettings.routing.enableBachsBooking === false) {
-    throw Object.assign(
-      new Error("Pay now via Bachs is currently disabled. Please choose another method."),
-      { status: 400 }
-    );
-  }
-
-  // Strictly calculate quote and method fee/discount + conversion on the server
+  // Strictly calculate price on the server
   const quote = calculateShippingPricing(
     senderCountry,
     receiverCountry,
@@ -1437,123 +1137,16 @@ export async function createServerBooking(params: {
     declaredValue,
     service
   );
-
-  const minAmt = Number(chosenMethod.rules?.minAmount || 0);
-  const maxAmt = Number(chosenMethod.rules?.maxAmount || 0);
-  if (minAmt > 0 && quote.total < minAmt) {
-    throw Object.assign(
-      new Error(`${chosenMethod.name} requires a minimum amount of ${formatMoney(minAmt)}.`),
-      { status: 400 }
-    );
-  }
-  if (maxAmt > 0 && quote.total > maxAmt) {
-    throw Object.assign(
-      new Error(`${chosenMethod.name} is capped at ${formatMoney(maxAmt)}.`),
-      { status: 400 }
-    );
-  }
-  const allowedCountries = Array.isArray(chosenMethod.rules?.allowedCountries)
-    ? chosenMethod.rules.allowedCountries.map((c) => c.trim().toLowerCase()).filter(Boolean)
-    : [];
-  if (
-    allowedCountries.length > 0 &&
-    !allowedCountries.includes(senderCountry.toLowerCase()) &&
-    !allowedCountries.includes(receiverCountry.toLowerCase())
-  ) {
-    throw Object.assign(
-      new Error(`${chosenMethod.name} is not enabled for this corridor.`),
-      { status: 400 }
-    );
-  }
-
-  const amounts = calculateMethodAmounts(quote.total, chosenMethod);
-  const currency = amounts.currency || (publicSettings.bachs.defaultCurrency || "USD").toUpperCase();
+  const currency = (publicSettings.bachs.defaultCurrency || "USD").toUpperCase();
   const env = publicSettings.bachs.environment;
   const now = Date.now();
   const eta = addBusinessDays(now, quote.days[1]).getTime();
-
-  let code = generateTrackingCode();
-  const candidateCode = String(body.code || "").trim().toUpperCase();
-  if (isValidTrackingCode(candidateCode)) {
-    try {
-      const existingShip = await db.collection("shipments").doc(candidateCode).get();
-      if (!existingShip.exists) {
-        code = candidateCode;
-      }
-    } catch {
-      // fall back to fresh generated code
-    }
-  }
-
+  const code = generateTrackingCode();
   const reference = `booking_${bookingId}`;
-  const baseOrigin = origin.replace(/\/+$/, "");
 
-  const channel: BookingPaymentChannel = isCash
-    ? "pay_on_pickup"
-    : isManual
-      ? "manual"
-      : "pay_now";
-
-  let checkoutId: string | null = null;
-  let checkoutUrl: string | null = null;
-  let checkoutExpiresAt: number | null = null;
-  let manualPayment: ManualPaymentRecord | null = null;
-  let paymentReference = reference;
-
-  if (isAutomatic) {
-    const apiKey = getActiveBachsApiKey(env, secrets);
-    const productId = getActiveBachsProductId(env, publicSettings.bachs);
-    if (!apiKey || !productId) {
-      throw Object.assign(
-        new Error(
-          actor.isAdmin
-            ? `Bachs is not configured: save your ${env} secret key and custom-amount product ID in Admin → Settings → Bachs.`
-            : "Online checkout is temporarily unavailable. Please choose Pay on delivery or another enabled method."
-        ),
-        { status: 400 }
-      );
-    }
-
-    const cancelPath = body.embedded ? "/dashboard/ship?cancelled=1" : "/ship?cancelled=1";
-    const session = await createBachsCheckoutSession({
-      apiKey,
-      env,
-      productId,
-      amount: amounts.totalUsd,
-      customerEmail: senderEmail,
-      customerName: senderName,
-      returnUrl: `${baseOrigin}/dashboard/track/${encodeURIComponent(code)}?paid=1&booking=1`,
-      cancelUrl: `${baseOrigin}${cancelPath}`,
-      reference,
-      metadata: {
-        kind: "booking",
-        bookingId,
-        trackingCode: code,
-        uid: actor.uid,
-        channel,
-      },
-      expiresInMinutes: chosenMethod.windowMinutes || publicSettings.bachs.checkoutExpiryMinutes || 60,
-      idempotencyKey: `bk_${bookingId}`,
-    });
-    checkoutId = session.checkoutId;
-    checkoutUrl = session.checkoutUrl;
-    checkoutExpiresAt = session.expiresAt;
-  } else if (isManual) {
-    manualPayment = await createManualPaymentRecord({
-      db,
-      kind: "booking",
-      trackingCode: code,
-      bookingId,
-      actor,
-      userEmail: senderEmail,
-      userName: senderName,
-      baseUsd: quote.total,
-      method: chosenMethod,
-      baseUrl: baseOrigin,
-    });
-    checkoutExpiresAt = manualPayment.expiresAt;
-    paymentReference = manualPayment.reference;
-  }
+  const checkoutId: string | null = null;
+  const checkoutUrl: string | null = null;
+  const checkoutExpiresAt: number | null = null;
 
   const bookingDoc: BookingRecord = {
     id: bookingId,
@@ -1564,23 +1157,17 @@ export async function createServerBooking(params: {
     service,
     weightKg,
     declaredValue,
-    total: amounts.totalUsd,
-    feeAmount: amounts.feeAmountUsd,
-    currency: "USD",
-    convertedAmount: amounts.convertedAmount,
-    convertedCurrency: currency,
-    paymentMethod: chosenMethod.name,
-    paymentMethodId: chosenMethod.id,
+    total: quote.total,
+    currency,
+    paymentMethod: paymentMethodLabel,
     paymentChannel: channel,
-    paymentStatus: isCash ? "pay_on_pickup" : "awaiting_payment",
-    bookingStatus: isCash ? "confirmed" : "awaiting_payment",
+    paymentStatus: isPayOnDelivery ? "pay_on_delivery" : "paid",
+    bookingStatus: "confirmed",
     environment: env,
     checkoutId,
     checkoutUrl,
-    paymentId: manualPayment?.id || null,
-    paymentReference,
+    paymentReference: reference,
     checkoutExpiresAt,
-    paymentWindowExpiresAt: checkoutExpiresAt,
     idempotencyKey: bookingId,
     createdAtMs: now,
   };
@@ -1596,7 +1183,7 @@ export async function createServerBooking(params: {
       phone: parsedSenderPhone.formatInternational(),
       address: senderAddress,
       city: senderCity,
-      postal: senderPostal,
+      postal: String(body.senderPostal || "").trim(),
       country: senderCountry,
     },
     receiver: {
@@ -1605,7 +1192,7 @@ export async function createServerBooking(params: {
       phone: parsedReceiverPhone.formatInternational(),
       address: receiverAddress,
       city: receiverCity,
-      postal: receiverPostal,
+      postal: String(body.receiverPostal || "").trim(),
       country: receiverCountry,
     },
     service,
@@ -1613,31 +1200,26 @@ export async function createServerBooking(params: {
     packageType,
     contents,
     declaredValue,
-    priceTotal: amounts.totalUsd,
-    paymentMethod: isCash ? "Booked, payment due at pickup" : chosenMethod.name,
-    paymentMethodId: chosenMethod.id,
-    paymentMethodName: chosenMethod.name,
-    paymentChannel: channel,
-    feeAmount: amounts.feeAmountUsd,
-    convertedAmount: amounts.convertedAmount,
-    convertedCurrency: currency,
-    paymentWindowExpiresAt: checkoutExpiresAt,
+    priceTotal: quote.total,
+    paymentMethod:
+      channel === "pay_on_pickup"
+        ? "Pay on pickup"
+        : channel === "bank_transfer"
+          ? "Bank transfer (Bachs)"
+          : "Card (Bachs)",
     bookingId,
-    paymentId: manualPayment?.id || null,
-    paymentStatus: isCash ? "pay_on_pickup" : "awaiting_payment",
-    paymentReference,
+    paymentStatus: isPayOnPickup ? "pay_on_pickup" : "awaiting_payment",
+    paymentReference: reference,
     checkoutExpiresAt,
-    bookingStatus: isCash ? "confirmed" : "awaiting_payment",
+    bookingStatus: isPayOnPickup ? "confirmed" : "awaiting_payment",
     status: "Booked",
     eta,
     photos,
     hold: null,
     nextStop: {
-      label: isCash
-        ? "Booked, payment due at pickup"
-        : isManual
-          ? `Awaiting ${chosenMethod.name} payment`
-          : "Awaiting booking payment confirmation",
+      label: isPayOnPickup
+        ? "Awaiting item review & pickup dispatch"
+        : "Awaiting booking payment confirmation",
       loc: `${senderCity} Origin`,
       eta: now + 86400000,
     },
@@ -1647,14 +1229,12 @@ export async function createServerBooking(params: {
     },
   };
 
-  const eventLabel = isCash
-    ? "Booked, payment due at pickup"
+  const eventLabel = isPayOnPickup
+    ? "Booked (pay on pickup)"
     : "Booking started — awaiting payment";
-  const eventNote = isCash
-    ? `Parcel ${code} booked with payment due at pickup (${formatMoney(amounts.totalUsd)}).`
-    : isManual
-      ? `Manual payment ${paymentReference} started via ${chosenMethod.name} (${amounts.convertedAmount.toFixed(2)} ${currency}).`
-      : `Booking checkout created for ${formatMoney(amounts.totalUsd)} via ${chosenMethod.name}.`;
+  const eventNote = isPayOnPickup
+    ? `Parcel ${code} booked with Pay on pickup ($${quote.total.toFixed(2)} due at collection).`
+    : `Booking checkout created for ${formatMoney(quote.total)} via Bachs.`;
 
   const batch = db.batch();
   batch.set(bookingRef, {
@@ -1698,63 +1278,27 @@ export async function createServerBooking(params: {
     createdBy: senderName || actor.email,
     createdAt: FieldValue.serverTimestamp(),
   });
+  await batch.commit();
 
-  try {
-    await batch.commit();
-  } catch (err) {
-    if (isAdminIamError(err)) {
-      throw new AdminSdkUnavailableError(
-        "Creating bookings requires Firebase Admin SDK access on your Blaze-plan project."
-      );
-    }
-    await logServerError({
-      step: "booking_firestore_commit",
-      code: "FIRESTORE_COMMIT_ERR",
-      message: err instanceof Error ? err.message : "Batch commit failed",
-      uid: actor.uid,
+  if (isPayOnPickup) {
+    await dispatchBookingConfirmationEmails({
+      db,
+      shipment: shipmentDoc,
+      baseUrl: origin,
+      actorUid: actor.uid,
     });
-    throw err;
-  }
-
-  if (isCash) {
-    try {
-      await dispatchBookingConfirmationEmails({
-        db,
-        shipment: shipmentDoc,
-        baseUrl: baseOrigin,
-        actorUid: actor.uid,
-      });
-    } catch (emailErr) {
-      console.warn("[Booking] Confirmation email dispatch error (non-blocking):", emailErr);
-      logServerError({
-        step: "booking_confirmation_email",
-        code: "EMAIL_WARN",
-        message: emailErr instanceof Error ? emailErr.message : "Email failed",
-        uid: actor.uid,
-      });
-    }
   }
 
   return {
     ok: true,
-    awaitingPayment: !isCash,
     code,
-    trackingCode: code,
     bookingId,
-    status: bookingDoc.bookingStatus,
-    total: amounts.totalUsd,
-    totalUsd: amounts.totalUsd,
-    feeAmount: amounts.feeAmountUsd,
+    total: quote.total,
     currency,
-    convertedAmount: amounts.convertedAmount,
-    paymentMethod: chosenMethod.name,
-    paymentMethodId: chosenMethod.id,
-    paymentChannel: channel,
+    paymentMethod,
     paymentStatus: bookingDoc.paymentStatus,
     checkoutUrl,
     checkoutId,
-    shipment: shipmentDoc,
-    payment: manualPayment,
   };
 }
 
@@ -2301,12 +1845,7 @@ export async function handleBachsWebhook(
           holdReleased,
           remainingCount,
         }),
-        {
-          template: "charge_paid",
-          category: "payments",
-          code,
-          createdBy: "bachs-webhook",
-        }
+        { template: "charge_paid", code, createdBy: "bachs-webhook" }
       );
     }
     if (
@@ -2325,12 +1864,7 @@ export async function handleBachsWebhook(
           holdReleased,
           remainingCount,
         }),
-        {
-          template: "charge_paid",
-          category: "payments",
-          code,
-          createdBy: "bachs-webhook",
-        }
+        { template: "charge_paid", code, createdBy: "bachs-webhook" }
       );
     }
     if (
@@ -2349,12 +1883,7 @@ export async function handleBachsWebhook(
           holdReleased,
           remainingCount,
         }),
-        {
-          template: "charge_paid_ops",
-          category: "notifications",
-          code,
-          createdBy: "bachs-webhook",
-        }
+        { template: "charge_paid_ops", code, createdBy: "bachs-webhook" }
       );
     }
 

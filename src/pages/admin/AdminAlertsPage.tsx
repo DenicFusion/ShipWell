@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertCircle, Check, Loader2 } from "lucide-react";
-import { adminPath } from "@/lib/host";
 import { AdminShell } from "@/components/admin/AdminShell";
 import { fetchAllShipmentsForAdmin } from "@/lib/firestore-shipments";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
@@ -78,7 +77,7 @@ export default function AdminAlertsPage() {
             {visible.map(({ shipment, alert }) => (
               <Link
                 key={`${shipment.code}_${alert.id}`}
-                to={adminPath(`shipment/${shipment.code}`)}
+                to={`/admin/shipment/${shipment.code}`}
                 className="ad-qi"
               >
                 <div

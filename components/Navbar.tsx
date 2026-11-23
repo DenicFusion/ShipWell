@@ -6,6 +6,7 @@ import {
   MessageSquare,
   Package,
   Search,
+  ShieldCheck,
 } from "lucide-react";
 import { ShipwellLogo } from "@/components/ShipwellLogo";
 import { ThemeSwitch } from "@/components/ThemeSwitch";
@@ -20,6 +21,7 @@ export function Navbar() {
   const {
     user,
     profile,
+    isAdmin,
     openAlertsCount,
     unreadSupportCount,
     openAuth,
@@ -186,6 +188,15 @@ export function Navbar() {
                           {unreadSupportCount > 0 && `(${unreadSupportCount})`}
                         </span>
                       </Link>
+                      {isAdmin && (
+                        <Link
+                          to="/admin"
+                          onClick={() => setMenuOpen(false)}
+                        >
+                          <ShieldCheck className="w-4 h-4 text-amber-400" />
+                          <span>Admin panel</span>
+                        </Link>
+                      )}
                       <Link to="/ship" onClick={handleShipClick}>
                         <Package className="w-4 h-4" />
                         <span>Ship a parcel</span>

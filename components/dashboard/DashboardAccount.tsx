@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { updateProfile, type User } from "firebase/auth";
 import toast from "react-hot-toast";
@@ -7,7 +7,6 @@ import { ThemeSwitch } from "@/components/ThemeSwitch";
 import { PhoneField } from "@/components/PhoneField";
 import { validateInternationalPhone } from "@/lib/phone";
 import { updateUserAccountProfile } from "@/lib/firestore-shipments";
-import { apiFetch } from "@/lib/api-client";
 import {
   firestoreTimeToMs,
   formatTimeAgo,
@@ -42,38 +41,7 @@ export function DashboardAccount({
   const [draftPhone, setDraftPhone] = useState<string | null>(null);
   const [draftPrefs, setDraftPrefs] = useState<NotificationPrefs | null>(null);
   const [saving, setSaving] = useState(false);
-  const [sendingVerify, setSendingVerify] = useState(false);
-  const [verifyCooldown, setVerifyCooldown] = useState(0);
   const [error, setError] = useState("");
-
-  useEffect(() => {
-    if (verifyCooldown <= 0) return;
-    const t = window.setTimeout(() => setVerifyCooldown((c) => c - 1), 1000);
-    return () => window.clearTimeout(t);
-  }, [verifyCooldown]);
-
-  const handleResendVerification = async () => {
-    if (sendingVerify || verifyCooldown > 0) return;
-    setSendingVerify(true);
-    try {
-      const idToken = await user.getIdToken();
-      await apiFetch("/api/auth/send-verification", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${idToken}`,
-        },
-        body: JSON.stringify({ name: initialName }),
-        step: "send_verification",
-      });
-      setVerifyCooldown(60);
-      toast.success("Verification email sent");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not send verification email.");
-    } finally {
-      setSendingVerify(false);
-    }
-  };
 
   const name = draftName ?? initialName;
   const phone = draftPhone ?? initialPhone;
@@ -182,7 +150,7 @@ export function DashboardAccount({
           />
           <div className="fw">
             <label className="lbl" htmlFor="dxEmail">
-              Email {user.emailVerified ? "· Verified" : "· Unverified"}
+              Email
             </label>
             <input
               className="field"
@@ -190,26 +158,6 @@ export function DashboardAccount({
               value={user.email || ""}
               disabled
             />
-            {!user.emailVerified && (
-              <div style={{ marginTop: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                <small style={{ color: "var(--muted)", fontSize: 12 }}>
-                  Verify your email to see parcels shipped to you automatically.
-                </small>
-                <button
-                  type="button"
-                  className="sw-btn sw-btn-ghost"
-                  style={{ padding: "5px 10px", fontSize: 12 }}
-                  disabled={sendingVerify || verifyCooldown > 0}
-                  onClick={handleResendVerification}
-                >
-                  {sendingVerify
-                    ? "Sending..."
-                    : verifyCooldown > 0
-                      ? `Resend in ${verifyCooldown}s`
-                      : "Resend verification"}
-                </button>
-              </div>
-            )}
           </div>
           {error && <div className="au-err mb-3">{error}</div>}
           <button

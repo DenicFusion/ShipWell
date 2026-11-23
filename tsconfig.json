@@ -31,7 +31,6 @@
     "lib/**/*.ts",
     "types/**/*.ts",
     "scripts/**/*.ts",
-    "api/**/*.ts",
     "server.ts",
     "vite.config.ts"
   ],

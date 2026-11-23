@@ -4,14 +4,13 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   createUserWithEmailAndPassword,
   GoogleAuthProvider,
+  sendEmailVerification,
   signInWithPopup,
   updateProfile,
 } from "firebase/auth";
 import { Loader2, UserPlus } from "lucide-react";
 import { auth } from "@/lib/firebase";
 import { syncUserProfileDoc } from "@/lib/firestore-shipments";
-import { apiFetch } from "@/lib/api-client";
-import { migrateGuestDraftToFirestore } from "@/lib/drafts";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
@@ -48,7 +47,6 @@ function SignupForm() {
         name: cred.user.displayName || "ShipWell Customer",
         email: cred.user.email || "",
       });
-      await migrateGuestDraftToFirestore(cred.user.uid, cred.user.email);
       toast.success("Account connected");
       navigate(redirect, { replace: true });
     } catch (err) {
@@ -79,28 +77,13 @@ function SignupForm() {
     try {
       const cred = await createUserWithEmailAndPassword(auth, clean, password);
       await updateProfile(cred.user, { displayName: name.trim() });
+      await sendEmailVerification(cred.user).catch(() => null);
       await syncUserProfileDoc({
         uid: cred.user.uid,
         name: name.trim(),
         email: clean,
       });
-      await migrateGuestDraftToFirestore(cred.user.uid, clean);
-      // Branded verification email via Resend (never blocks sign-up if Resend fails)
-      cred.user
-        .getIdToken()
-        .then((idToken) =>
-          apiFetch("/api/auth/send-verification", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${idToken}`,
-            },
-            body: JSON.stringify({ name: name.trim() }),
-            step: "send_verification",
-          })
-        )
-        .catch(() => null);
-      toast.success("Account created! Check your email to verify.");
+      toast.success("Account created!");
       navigate(redirect, { replace: true });
     } catch (err) {
       const code = (err as { code?: string })?.code || "";

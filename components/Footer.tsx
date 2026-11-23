@@ -6,7 +6,7 @@ import { ShipwellLogo } from "@/components/ShipwellLogo";
 import { ThemeSwitch } from "@/components/ThemeSwitch";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
 
-const SUPPORT_EMAIL = "support@mail.shipwell.cc";
+const SUPPORT_EMAIL = "support@info.shipwell.cc";
 
 export function Footer() {
   const { user, openContact, requireAuthForShip } = useShipWell();

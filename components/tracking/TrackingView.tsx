@@ -7,9 +7,11 @@ import {
   orderBy,
   query,
 } from "firebase/firestore";
+import { sendEmailVerification } from "firebase/auth";
 import {
   AlertCircle,
   AlertTriangle,
+  ArrowUpRight,
   Camera,
   Check,
   Clock,
@@ -22,13 +24,11 @@ import {
   Truck,
 } from "lucide-react";
 import { db } from "@/lib/firebase";
-import { apiFetch } from "@/lib/api-client";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
 import { CustomsLedger } from "@/components/tracking/CustomsLedger";
-import { ManualPaymentPanel } from "@/components/payments/ManualPaymentPanel";
 import {
   checkAccountExists,
-  fetchFullShipmentBundleWithRetry,
+  fetchFullShipmentBundle,
   fetchTrackingTeaser,
 } from "@/lib/firestore-shipments";
 import { formatDateTime, formatShortDay, SERVICES } from "@/lib/quote-engine";
@@ -38,7 +38,6 @@ import {
   getStagePercent,
   isValidTrackingCode,
   normalizeEmail,
-  type ManualPaymentRecord,
   type ShipmentAlert,
   type ShipmentRecord,
   type TrackingEvent,
@@ -91,19 +90,6 @@ export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
     inviteToken && inviteLookup?.token === inviteToken ? inviteLookup.data : null;
   const [resendEmail, setResendEmail] = useState("");
   const [resendSent, setResendSent] = useState(false);
-  const [verifyCooldown, setVerifyCooldown] = useState(0);
-  const [verifyingBusy, setVerifyingBusy] = useState(false);
-  const [bookingManualPay, setBookingManualPay] =
-    useState<ManualPaymentRecord | null>(null);
-
-  useEffect(() => {
-    if (verifyCooldown <= 0) return;
-    const t = window.setInterval(
-      () => setVerifyCooldown((prev) => Math.max(0, prev - 1)),
-      1000
-    );
-    return () => window.clearInterval(t);
-  }, [verifyCooldown]);
 
   // Normalize URL if lowercase/unformatted code was visited directly
   useEffect(() => {
@@ -185,46 +171,17 @@ export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
       if (t) {
         saveRecent(normalizedInitial);
         if (user) {
-          const full = await fetchFullShipmentBundleWithRetry(normalizedInitial, 3);
+          const full = await fetchFullShipmentBundle(normalizedInitial);
           setShipment(full);
           if (full?.receiverEmail) {
             const exists = await checkAccountExists(full.receiverEmail);
             setReceiverHasAccount(exists);
           }
-          if (
-            full &&
-            (full.paymentId ||
-              (full.paymentStatus &&
-                full.paymentStatus !== "paid" &&
-                full.paymentStatus !== "pay_on_pickup"))
-          ) {
-            user
-              .getIdToken()
-              .then((token) =>
-                apiFetch<{ ok: boolean; payments: ManualPaymentRecord[] }>(
-                  `/api/payments/my?code=${encodeURIComponent(normalizedInitial)}`,
-                  {
-                    headers: { Authorization: `Bearer ${token}` },
-                    step: "public_track_load_payment",
-                  }
-                )
-              )
-              .then((res) => {
-                const found =
-                  (res.payments || []).find((p) => p.kind === "booking") || null;
-                setBookingManualPay(found);
-              })
-              .catch(() => undefined);
-          } else {
-            setBookingManualPay(null);
-          }
         } else {
           setShipment(null);
-          setBookingManualPay(null);
         }
       } else {
         setShipment(null);
-        setBookingManualPay(null);
       }
     } finally {
       setLoading(false);
@@ -715,38 +672,14 @@ export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
             </div>
             <button
               type="button"
-              disabled={verifyingBusy || verifyCooldown > 0}
               className="sw-btn sw-btn-amber"
               style={{ padding: "8px 14px", fontSize: 12.5 }}
               onClick={async () => {
-                setVerifyingBusy(true);
-                try {
-                  const idToken = await user.getIdToken();
-                  await apiFetch("/api/auth/send-verification", {
-                    method: "POST",
-                    headers: {
-                      "Content-Type": "application/json",
-                      Authorization: `Bearer ${idToken}`,
-                    },
-                    body: JSON.stringify({}),
-                    step: "tracking_send_verification",
-                  });
-                  setVerifyCooldown(60);
-                  toast.success("Verification email sent — check your inbox.");
-                } catch (err) {
-                  toast.error(
-                    err instanceof Error
-                      ? err.message
-                      : "Could not send verification email right now."
-                  );
-                } finally {
-                  setVerifyingBusy(false);
-                }
+                await sendEmailVerification(user).catch(() => null);
+                toast.success("Verification email sent — check your inbox.");
               }}
             >
-              {verifyCooldown > 0
-                ? `Resend in ${verifyCooldown}s`
-                : "Send verification email"}
+              Send verification email
             </button>
           </div>
         )}
@@ -755,9 +688,24 @@ export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
         <div className="tk-role">
           <Shield className="w-4 h-4 text-[var(--em)] shrink-0" />
           {viewerRole === "admin" ? (
-            <span>
-              <b>Admin view</b> — operations access enabled
-            </span>
+            <>
+              <span>
+                <b>Admin view</b> — operations access enabled
+              </span>
+              <Link
+                to={`/admin/shipment/${normalizedInitial}`}
+                style={{
+                  marginLeft: "auto",
+                  color: "var(--em)",
+                  fontWeight: 600,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                }}
+              >
+                Manage parcel <ArrowUpRight className="w-3.5 h-3.5" />
+              </Link>
+            </>
           ) : viewerRole === "receiver" && shipment ? (
             <span>
               You are the <b>recipient</b> — this parcel is on its way to you
@@ -898,21 +846,7 @@ export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
           )}
         </div>
 
-        {/* MANUAL BOOKING PAYMENT PANEL */}
-        {canSeePrivate &&
-          shipment &&
-          bookingManualPay &&
-          bookingManualPay.status !== "paid" &&
-          shipment.paymentStatus !== "pay_on_pickup" && (
-            <div className="tk-sec">
-              <ManualPaymentPanel
-                payment={bookingManualPay}
-                onUpdated={(next) => setBookingManualPay(next)}
-              />
-            </div>
-          )}
-
-        {/* DUTIES & CHARGES (BACHS & CUSTOM METHODS) */}
+        {/* DUTIES & CHARGES (BACHS) */}
         {canSeePrivate &&
           shipment &&
           (shipment.alerts || []).some((a) => a.kind === "duty") && (

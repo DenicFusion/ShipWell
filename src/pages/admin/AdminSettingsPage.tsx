@@ -17,20 +17,18 @@ import {
 import toast from "react-hot-toast";
 import { auth, db } from "@/lib/firebase";
 import { AdminShell } from "@/components/admin/AdminShell";
-import { PaymentMethodsManager } from "@/components/admin/PaymentMethodsManager";
 import { ThemeSwitch } from "@/components/ThemeSwitch";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
 import { formatDateTime } from "@/lib/quote-engine";
 import {
   firestoreTimeToMs,
   type AdminPaymentSettingsPublic,
-  type ErrorLogRecord,
   type GatewayId,
   type SecretMask,
   type WebhookEventLog,
 } from "@/types/tracking";
 
-type SettingsTab = "bachs" | "methods" | "resend" | "gateways" | "routing" | "activity";
+type SettingsTab = "bachs" | "resend" | "gateways" | "routing" | "activity";
 
 const BACHS_EVENTS = [
   "collection.succeeded",
@@ -157,16 +155,10 @@ export default function AdminSettingsPage() {
 
   // Resend fields
   const [resendFrom, setResendFrom] = useState(
-    "ShipWell <notifications@mail.shipwell.cc>"
+    "ShipWell <notifications@info.shipwell.cc>"
   );
-  const [resendReplyTo, setResendReplyTo] = useState("support@mail.shipwell.cc");
-  const [resendInbox, setResendInbox] = useState("support@mail.shipwell.cc");
-  const [fromSecurity, setFromSecurity] = useState("ShipWell Security <noreply@mail.shipwell.cc>");
-  const [fromTracking, setFromTracking] = useState("ShipWell Tracking <tracking@mail.shipwell.cc>");
-  const [fromBilling, setFromBilling] = useState("ShipWell Billing <billing@mail.shipwell.cc>");
-  const [fromPayments, setFromPayments] = useState("ShipWell Payments <payments@mail.shipwell.cc>");
-  const [fromNotifications, setFromNotifications] = useState("ShipWell <notifications@mail.shipwell.cc>");
-  const [fromSupport, setFromSupport] = useState("ShipWell Support <support@mail.shipwell.cc>");
+  const [resendReplyTo, setResendReplyTo] = useState("support@info.shipwell.cc");
+  const [resendInbox, setResendInbox] = useState("support@info.shipwell.cc");
   const [resendKeyInput, setResendKeyInput] = useState("");
   const [resendInboundInput, setResendInboundInput] = useState("");
   const [testEmailTarget, setTestEmailTarget] = useState(() => user?.email || "");
@@ -192,7 +184,6 @@ export default function AdminSettingsPage() {
   // Live activity & test checkout results
   const [webhookLogs, setWebhookLogs] = useState<WebhookEventLog[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditRow[]>([]);
-  const [errorLogs, setErrorLogs] = useState<ErrorLogRecord[]>([]);
   const [testCheckoutUrl, setTestCheckoutUrl] = useState("");
   const [testResult, setTestResult] = useState<string>("");
   const [busyTool, setBusyTool] = useState("");
@@ -213,17 +204,9 @@ export default function AdminSettingsPage() {
     setDefaultCurrency(s.bachs.defaultCurrency || "USD");
     setExpiryMins(String(s.bachs.checkoutExpiryMinutes || 60));
 
-    setResendFrom(s.resend.from || "ShipWell <notifications@mail.shipwell.cc>");
-    setResendReplyTo(s.resend.replyTo || "support@mail.shipwell.cc");
-    setResendInbox(s.resend.supportInbox || "support@mail.shipwell.cc");
-    setFromSecurity(s.resend.fromSecurity || "ShipWell Security <noreply@mail.shipwell.cc>");
-    setFromTracking(s.resend.fromTracking || "ShipWell Tracking <tracking@mail.shipwell.cc>");
-    setFromBilling(s.resend.fromBilling || "ShipWell Billing <billing@mail.shipwell.cc>");
-    setFromPayments(s.resend.fromPayments || "ShipWell Payments <payments@mail.shipwell.cc>");
-    setFromNotifications(
-      s.resend.fromNotifications || s.resend.from || "ShipWell <notifications@mail.shipwell.cc>"
-    );
-    setFromSupport(s.resend.fromSupport || "ShipWell Support <support@mail.shipwell.cc>");
+    setResendFrom(s.resend.from || "ShipWell <notifications@info.shipwell.cc>");
+    setResendReplyTo(s.resend.replyTo || "support@info.shipwell.cc");
+    setResendInbox(s.resend.supportInbox || "support@info.shipwell.cc");
 
     setStripeEnabled(Boolean(s.stripe.enabled));
     setStripePublic(s.stripe.publicKey || "");
@@ -328,23 +311,9 @@ export default function AdminSettingsPage() {
       () => undefined
     );
 
-    const unsubErr = onSnapshot(
-      query(collection(db, "errorLogs"), orderBy("ts", "desc"), limit(40)),
-      (snap) => {
-        setErrorLogs(
-          snap.docs.map((d) => ({
-            ...(d.data() as Omit<ErrorLogRecord, "id">),
-            id: d.id,
-          }))
-        );
-      },
-      () => undefined
-    );
-
     return () => {
       unsubWh();
       unsubAu();
-      unsubErr();
     };
   }, [isAdmin]);
 
@@ -583,7 +552,6 @@ export default function AdminSettingsPage() {
         {(
           [
             ["bachs", "Bachs payments"],
-            ["methods", "Payment methods"],
             ["resend", "Email (Resend)"],
             ["gateways", "Other gateways"],
             ["routing", "Routing"],
@@ -605,8 +573,6 @@ export default function AdminSettingsPage() {
 
       {loading ? (
         <div className="dx-skel" style={{ height: 300 }} />
-      ) : tab === "methods" ? (
-        <PaymentMethodsManager />
       ) : tab === "bachs" ? (
         <div className="ad-split">
           <div>
@@ -891,8 +857,8 @@ export default function AdminSettingsPage() {
       ) : tab === "resend" ? (
         <div className="ad-card">
           <div className="ad-ch">
-            <b>Domain: mail.shipwell.cc (sending and receiving)</b>
-            <small>Resend Outbound &amp; Inbound Email</small>
+            <b>Resend Outbound &amp; Inbound Email (info.shipwell.cc)</b>
+            <small>Notifications &amp; Support replies</small>
           </div>
           <form
             className="ad-cb ad-form"
@@ -903,12 +869,6 @@ export default function AdminSettingsPage() {
                   from: resendFrom.trim(),
                   replyTo: resendReplyTo.trim(),
                   supportInbox: resendInbox.trim(),
-                  fromSecurity: fromSecurity.trim(),
-                  fromTracking: fromTracking.trim(),
-                  fromBilling: fromBilling.trim(),
-                  fromPayments: fromPayments.trim(),
-                  fromNotifications: fromNotifications.trim(),
-                  fromSupport: fromSupport.trim(),
                   ...(resendKeyInput.trim()
                     ? { apiKey: resendKeyInput.trim() }
                     : {}),
@@ -922,7 +882,7 @@ export default function AdminSettingsPage() {
             <div className="g2">
               <div className="fw">
                 <label className="lbl" htmlFor="res-from">
-                  Default From address
+                  From address
                 </label>
                 <input
                   id="res-from"
@@ -947,80 +907,11 @@ export default function AdminSettingsPage() {
               </div>
             </div>
 
-            <div className="g2">
-              <div className="fw">
-                <label className="lbl" htmlFor="res-f-sec">
-                  Security / Auth sender (no-reply)
-                </label>
-                <input
-                  id="res-f-sec"
-                  className="field"
-                  value={fromSecurity}
-                  onChange={(e) => setFromSecurity(e.target.value)}
-                />
-              </div>
-              <div className="fw">
-                <label className="lbl" htmlFor="res-f-trk">
-                  Tracking &amp; invite sender
-                </label>
-                <input
-                  id="res-f-trk"
-                  className="field"
-                  value={fromTracking}
-                  onChange={(e) => setFromTracking(e.target.value)}
-                />
-              </div>
-              <div className="fw">
-                <label className="lbl" htmlFor="res-f-bil">
-                  Billing &amp; receipt sender
-                </label>
-                <input
-                  id="res-f-bil"
-                  className="field"
-                  value={fromBilling}
-                  onChange={(e) => setFromBilling(e.target.value)}
-                />
-              </div>
-              <div className="fw">
-                <label className="lbl" htmlFor="res-f-pay">
-                  Payments &amp; verification sender
-                </label>
-                <input
-                  id="res-f-pay"
-                  className="field"
-                  value={fromPayments}
-                  onChange={(e) => setFromPayments(e.target.value)}
-                />
-              </div>
-              <div className="fw">
-                <label className="lbl" htmlFor="res-f-not">
-                  Alerts &amp; operations sender
-                </label>
-                <input
-                  id="res-f-not"
-                  className="field"
-                  value={fromNotifications}
-                  onChange={(e) => setFromNotifications(e.target.value)}
-                />
-              </div>
-              <div className="fw">
-                <label className="lbl" htmlFor="res-f-sup">
-                  Support desk sender
-                </label>
-                <input
-                  id="res-f-sup"
-                  className="field"
-                  value={fromSupport}
-                  onChange={(e) => setFromSupport(e.target.value)}
-                />
-              </div>
-            </div>
-
             <SecretInputField
               id="res-api"
               label="Resend API key"
               placeholder="re_..."
-              hint="Domain mail.shipwell.cc verified in Resend for sending and receiving"
+              hint="Verify domain info.shipwell.cc inside Resend first"
               mask={settings?.resend.secrets.apiKey}
               value={resendKeyInput}
               onChange={setResendKeyInput}
@@ -1028,9 +919,9 @@ export default function AdminSettingsPage() {
 
             <SecretInputField
               id="res-inb"
-              label="Resend Inbound webhook signing secret (whsec_...)"
+              label="Resend Inbound webhook signing secret (optional)"
               placeholder="whsec_..."
-              hint="Point Resend Inbound webhook to your Cloud Function inboundEmail URL (or /api/inbound-email)"
+              hint="Point Resend Inbound webhook to https://shipwell.cc/api/inbound-email"
               mask={settings?.resend.secrets.inboundWebhookSecret}
               value={resendInboundInput}
               onChange={setResendInboundInput}
@@ -1293,7 +1184,8 @@ export default function AdminSettingsPage() {
                 onChange={(e) => setEnableBachsBooking(e.target.checked)}
               />
               <span>
-                Allow Pay now (Bachs Checkout) on Ship booking checkout
+                Allow Card &amp; Bank Transfer (Bachs Checkout) on Ship booking
+                checkout
               </span>
             </label>
 
@@ -1304,7 +1196,7 @@ export default function AdminSettingsPage() {
                 onChange={(e) => setEnablePayOnPickup(e.target.checked)}
               />
               <span>
-                Allow Pay on delivery during Ship booking checkout
+                Allow Pay on pickup during Ship booking checkout
               </span>
             </label>
 
@@ -1381,27 +1273,6 @@ export default function AdminSettingsPage() {
                       <span>{a.detail}</span>
                       <span className="cfg-ref">{a.actorEmail}</span>
                       <time>{formatDateTime(a.createdAtMs)}</time>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-
-            <div className="ad-card">
-              <div className="ad-ch">
-                <b>Error &amp; diagnostic logs</b>
-                <small>Client &amp; server step/code failures</small>
-              </div>
-              <div className="cfg-tbl">
-                {errorLogs.length === 0 ? (
-                  <div className="sp-none">No error logs recorded.</div>
-                ) : (
-                  errorLogs.map((er) => (
-                    <div className="cfg-r" key={er.id}>
-                      <span className="chip r">{er.code}</span>
-                      <b className="mono">{er.step}</b>
-                      <span>{er.message}</span>
-                      <time>{formatDateTime(er.ts)}</time>
                     </div>
                   ))
                 )}

@@ -75,18 +75,11 @@
         "contents": { "type": "string", "maxLength": 240 },
         "declaredValue": { "type": "number" },
         "priceTotal": { "type": "number" },
-        "paymentMethod": { "type": "string", "maxLength": 80 },
-        "paymentMethodId": { "type": "string", "maxLength": 80 },
-        "paymentMethodName": { "type": "string", "maxLength": 80 },
-        "paymentChannel": { "type": "string", "maxLength": 40 },
-        "feeAmount": { "type": "number" },
-        "convertedAmount": { "type": "number" },
-        "convertedCurrency": { "type": "string", "maxLength": 12 },
-        "paymentWindowExpiresAt": { "type": "number" },
+        "paymentMethod": { "type": "string", "maxLength": 40 },
         "bookingId": { "type": "string", "maxLength": 128 },
         "paymentStatus": {
           "type": "string",
-          "enum": ["awaiting_payment", "pending_review", "paid", "pay_on_pickup", "rejected", "info_requested", "failed", "expired", "refunded"]
+          "enum": ["awaiting_payment", "paid", "pay_on_pickup", "failed", "expired", "refunded"]
         },
         "paymentReference": { "type": "string", "maxLength": 160 },
         "paymentId": { "type": "string", "maxLength": 160 },
@@ -128,13 +121,12 @@
         "weightKg": { "type": "number" },
         "declaredValue": { "type": "number" },
         "total": { "type": "number" },
-        "currency": { "type": "string", "maxLength": 12 },
-        "paymentMethod": { "type": "string", "maxLength": 80 },
-        "paymentMethodId": { "type": "string", "maxLength": 80 },
-        "paymentChannel": { "type": "string", "maxLength": 40 },
+        "currency": { "type": "string", "maxLength": 8 },
+        "paymentMethod": { "type": "string", "enum": ["bachs", "pay_on_pickup"] },
+        "paymentChannel": { "type": "string", "enum": ["card", "bank_transfer", "pay_on_pickup"] },
         "paymentStatus": {
           "type": "string",
-          "enum": ["awaiting_payment", "pending_review", "paid", "pay_on_pickup", "rejected", "info_requested", "failed", "expired", "refunded"]
+          "enum": ["awaiting_payment", "paid", "pay_on_pickup", "failed", "expired", "refunded"]
         },
         "bookingStatus": {
           "type": "string",
@@ -339,125 +331,6 @@
         "ts": { "type": "number" }
       },
       "required": ["provider", "eventType", "result", "ts"]
-    },
-    "ErrorLog": {
-      "title": "ErrorLog",
-      "description": "Booking and client/server diagnostic error events.",
-      "type": "object",
-      "properties": {
-        "uid": { "type": "string", "maxLength": 128 },
-        "step": { "type": "string", "maxLength": 80 },
-        "code": { "type": "string", "maxLength": 80 },
-        "message": { "type": "string", "maxLength": 600 },
-        "route": { "type": "string", "maxLength": 200 },
-        "ts": { "type": "number" },
-        "createdAt": { "type": "timestamp" }
-      },
-      "required": ["step", "code", "message", "ts", "createdAt"]
-    },
-    "DraftShipment": {
-      "title": "DraftShipment",
-      "description": "User shipment wizard autosave draft.",
-      "type": "object",
-      "properties": {
-        "id": { "type": "string", "maxLength": 128 },
-        "uid": { "type": "string", "maxLength": 128 },
-        "step": { "type": "number" },
-        "data": { "type": "object" },
-        "reminderSent": { "type": "boolean" },
-        "createdAtMs": { "type": "number" },
-        "updatedAtMs": { "type": "number" }
-      },
-      "required": ["id", "uid", "step", "updatedAtMs"]
-    },
-    "DraftSummary": {
-      "title": "DraftSummary",
-      "description": "Non-PII draft metadata for owner and admin abandonment overview.",
-      "type": "object",
-      "properties": {
-        "draftId": { "type": "string", "maxLength": 128 },
-        "uid": { "type": "string", "maxLength": 128 },
-        "email": { "type": "string", "maxLength": 160 },
-        "step": { "type": "number" },
-        "originCountry": { "type": "string", "maxLength": 100 },
-        "destCountry": { "type": "string", "maxLength": 100 },
-        "createdAtMs": { "type": "number" },
-        "updatedAtMs": { "type": "number" },
-        "reminderSent": { "type": "boolean" }
-      },
-      "required": ["draftId", "uid", "step", "createdAtMs", "updatedAtMs"]
-    },
-    "PaymentMethod": {
-      "title": "PaymentMethod",
-      "description": "Admin-managed checkout and customs payment method configuration.",
-      "type": "object",
-      "properties": {
-        "id": { "type": "string", "maxLength": 80 },
-        "name": { "type": "string", "maxLength": 80 },
-        "subtitle": { "type": "string", "maxLength": 160 },
-        "type": { "type": "string", "enum": ["automatic", "bank_transfer", "crypto", "mobile_money", "cash", "other"] },
-        "gateway": { "type": "string", "maxLength": 40 },
-        "enabled": { "type": "boolean" },
-        "order": { "type": "number" },
-        "currency": { "type": "string", "maxLength": 12 },
-        "exchangeRate": { "type": "number" },
-        "details": { "type": "array" },
-        "instructions": { "type": "string", "maxLength": 2000 },
-        "iconUrl": { "type": "string", "maxLength": 1024 },
-        "qrUrl": { "type": "string", "maxLength": 1024 },
-        "fee": { "type": "object" },
-        "rules": { "type": "object" },
-        "proof": { "type": "object" },
-        "windowMinutes": { "type": "number" }
-      },
-      "required": ["id", "name", "type", "enabled", "order"]
-    },
-    "ManualPayment": {
-      "title": "ManualPayment",
-      "description": "Customer payment attempt and proof submission awaiting admin verification.",
-      "type": "object",
-      "properties": {
-        "id": { "type": "string", "maxLength": 128 },
-        "reference": { "type": "string", "maxLength": 60 },
-        "kind": { "type": "string", "enum": ["booking", "customs"] },
-        "trackingCode": { "type": "string", "maxLength": 24 },
-        "bookingId": { "type": "string", "maxLength": 128 },
-        "alertId": { "type": "string", "maxLength": 128 },
-        "uid": { "type": "string", "maxLength": 128 },
-        "userEmail": { "type": "string", "maxLength": 160 },
-        "methodId": { "type": "string", "maxLength": 80 },
-        "methodName": { "type": "string", "maxLength": 80 },
-        "methodType": { "type": "string", "maxLength": 40 },
-        "baseAmount": { "type": "number" },
-        "feeAmount": { "type": "number" },
-        "totalUsd": { "type": "number" },
-        "currency": { "type": "string", "maxLength": 12 },
-        "convertedAmount": { "type": "number" },
-        "status": {
-          "type": "string",
-          "enum": ["awaiting_payment", "pending_review", "paid", "rejected", "info_requested", "expired", "refunded"]
-        },
-        "expiresAt": { "type": "number" },
-        "proof": { "type": "object" },
-        "reviewNote": { "type": "string", "maxLength": 600 },
-        "audit": { "type": "array" },
-        "createdAtMs": { "type": "number" },
-        "updatedAtMs": { "type": "number" }
-      },
-      "required": ["id", "reference", "kind", "trackingCode", "uid", "methodId", "status", "totalUsd"]
-    },
-    "MailLog": {
-      "title": "MailLog",
-      "description": "Secondary email log stream mirroring transactional deliveries.",
-      "type": "object",
-      "properties": {
-        "to": { "type": "string", "maxLength": 160 },
-        "from": { "type": "string", "maxLength": 160 },
-        "template": { "type": "string", "maxLength": 60 },
-        "subject": { "type": "string", "maxLength": 240 },
-        "status": { "type": "string", "maxLength": 40 },
-        "createdAt": { "type": "timestamp" }
-      }
     }
   },
   "firestore": {
@@ -501,37 +374,9 @@
       "schema": { "$ref": "EmailLog" },
       "description": "Transactional email dispatch logs."
     },
-    "mail/{logId}": {
-      "schema": { "$ref": "MailLog" },
-      "description": "Transactional email mirror log."
-    },
     "auditLogs/{logId}": {
       "schema": { "$ref": "AuditLog" },
       "description": "Admin operations audit logs."
-    },
-    "errorLogs/{logId}": {
-      "schema": { "$ref": "ErrorLog" },
-      "description": "Booking and diagnostic error logs visible to admins."
-    },
-    "drafts/{uid}/items/{draftId}": {
-      "schema": { "$ref": "DraftShipment" },
-      "description": "Autosaved Ship wizard drafts per signed-in user."
-    },
-    "draftSummaries/{summaryId}": {
-      "schema": { "$ref": "DraftSummary" },
-      "description": "Non-PII draft telemetry for reminders and admin overview."
-    },
-    "paymentMethods/{methodId}": {
-      "schema": { "$ref": "PaymentMethod" },
-      "description": "Admin-configured payment methods."
-    },
-    "payments/{paymentId}": {
-      "schema": { "$ref": "ManualPayment" },
-      "description": "Server-managed manual & gateway payment attempts and proof review queue."
-    },
-    "adminLoginAttempts/{attemptId}": {
-      "schema": { "type": "object" },
-      "description": "Server-recorded failed admin login audit events."
     },
     "supportThreads/{threadId}": {
       "schema": { "$ref": "SupportThread" },

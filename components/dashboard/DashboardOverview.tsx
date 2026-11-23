@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import type { User } from "firebase/auth";
+import { sendEmailVerification, type User } from "firebase/auth";
 import {
   AlertTriangle,
   Bell,
@@ -8,7 +8,6 @@ import {
   Check,
   Copy,
   DollarSign,
-  FileEdit,
   Home,
   Mail,
   Plus,
@@ -17,8 +16,6 @@ import {
   Truck,
 } from "lucide-react";
 import toast from "react-hot-toast";
-import { apiFetch } from "@/lib/api-client";
-import { listUserDrafts } from "@/lib/drafts";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
 import { RouteArcMap, StageStepper } from "@/components/dashboard/RouteArcMap";
 import {
@@ -31,7 +28,6 @@ import {
   formatTrackingCode,
   getShipmentChip,
   normalizeEmail,
-  type DraftShipmentRecord,
   type ShipmentAlert,
   type ShipmentRecord,
   type TrackingEvent,
@@ -63,29 +59,6 @@ export function DashboardOverview({
   const navigate = useNavigate();
   const [searchCode, setSearchCode] = useState("");
   const [verifyingBusy, setVerifyingBusy] = useState(false);
-  const [verifyCooldown, setVerifyCooldown] = useState(0);
-  const [latestDraft, setLatestDraft] = useState<DraftShipmentRecord | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    listUserDrafts(user.uid)
-      .then((items) => {
-        if (active) setLatestDraft(items[0] || null);
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, [user.uid]);
-
-  useEffect(() => {
-    if (verifyCooldown <= 0) return;
-    const t = window.setInterval(
-      () => setVerifyCooldown((prev) => Math.max(0, prev - 1)),
-      1000
-    );
-    return () => window.clearInterval(t);
-  }, [verifyCooldown]);
 
   const userEmail = normalizeEmail(user.email || "");
   const firstName = displayName.trim().split(/\s+/)[0] || "Customer";
@@ -229,38 +202,22 @@ export function DashboardOverview({
           <div className="flex gap-2 flex-wrap">
             <button
               type="button"
-              disabled={verifyingBusy || verifyCooldown > 0}
+              disabled={verifyingBusy}
               className="sw-btn sw-btn-amber"
               style={{ padding: "8px 14px", fontSize: 12.5 }}
               onClick={async () => {
                 setVerifyingBusy(true);
                 try {
-                  const idToken = await user.getIdToken();
-                  await apiFetch("/api/auth/send-verification", {
-                    method: "POST",
-                    headers: {
-                      "Content-Type": "application/json",
-                      Authorization: `Bearer ${idToken}`,
-                    },
-                    body: JSON.stringify({ name: displayName }),
-                    step: "dashboard_send_verification",
-                  });
-                  setVerifyCooldown(60);
+                  await sendEmailVerification(user);
                   toast.success("Verification email sent!");
-                } catch (err) {
-                  toast.error(
-                    err instanceof Error
-                      ? err.message
-                      : "Could not send verification email right now"
-                  );
+                } catch {
+                  toast.error("Could not send verification email right now");
                 } finally {
                   setVerifyingBusy(false);
                 }
               }}
             >
-              {verifyCooldown > 0
-                ? `Resend in ${verifyCooldown}s`
-                : "Send verification email"}
+              Send verification email
             </button>
             <button
               type="button"
@@ -275,45 +232,6 @@ export function DashboardOverview({
               I verified
             </button>
           </div>
-        </div>
-      )}
-
-      {/* Unfinished Draft Shipment Banner */}
-      {latestDraft && (
-        <div
-          className="dx-card"
-          style={{
-            padding: "14px 20px",
-            borderColor: "rgb(var(--em-rgb) / 0.35)",
-            background: "rgb(var(--em-rgb) / 0.05)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 14,
-            flexWrap: "wrap",
-          }}
-        >
-          <div className="flex items-center gap-3 min-w-0">
-            <FileEdit className="w-5 h-5 text-[var(--em)] shrink-0" />
-            <div>
-              <b className="block text-sm">
-                You have an unfinished shipment (
-                {latestDraft.data.sCity || latestDraft.data.sCountry} →{" "}
-                {latestDraft.data.rCity || latestDraft.data.rCountry})
-              </b>
-              <small className="text-xs text-[var(--muted)]">
-                Step {latestDraft.step} of 4 · Saved{" "}
-                {formatTimeAgo(latestDraft.updatedAtMs)}
-              </small>
-            </div>
-          </div>
-          <Link
-            className="sw-btn sw-btn-em"
-            style={{ padding: "8px 14px", fontSize: 12.5 }}
-            to={`/dashboard/ship?draft=${encodeURIComponent(latestDraft.id)}`}
-          >
-            Continue
-          </Link>
         </div>
       )}
 

@@ -26,88 +26,38 @@ export function loadBachsOverlayScript(): Promise<boolean> {
   if (loadPromise) return loadPromise;
 
   loadPromise = new Promise<boolean>((resolve) => {
-    const finish = (ok: boolean) => {
-      if (!ok) loadPromise = null;
-      resolve(ok);
-    };
-
     const existing = document.querySelector<HTMLScriptElement>(
       'script[src="https://checkout.bachs.io/bachs.js"]'
     );
     if (existing) {
       if (window.Bachs?.Checkout?.open) {
-        finish(true);
+        resolve(true);
         return;
       }
-      existing.addEventListener(
-        "load",
-        () => finish(Boolean(window.Bachs?.Checkout?.open)),
-        { once: true }
-      );
-      existing.addEventListener("error", () => finish(false), { once: true });
-      window.setTimeout(
-        () => finish(Boolean(window.Bachs?.Checkout?.open)),
-        2500
-      );
+      existing.addEventListener("load", () => resolve(Boolean(window.Bachs?.Checkout?.open)), {
+        once: true,
+      });
+      existing.addEventListener("error", () => resolve(false), { once: true });
+      setTimeout(() => resolve(Boolean(window.Bachs?.Checkout?.open)), 4000);
       return;
     }
 
     const script = document.createElement("script");
     script.src = "https://checkout.bachs.io/bachs.js";
     script.async = true;
-    script.onload = () => finish(Boolean(window.Bachs?.Checkout?.open));
-    script.onerror = () => finish(false);
+    script.onload = () => resolve(Boolean(window.Bachs?.Checkout?.open));
+    script.onerror = () => resolve(false);
     document.head.appendChild(script);
-    window.setTimeout(
-      () => finish(Boolean(window.Bachs?.Checkout?.open)),
-      2800
-    );
+    setTimeout(() => resolve(Boolean(window.Bachs?.Checkout?.open)), 5000);
   });
 
   return loadPromise;
 }
 
-function hasVisibleBachsOverlay(): boolean {
-  if (typeof document === "undefined") return false;
-  const nodes = document.querySelectorAll(
-    'iframe[src*="bachs.io"], [id*="bachs"], [class*="bachs"]'
-  );
-  for (const el of Array.from(nodes)) {
-    const rect = el.getBoundingClientRect();
-    if (rect.width > 50 && rect.height > 50) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function triggerTabFallback(checkoutUrl: string): boolean {
-  try {
-    const a = document.createElement("a");
-    a.href = checkoutUrl;
-    a.target = "_blank";
-    a.rel = "noopener noreferrer";
-    a.style.display = "none";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export async function openBachsOverlay(
   checkoutUrl: string,
-  onEvent?: (type: string) => void,
-  onFallback?: (checkoutUrl: string, reason: string) => void
-): Promise<"overlay" | "fallback"> {
-  let sawOverlayEvent = false;
-  const wrappedOnEvent = (type: string) => {
-    sawOverlayEvent = true;
-    onEvent?.(type);
-  };
-
+  onEvent?: (type: string) => void
+): Promise<"overlay" | "redirect"> {
   const ready = await loadBachsOverlayScript();
   if (ready && window.Bachs?.Checkout?.open) {
     try {
@@ -117,40 +67,17 @@ export async function openBachsOverlay(
             typeof raw === "string"
               ? raw
               : String((raw as { type?: string })?.type || "");
-          if (type) wrappedOnEvent(type);
+          if (type && onEvent) {
+            onEvent(type);
+          }
         },
       });
       window.Bachs.Checkout.open({ checkoutUrl });
-
-      // Iframe preview environments can block overlay mounting.
-      // Verify within 3 seconds that the overlay actually opened; otherwise fall back.
-      window.setTimeout(() => {
-        if (!sawOverlayEvent && !hasVisibleBachsOverlay()) {
-          console.warn(
-            "[ShipWell Booking] Bachs overlay did not render within 3s; activating fallback tab/button."
-          );
-          triggerTabFallback(checkoutUrl);
-          onFallback?.(
-            checkoutUrl,
-            "Overlay blocked or slow in embedded preview — continue via hosted Bachs checkout."
-          );
-        }
-      }, 3000);
-
       return "overlay";
-    } catch (err) {
-      console.warn("[ShipWell Booking] Bachs.Checkout.open threw:", err);
+    } catch {
+      // Fallback to hosted redirect if overlay fails
     }
-  } else {
-    console.warn(
-      "[ShipWell Booking] bachs.js unavailable or timed out; opening fallback checkout."
-    );
   }
-
-  triggerTabFallback(checkoutUrl);
-  onFallback?.(
-    checkoutUrl,
-    "Opening hosted Bachs checkout. Use the Continue to payment button if a new tab did not open."
-  );
-  return "fallback";
+  window.location.assign(checkoutUrl);
+  return "redirect";
 }
