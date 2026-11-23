@@ -20,6 +20,7 @@ import {
   X,
 } from "lucide-react";
 import { auth, db } from "@/lib/firebase";
+import { adminPath, buildPublicTrackingUrl } from "@/lib/host";
 import { AdminShell } from "@/components/admin/AdminShell";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
 import {
@@ -271,7 +272,7 @@ export default function AdminShipmentDetailPage() {
           <p className="text-[var(--muted)] mb-4">
             Shipment <b>{cleanCode}</b> was not found.
           </p>
-          <Link to="/admin/shipments" className="sw-btn sw-btn-ghost">
+          <Link to={adminPath("shipments")} className="sw-btn sw-btn-ghost">
             ← Back to shipments
           </Link>
         </div>
@@ -293,15 +294,15 @@ export default function AdminShipmentDetailPage() {
       title={shipment.code}
       openAlertsCount={openAlertsCount}
       topAction={
-        <Link
-          to={`/track/${shipment.code}`}
+        <a
+          href={buildPublicTrackingUrl(shipment.code)}
           className="sw-btn sw-btn-ghost"
         >
           Customer view →
-        </Link>
+        </a>
       }
     >
-      <Link to="/admin/shipments" className="ad-back">
+      <Link to={adminPath("shipments")} className="ad-back">
         <ArrowLeft className="w-4 h-4" />
         All shipments
       </Link>
@@ -523,6 +524,11 @@ export default function AdminShipmentDetailPage() {
                     <RotateCcw className="w-4 h-4" />
                     Refund booking
                   </button>
+                )}
+                {shipment.paymentId && (
+                  <Link to={adminPath("payments")} className="sw-btn sw-btn-ghost">
+                    Inspect in Payments queue →
+                  </Link>
                 )}
               </div>
             </div>

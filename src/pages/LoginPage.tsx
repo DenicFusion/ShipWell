@@ -3,13 +3,14 @@ import { Link } from "react-router-dom";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   GoogleAuthProvider,
-  sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPopup,
 } from "firebase/auth";
 import { Loader2, Lock } from "lucide-react";
 import { auth } from "@/lib/firebase";
 import { syncUserProfileDoc } from "@/lib/firestore-shipments";
+import { apiFetch } from "@/lib/api-client";
+import { migrateGuestDraftToFirestore } from "@/lib/drafts";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/Footer";
@@ -46,6 +47,7 @@ function LoginForm() {
         name: cred.user.displayName || "ShipWell Customer",
         email: cred.user.email || "",
       });
+      await migrateGuestDraftToFirestore(cred.user.uid, cred.user.email);
       toast.success("Signed in");
       navigate(redirect, { replace: true });
     } catch (err) {
@@ -71,6 +73,7 @@ function LoginForm() {
         name: cred.user.displayName || "ShipWell Customer",
         email: clean,
       });
+      await migrateGuestDraftToFirestore(cred.user.uid, clean);
       toast.success("Signed in");
       navigate(redirect, { replace: true });
     } catch (err) {
@@ -93,7 +96,12 @@ function LoginForm() {
     }
     setBusy(true);
     try {
-      await sendPasswordResetEmail(auth, clean);
+      await apiFetch("/api/auth/send-password-reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: clean }),
+        step: "send_password_reset",
+      });
       setForgotSent(clean);
       setError("");
     } catch (err) {

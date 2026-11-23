@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Loader2, Mail, Users } from "lucide-react";
+import { adminPath } from "@/lib/host";
 import { AdminShell } from "@/components/admin/AdminShell";
 import {
   adminResendReceiverInvite,
@@ -158,7 +159,7 @@ export default function AdminCustomersPage() {
                         {item.name} · {item.count}{" "}
                         {item.count === 1 ? "parcel" : "parcels"} waiting ·{" "}
                         <Link
-                          to={`/admin/shipment/${item.latestShipment.code}`}
+                          to={adminPath(`shipment/${item.latestShipment.code}`)}
                           style={{ color: "var(--em)" }}
                         >
                           {item.latestShipment.code}

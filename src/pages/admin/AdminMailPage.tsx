@@ -114,7 +114,7 @@ export default function AdminMailPage() {
                 <div className="ml-t">
                   <b>{item.subject}</b>
                   <small>
-                    To {item.to} · {item.template}
+                    {item.from ? `From ${item.from} · ` : ""}To {item.to} · {item.template}
                     {item.code ? ` · ${item.code}` : ""}
                     {item.createdAtMs ? ` · ${formatDateTime(item.createdAtMs)}` : ""}
                   </small>
@@ -141,6 +141,11 @@ export default function AdminMailPage() {
             </button>
             <div className="em">
               <div className="em-meta">
+                {previewLog.from && (
+                  <div>
+                    <small>From</small> <b>{previewLog.from}</b>
+                  </div>
+                )}
                 <div>
                   <small>To</small> <b>{previewLog.to}</b>
                 </div>

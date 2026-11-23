@@ -1,40 +1,60 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { doc, onSnapshot } from "firebase/firestore";
 import {
   AlertCircle,
   Boxes,
   Camera,
   Check,
+  Coins,
   Copy,
   CreditCard,
   DollarSign,
   ExternalLink,
   FileText,
   Home as HomeIcon,
+  Landmark,
   Loader2,
   Lock,
   Package,
   RefreshCw,
+  Smartphone,
+  Trash2,
   Truck,
   X,
   Zap,
 } from "lucide-react";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
 import { PhoneField } from "@/components/PhoneField";
+import { ManualPaymentPanel } from "@/components/payments/ManualPaymentPanel";
 import { openBachsOverlay } from "@/lib/bachs-overlay";
+import { apiFetch } from "@/lib/api-client";
+import {
+  clearGuestDraft,
+  deleteUserDraft,
+  listUserDrafts,
+  makeDraftId,
+  readGuestDraft,
+  saveUserDraft,
+  writeGuestDraft,
+} from "@/lib/drafts";
+import { formatUserFacingError, logClientError, StepError } from "@/lib/error-logger";
 import { db } from "@/lib/firebase";
 import {
   checkAccountExists,
-  fetchFullShipmentBundle,
+  fetchFullShipmentBundleWithRetry,
   reserveTrackingCode,
 } from "@/lib/firestore-shipments";
+import {
+  DEFAULT_PAYMENT_METHODS,
+  calculateMethodAmounts,
+  filterEligiblePaymentMethods,
+} from "@/lib/payment-methods";
 import { countryNameToIso2, validateInternationalPhone } from "@/lib/phone";
 import {
   prepareShipmentPhoto,
+  uploadDraftPhoto,
   uploadShipmentPhotoBlob,
-  type PreparedPhoto,
 } from "@/lib/storage";
 import {
   addBusinessDays,
@@ -47,67 +67,43 @@ import {
   SERVICES,
 } from "@/lib/quote-engine";
 import {
+  formatTimeAgo,
   normalizeEmail,
   type BookingRecord,
+  type DraftShipmentRecord,
+  type DraftWizardData,
+  type ManualPaymentRecord,
+  type PaymentMethodRecord,
+  type PaymentMethodType,
   type ServiceTier,
   type ShipmentRecord,
 } from "@/types/tracking";
 import toast from "react-hot-toast";
 
-const DRAFT_KEY = "shipwell_ship_draft_v1";
-
-interface ShipDraft {
-  step: number;
-  sNameInput: string | null;
-  sPhoneInput: string | null;
-  sEmailInput: string | null;
-  sAddr: string;
-  sCity: string;
-  sPostal: string;
-  sCountry: string;
-  rName: string;
-  rPhone: string;
-  rEmail: string;
-  rAddr: string;
-  rCity: string;
-  rPostal: string;
-  rCountry: string;
-  pKg: string;
-  pType: string;
-  pL: string;
-  pW: string;
-  pH: string;
-  pDesc: string;
-  pVal: string;
-  service: ServiceTier;
-  paymentMethod: "Pay now" | "Pay on delivery";
+interface WizardPhoto {
+  id: string;
+  previewUrl: string;
+  blob?: Blob;
+  fallbackDataUrl?: string;
+  uploadedUrl?: string;
+  storagePath?: string;
+  name?: string;
 }
 
-function readDraft(): Partial<ShipDraft> | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.sessionStorage.getItem(DRAFT_KEY);
-    return raw ? (JSON.parse(raw) as Partial<ShipDraft>) : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveDraft(draft: ShipDraft) {
-  if (typeof window === "undefined") return;
-  try {
-    window.sessionStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
-  } catch {
-    // ignore quota errors
-  }
-}
-
-function clearDraft() {
-  if (typeof window === "undefined") return;
-  try {
-    window.sessionStorage.removeItem(DRAFT_KEY);
-  } catch {
-    // ignore
+function getMethodIcon(type: PaymentMethodType): React.ComponentType<{ className?: string }> {
+  switch (type) {
+    case "automatic":
+      return Zap;
+    case "bank_transfer":
+      return Landmark;
+    case "crypto":
+      return Coins;
+    case "mobile_money":
+      return Smartphone;
+    case "cash":
+      return Truck;
+    default:
+      return CreditCard;
   }
 }
 
@@ -122,48 +118,72 @@ function focusField(fieldId: string) {
   }, 60);
 }
 
-export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
+export function ShipWizard({
+  embedded = false,
+  draftIdParam,
+}: {
+  embedded?: boolean;
+  draftIdParam?: string | null;
+}) {
   const [searchParams] = useSearchParams();
-  const { user, profile, authReady, openAuth, refreshOpenAlerts } = useShipWell();
+  const { user, profile, authReady, openAuth, openContact, refreshOpenAlerts } =
+    useShipWell();
   const promptedRef = useRef(false);
   const submitLockRef = useRef(false);
   const unsubBookingRef = useRef<(() => void) | null>(null);
-  const unsubShipmentRef = useRef<(() => void) | null>(null);
+  const appliedDraftRef = useRef<string | null>(null);
 
   const qFrom = searchParams.get("from");
   const qTo = searchParams.get("to");
   const qKg = searchParams.get("kg");
   const qVal = searchParams.get("val");
   const qSvc = searchParams.get("svc") as ServiceTier | null;
+  const qDraft = draftIdParam ?? searchParams.get("draft");
   const cancelledQuery = searchParams.get("cancelled") === "1";
 
-  const draft = useMemo(() => readDraft(), []);
+  const initialGuestDraft = useMemo(() => readGuestDraft(), []);
+  const [activeDraftId, setActiveDraftId] = useState<string>(
+    () => qDraft || initialGuestDraft?.id || makeDraftId()
+  );
+  const [draftCreatedAtMs, setDraftCreatedAtMs] = useState<number>(
+    () => initialGuestDraft?.updatedAtMs || Date.now()
+  );
+  const [resumePromptDraft, setResumePromptDraft] =
+    useState<DraftShipmentRecord | null>(null);
+  const [draftSaveLabel, setDraftSaveLabel] = useState("");
+
   const fallbackOrigin = useMemo(() => getDefaultOriginCountry(), []);
   const fallbackDest =
     fallbackOrigin === "United Kingdom" ? "United States" : "United Kingdom";
 
+  const gd = initialGuestDraft?.data;
   const initSCountry =
     qFrom && PLACES[qFrom]
       ? qFrom
-      : draft?.sCountry && PLACES[draft.sCountry]
-        ? draft.sCountry
+      : gd?.sCountry && PLACES[gd.sCountry]
+        ? gd.sCountry
         : fallbackOrigin;
   const initRCountry =
     qTo && PLACES[qTo]
       ? qTo
-      : draft?.rCountry && PLACES[draft.rCountry]
-        ? draft.rCountry
+      : gd?.rCountry && PLACES[gd.rCountry]
+        ? gd.rCountry
         : initSCountry === "United Kingdom"
           ? "United States"
           : fallbackDest;
 
   const [step, setStep] = useState<number>(() => {
     if (cancelledQuery) return 4;
-    if (draft?.step && draft.step >= 1 && draft.step <= 4) return draft.step;
+    if (initialGuestDraft?.step && initialGuestDraft.step >= 1 && initialGuestDraft.step <= 4) {
+      return initialGuestDraft.step;
+    }
     return 1;
   });
   const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState("");
+  const [submitError, setSubmitError] = useState<{
+    title: string;
+    details: string;
+  } | null>(null);
   const [cancelNotice, setCancelNotice] = useState(
     cancelledQuery
       ? "Payment not completed — your details are preserved."
@@ -172,73 +192,74 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
 
   // Step 1
   const [sNameInput, setSNameInput] = useState<string | null>(
-    draft?.sNameInput ?? null
+    gd?.sName ? gd.sName : null
   );
   const [sPhoneInput, setSPhoneInput] = useState<string | null>(
-    draft?.sPhoneInput ?? null
+    gd?.sPhone ? gd.sPhone : null
   );
   const [sEmailInput, setSEmailInput] = useState<string | null>(
-    draft?.sEmailInput ?? null
+    gd?.sEmail ? gd.sEmail : null
   );
   const sName = sNameInput ?? (profile?.name || user?.displayName || "");
   const sPhone = sPhoneInput ?? (profile?.phone || "");
   const sEmail = sEmailInput ?? (profile?.email || user?.email || "");
 
-  const [sAddr, setSAddr] = useState(draft?.sAddr || "");
+  const [sAddr, setSAddr] = useState(gd?.sAddr || "");
   const [sCity, setSCity] = useState(
-    draft?.sCity && !qFrom ? draft.sCity : PLACES[initSCountry].city
+    gd?.sCity && !qFrom ? gd.sCity : PLACES[initSCountry].city
   );
-  const [sPostal, setSPostal] = useState(draft?.sPostal || "");
+  const [sPostal, setSPostal] = useState(gd?.sPost || "");
   const [sCountry, setSCountry] = useState(initSCountry);
 
-  const [rName, setRName] = useState(draft?.rName || "");
-  const [rPhone, setRPhone] = useState(draft?.rPhone || "");
-  const [rEmail, setREmail] = useState(draft?.rEmail || "");
-  const [rAddr, setRAddr] = useState(draft?.rAddr || "");
+  const [rName, setRName] = useState(gd?.rName || "");
+  const [rPhone, setRPhone] = useState(gd?.rPhone || "");
+  const [rEmail, setREmail] = useState(gd?.rEmail || "");
+  const [rAddr, setRAddr] = useState(gd?.rAddr || "");
   const [rCity, setRCity] = useState(
-    draft?.rCity && !qTo ? draft.rCity : PLACES[initRCountry].city
+    gd?.rCity && !qTo ? gd.rCity : PLACES[initRCountry].city
   );
-  const [rPostal, setRPostal] = useState(draft?.rPostal || "");
+  const [rPostal, setRPostal] = useState(gd?.rPost || "");
   const [rCountry, setRCountry] = useState(initRCountry);
 
   // Step 2
-  const [pKg, setPKg] = useState(qKg || draft?.pKg || "1.5");
-  const [pType, setPType] = useState(draft?.pType || "Parcel");
-  const [pL, setPL] = useState(draft?.pL || "30");
-  const [pW, setPW] = useState(draft?.pW || "20");
-  const [pH, setPH] = useState(draft?.pH || "15");
-  const [photos, setPhotos] = useState<PreparedPhoto[]>([]);
-  const [pDesc, setPDesc] = useState(draft?.pDesc || "");
-  const [pVal, setPVal] = useState(qVal || draft?.pVal || "250");
+  const [pKg, setPKg] = useState(qKg || gd?.weight || "1.5");
+  const [pType, setPType] = useState(gd?.pkgType || "Parcel");
+  const [pL, setPL] = useState("30");
+  const [pW, setPW] = useState("20");
+  const [pH, setPH] = useState("15");
+  const [photos, setPhotos] = useState<WizardPhoto[]>(() =>
+    (gd?.photos || []).map((p, idx) => ({
+      id: `restored_${idx}`,
+      previewUrl: p.url,
+      uploadedUrl: p.url,
+      storagePath: p.storagePath,
+      name: p.name,
+    }))
+  );
+  const [pDesc, setPDesc] = useState(gd?.contents || "");
+  const [pVal, setPVal] = useState(qVal || gd?.val || "250");
   const [dragOver, setDragOver] = useState(false);
 
   // Step 3 & 4
   const [service, setService] = useState<ServiceTier>(
     qSvc && SERVICES[qSvc]
       ? qSvc
-      : draft?.service && SERVICES[draft.service]
-        ? draft.service
+      : gd?.service && SERVICES[gd.service]
+        ? gd.service
         : "standard"
   );
-  const [paymentMethod, setPaymentMethod] = useState<
-    "Pay now" | "Pay on delivery"
-  >(draft?.paymentMethod === "Pay on delivery" ? "Pay on delivery" : "Pay now");
+  const [allMethods, setAllMethods] = useState<PaymentMethodRecord[]>(
+    DEFAULT_PAYMENT_METHODS
+  );
+  const [methodsLoaded, setMethodsLoaded] = useState(false);
+  const [selectedMethodId, setSelectedMethodId] = useState<string>(
+    gd?.paymentMethodId || ""
+  );
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [receiverExists, setReceiverExists] = useState<boolean | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  // Checkout options from server
-  const [checkoutOptions, setCheckoutOptions] = useState<{
-    bachsEnabled: boolean;
-    bachsProductConfigured: boolean;
-    payOnPickupEnabled: boolean;
-  }>({
-    bachsEnabled: true,
-    bachsProductConfigured: true,
-    payOnPickupEnabled: true,
-  });
-
-  // Live confirmation state (for Bachs overlay / fallback -> webhook completion)
+  // Live automatic checkout overlay state
   const [confirmingPayment, setConfirmingPayment] = useState<{
     bookingId: string;
     trackingCode: string;
@@ -250,7 +271,13 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
     timedOut?: boolean;
   } | null>(null);
 
-  // Completed state
+  // Manual payment completion state (Bank transfer / Crypto / Mobile money / Other)
+  const [manualPaymentState, setManualPaymentState] = useState<{
+    shipment: ShipmentRecord;
+    payment: ManualPaymentRecord;
+  } | null>(null);
+
+  // Completed state (Cash / Paid automatic)
   const [completed, setCompleted] = useState<{
     shipment: ShipmentRecord;
     receiverHasAccount: boolean;
@@ -259,122 +286,201 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Persist draft in sessionStorage
+  const applyDraftRecord = useCallback((rec: DraftShipmentRecord) => {
+    const d = rec.data;
+    setActiveDraftId(rec.id);
+    setDraftCreatedAtMs(rec.createdAtMs || Date.now());
+    if (d.sName) setSNameInput(d.sName);
+    if (d.sPhone) setSPhoneInput(d.sPhone);
+    if (d.sEmail) setSEmailInput(d.sEmail);
+    setSAddr(d.sAddr || "");
+    if (d.sCountry && PLACES[d.sCountry]) setSCountry(d.sCountry);
+    setSCity(d.sCity || PLACES[d.sCountry]?.city || "");
+    setSPostal(d.sPost || "");
+    setRName(d.rName || "");
+    setRPhone(d.rPhone || "");
+    setREmail(d.rEmail || "");
+    setRAddr(d.rAddr || "");
+    if (d.rCountry && PLACES[d.rCountry]) setRCountry(d.rCountry);
+    setRCity(d.rCity || PLACES[d.rCountry]?.city || "");
+    setRPostal(d.rPost || "");
+    setPKg(d.weight || "1.5");
+    setPType(d.pkgType || "Parcel");
+    setPDesc(d.contents || "");
+    setPVal(d.val || "250");
+    if (d.service && SERVICES[d.service]) setService(d.service);
+    if (d.paymentMethodId) setSelectedMethodId(d.paymentMethodId);
+    if (Array.isArray(d.photos) && d.photos.length > 0) {
+      setPhotos(
+        d.photos.map((p, idx) => ({
+          id: `draft_${idx}_${Date.now()}`,
+          previewUrl: p.url,
+          uploadedUrl: p.url,
+          storagePath: p.storagePath,
+          name: p.name,
+        }))
+      );
+    }
+    setStep(Math.min(4, Math.max(1, Number(rec.step || 1))));
+    setResumePromptDraft(null);
+  }, []);
+
+  // Load user's saved Firestore drafts when signed in
   useEffect(() => {
-    if (completed) return;
-    saveDraft({
-      step,
-      sNameInput,
-      sPhoneInput,
-      sEmailInput,
+    if (!authReady || !user) return;
+    let active = true;
+    listUserDrafts(user.uid).then((drafts) => {
+      if (!active || drafts.length === 0) return;
+      if (qDraft) {
+        const target = drafts.find((d) => d.id === qDraft);
+        if (target && appliedDraftRef.current !== target.id) {
+          appliedDraftRef.current = target.id;
+          applyDraftRecord(target);
+          toast.success("Draft restored");
+        }
+        return;
+      }
+      // Offer resume banner if user didn't pass quote params and hasn't typed yet
+      const newest = drafts[0];
+      const hasQuery = Boolean(qFrom || qTo || qKg || qVal);
+      if (
+        !hasQuery &&
+        newest.id !== activeDraftId &&
+        appliedDraftRef.current !== newest.id &&
+        !rName.trim() &&
+        !pDesc.trim()
+      ) {
+        setResumePromptDraft(newest);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [authReady, user, qDraft, qFrom, qTo, qKg, qVal, activeDraftId, rName, pDesc, applyDraftRecord]);
+
+  // Build serializable draft snapshot
+  const buildDraftData = useCallback((): DraftWizardData => {
+    return {
+      sName,
+      sEmail,
+      sPhone,
       sAddr,
       sCity,
-      sPostal,
+      sPost: sPostal,
       sCountry,
       rName,
-      rPhone,
       rEmail,
+      rPhone,
       rAddr,
       rCity,
-      rPostal,
+      rPost: rPostal,
       rCountry,
-      pKg,
-      pType,
-      pL,
-      pW,
-      pH,
-      pDesc,
-      pVal,
+      weight: pKg,
+      pkgType: pType,
+      val: pVal,
+      contents: pDesc,
       service,
-      paymentMethod,
-    });
+      ...(selectedMethodId ? { paymentMethodId: selectedMethodId } : {}),
+      photos: photos
+        .filter((p) => Boolean(p.uploadedUrl || p.fallbackDataUrl))
+        .map((p) => ({
+          url: p.uploadedUrl || p.fallbackDataUrl || "",
+          ...(p.storagePath ? { storagePath: p.storagePath } : {}),
+          ...(p.name ? { name: p.name } : {}),
+        }))
+        .filter((p) => p.url && !p.url.startsWith("blob:")),
+    };
   }, [
-    completed,
-    step,
-    sNameInput,
-    sPhoneInput,
-    sEmailInput,
+    sName,
+    sEmail,
+    sPhone,
     sAddr,
     sCity,
     sPostal,
     sCountry,
     rName,
-    rPhone,
     rEmail,
+    rPhone,
     rAddr,
     rCity,
     rPostal,
     rCountry,
     pKg,
     pType,
-    pL,
-    pW,
-    pH,
-    pDesc,
     pVal,
+    pDesc,
     service,
-    paymentMethod,
+    selectedMethodId,
+    photos,
   ]);
 
-  // Fetch enabled payment options
-  useEffect(() => {
-    let active = true;
-    fetch("/api/checkout/options")
-      .then((r) => r.json())
-      .then((data) => {
-        if (!active || !data || typeof data.bachsEnabled !== "boolean") return;
-        const nextOpts = {
-          bachsEnabled: Boolean(data.bachsEnabled),
-          bachsProductConfigured: Boolean(data.bachsProductConfigured),
-          payOnPickupEnabled: Boolean(data.payOnPickupEnabled),
-        };
-        setCheckoutOptions(nextOpts);
-        setPaymentMethod((prev) => {
-          if (!nextOpts.bachsEnabled && prev === "Pay now" && nextOpts.payOnPickupEnabled) {
-            return "Pay on delivery";
-          }
-          if (!nextOpts.payOnPickupEnabled && prev === "Pay on delivery" && nextOpts.bachsEnabled) {
-            return "Pay now";
-          }
-          return prev;
-        });
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, []);
+  const persistDraftNow = useCallback(async () => {
+    if (completed || manualPaymentState || confirmingPayment) return;
+    const data = buildDraftData();
+    const hasMeaningfulInput =
+      step > 1 ||
+      Boolean(rName.trim()) ||
+      Boolean(rEmail.trim()) ||
+      Boolean(rAddr.trim()) ||
+      Boolean(sAddr.trim()) ||
+      Boolean(pDesc.trim()) ||
+      photos.length > 0;
 
-  // Check receiver account existence live when entering Step 4
-  useEffect(() => {
-    if (step === 4 && rEmail.includes("@")) {
-      checkAccountExists(rEmail).then(setReceiverExists);
+    if (!hasMeaningfulInput) return;
+
+    if (!user) {
+      writeGuestDraft({ id: activeDraftId, step, data });
+      return;
     }
-  }, [step, rEmail]);
 
-  useEffect(() => {
-    if (authReady && !user && !promptedRef.current) {
-      promptedRef.current = true;
-      openAuth({
-        mode: "login",
-        prompt:
-          "Log in or create a free account to ship a parcel. Your tracking number and the receiver link are kept on your account.",
+    try {
+      await saveUserDraft({
+        uid: user.uid,
+        email: user.email || sEmail,
+        draftId: activeDraftId,
+        step,
+        data,
+        createdAtMs: draftCreatedAtMs,
       });
+      setDraftSaveLabel("Draft saved");
+    } catch {
+      // non-fatal
     }
-  }, [authReady, user, openAuth]);
+  }, [
+    completed,
+    manualPaymentState,
+    confirmingPayment,
+    buildDraftData,
+    step,
+    rName,
+    rEmail,
+    rAddr,
+    sAddr,
+    pDesc,
+    photos.length,
+    user,
+    activeDraftId,
+    sEmail,
+    draftCreatedAtMs,
+  ]);
 
-  // Cleanup active Firestore listeners on unmount
-  const cleanupBookingListeners = useCallback(() => {
-    unsubBookingRef.current?.();
-    unsubBookingRef.current = null;
-    unsubShipmentRef.current?.();
-    unsubShipmentRef.current = null;
-  }, []);
+  // Debounced autosave + flush on unload
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      persistDraftNow();
+    }, 950);
+    return () => window.clearTimeout(t);
+  }, [persistDraftNow]);
 
   useEffect(() => {
-    return () => cleanupBookingListeners();
-  }, [cleanupBookingListeners]);
+    const onHide = () => {
+      persistDraftNow();
+    };
+    window.addEventListener("beforeunload", onHide);
+    return () => window.removeEventListener("beforeunload", onHide);
+  }, [persistDraftNow]);
 
+  // Pricing computation
   const actualKg = Math.max(0.1, Number(pKg) || 0.1);
   const volKg =
     ((Number(pL) || 0) * (Number(pW) || 0) * (Number(pH) || 0)) / 5000;
@@ -396,6 +502,98 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
   const activeQuote =
     allQuotes.find((q) => q.service === service) || allQuotes[1];
 
+  // Fetch enabled dynamic payment methods from Admin settings
+  useEffect(() => {
+    let active = true;
+    apiFetch<{ ok: boolean; methods: PaymentMethodRecord[] }>(
+      `/api/payment-methods?appliesTo=shipping&amount=${encodeURIComponent(
+        String(activeQuote.total)
+      )}&country=${encodeURIComponent(rCountry)}`,
+      { step: "load_payment_methods" }
+    )
+      .then((res) => {
+        if (!active || !Array.isArray(res.methods)) return;
+        setAllMethods(res.methods);
+        setMethodsLoaded(true);
+      })
+      .catch(() => {
+        if (active) {
+          setAllMethods(
+            filterEligiblePaymentMethods({
+              methods: DEFAULT_PAYMENT_METHODS,
+              appliesTo: "shipping",
+              amountUsd: activeQuote.total,
+              country: rCountry,
+              isBusiness: Boolean(profile?.company),
+            })
+          );
+          setMethodsLoaded(true);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [activeQuote.total, rCountry, profile?.company]);
+
+  const eligibleMethods = useMemo(() => {
+    return filterEligiblePaymentMethods({
+      methods: allMethods,
+      appliesTo: "shipping",
+      amountUsd: activeQuote.total,
+      country: rCountry,
+      isBusiness: Boolean(profile?.company),
+    });
+  }, [allMethods, activeQuote.total, rCountry, profile?.company]);
+
+  const selectedMethod = useMemo(() => {
+    if (eligibleMethods.length === 0) return null;
+    return (
+      eligibleMethods.find((m) => m.id === selectedMethodId) ||
+      eligibleMethods[0]
+    );
+  }, [eligibleMethods, selectedMethodId]);
+
+  const activeAmounts = useMemo(() => {
+    if (!selectedMethod) {
+      return {
+        baseUsd: activeQuote.total,
+        feeAmountUsd: 0,
+        totalUsd: activeQuote.total,
+        currency: "USD",
+        exchangeRate: 1,
+        convertedAmount: activeQuote.total,
+      };
+    }
+    return calculateMethodAmounts(activeQuote.total, selectedMethod);
+  }, [activeQuote.total, selectedMethod]);
+
+  // Check receiver account existence when entering Step 4
+  useEffect(() => {
+    if (step === 4 && rEmail.includes("@")) {
+      checkAccountExists(rEmail).then(setReceiverExists);
+    }
+  }, [step, rEmail]);
+
+  useEffect(() => {
+    if (authReady && !user && !promptedRef.current) {
+      promptedRef.current = true;
+      openAuth({
+        mode: "login",
+        prompt:
+          "Log in or create a free account to ship a parcel. Your tracking number and the receiver link are kept on your account.",
+      });
+    }
+  }, [authReady, user, openAuth]);
+
+  const cleanupBookingListeners = useCallback(() => {
+    unsubBookingRef.current?.();
+    unsubBookingRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    return () => cleanupBookingListeners();
+  }, [cleanupBookingListeners]);
+
   const handlePhotoFiles = async (fileList: FileList | null) => {
     if (!fileList?.length) return;
     const slotsLeft = 4 - photos.length;
@@ -405,8 +603,31 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
     }
     const chosen = Array.from(fileList).slice(0, slotsLeft);
     try {
-      const prepared = await Promise.all(chosen.map(prepareShipmentPhoto));
-      setPhotos((prev) => [...prev, ...prepared].slice(0, 4));
+      const preparedItems = await Promise.all(
+        chosen.map(async (file, idx) => {
+          const p = await prepareShipmentPhoto(file);
+          let uploaded:
+            | { url: string; storagePath: string; name: string }
+            | undefined;
+          if (user) {
+            uploaded = await uploadDraftPhoto({
+              uid: user.uid,
+              draftId: activeDraftId,
+              file,
+            }).catch(() => undefined);
+          }
+          return {
+            id: `ph_${Date.now()}_${idx}`,
+            previewUrl: uploaded?.url || p.previewUrl,
+            blob: p.blob,
+            fallbackDataUrl: p.fallbackDataUrl,
+            uploadedUrl: uploaded?.url,
+            storagePath: uploaded?.storagePath,
+            name: file.name,
+          } as WizardPhoto;
+        })
+      );
+      setPhotos((prev) => [...prev, ...preparedItems].slice(0, 4));
       setErrors((prev) => {
         const next = { ...prev };
         delete next.photos;
@@ -481,29 +702,83 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
     return true;
   };
 
+  const cleanupDraftAfterBooking = useCallback(
+    async (uid: string) => {
+      photos.forEach((p) => {
+        if (p.previewUrl.startsWith("blob:")) {
+          URL.revokeObjectURL(p.previewUrl);
+        }
+      });
+      clearGuestDraft();
+      await deleteUserDraft(uid, activeDraftId).catch(() => null);
+    },
+    [photos, activeDraftId]
+  );
+
   const finishBookingSuccess = useCallback(
     async (
       trackingCode: string,
       paymentStatusLabel: string,
-      fallbackShipment?: ShipmentRecord
+      fallbackShipment?: ShipmentRecord,
+      uidOverride?: string
     ) => {
       cleanupBookingListeners();
       let liveShipment = fallbackShipment || null;
       if (!liveShipment) {
-        liveShipment = await fetchFullShipmentBundle(trackingCode).catch(() => null);
-      }
-      if (!liveShipment) {
-        setConfirmingPayment(null);
-        setSubmitError(
-          `Booking ${trackingCode} was recorded, but live shipment details could not load yet. Open Track to view it.`
+        liveShipment = await fetchFullShipmentBundleWithRetry(trackingCode, 3).catch(
+          () => null
         );
-        return;
+      } else {
+        // Refresh in background without blocking the success screen
+        fetchFullShipmentBundleWithRetry(trackingCode, 2).catch(() => null);
       }
+
+      if (!liveShipment) {
+        // Guaranteed local fallback so success screen NEVER fails after booking creation
+        liveShipment = {
+          code: trackingCode,
+          senderId: uidOverride || user?.uid || "",
+          senderEmail: normalizeEmail(sEmail),
+          receiverEmail: normalizeEmail(rEmail),
+          sender: {
+            name: sName.trim(),
+            email: normalizeEmail(sEmail),
+            phone: sPhone.trim(),
+            address: sAddr.trim(),
+            city: sCity.trim(),
+            postal: sPostal.trim(),
+            country: sCountry,
+          },
+          receiver: {
+            name: rName.trim(),
+            email: normalizeEmail(rEmail),
+            phone: rPhone.trim(),
+            address: rAddr.trim(),
+            city: rCity.trim(),
+            postal: rPostal.trim(),
+            country: rCountry,
+          },
+          service,
+          weightKg: Number(chargeableKg.toFixed(2)),
+          packageType: pType,
+          contents: pDesc.trim(),
+          declaredValue: declaredNum,
+          priceTotal: activeAmounts.totalUsd,
+          paymentMethod: selectedMethod?.name || "Pay on delivery",
+          status: "Booked",
+          eta: addBusinessDays(new Date(), activeQuote.days[1] + 1).getTime(),
+          photos: [],
+          review: { state: "pending", note: "", at: null, by: null },
+        };
+      }
+
       const recHasAccount = await checkAccountExists(
         liveShipment.receiverEmail
       ).catch(() => false);
-      photos.forEach((p) => URL.revokeObjectURL(p.previewUrl));
-      clearDraft();
+      const effectiveUid = uidOverride || user?.uid || liveShipment.senderId;
+      if (effectiveUid) {
+        await cleanupDraftAfterBooking(effectiveUid);
+      }
       await refreshOpenAlerts().catch(() => undefined);
       setConfirmingPayment(null);
       setCompleted({
@@ -514,11 +789,43 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
       window.scrollTo({ top: 0, behavior: "smooth" });
       toast.success(`Shipment ${liveShipment.code} booked!`);
     },
-    [cleanupBookingListeners, photos, refreshOpenAlerts]
+    [
+      cleanupBookingListeners,
+      cleanupDraftAfterBooking,
+      refreshOpenAlerts,
+      user?.uid,
+      sEmail,
+      rEmail,
+      sName,
+      sPhone,
+      sAddr,
+      sCity,
+      sPostal,
+      sCountry,
+      rName,
+      rPhone,
+      rAddr,
+      rCity,
+      rPostal,
+      rCountry,
+      service,
+      chargeableKg,
+      pType,
+      pDesc,
+      declaredNum,
+      activeAmounts.totalUsd,
+      selectedMethod?.name,
+      activeQuote.days,
+    ]
   );
 
   const attachBookingListeners = useCallback(
-    (bookingId: string, trackingCode: string) => {
+    (
+      bookingId: string,
+      trackingCode: string,
+      fallbackShipment?: ShipmentRecord,
+      uidOverride?: string
+    ) => {
       cleanupBookingListeners();
       const timeoutHandle = window.setTimeout(() => {
         setConfirmingPayment((prev) =>
@@ -533,7 +840,12 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
           const b = snap.data() as BookingRecord;
           if (b.paymentStatus === "paid") {
             window.clearTimeout(timeoutHandle);
-            finishBookingSuccess(trackingCode, "Paid").catch(() => undefined);
+            finishBookingSuccess(
+              trackingCode,
+              "Paid",
+              fallbackShipment,
+              uidOverride
+            ).catch(() => undefined);
           } else if (
             b.paymentStatus === "failed" ||
             b.paymentStatus === "expired" ||
@@ -543,9 +855,11 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
             window.clearTimeout(timeoutHandle);
             cleanupBookingListeners();
             setConfirmingPayment(null);
-            setSubmitError(
-              "Payment was not completed. Your details are preserved — please try again."
-            );
+            setSubmitError({
+              title:
+                "Payment was not completed. Your details are preserved — please try again.",
+              details: `Details: step=payment_webhook, code=${(b.paymentStatus || "FAILED").toUpperCase()}`,
+            });
           }
         },
         () => undefined
@@ -559,14 +873,19 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
     [cleanupBookingListeners, finishBookingSuccess]
   );
 
-  const executeBooking = async (
-    uid: string,
-    freshIdToken?: string
-  ) => {
+  const executeBooking = async (uid: string, freshIdToken?: string) => {
     if (submitLockRef.current) return;
+    if (!selectedMethod) {
+      setSubmitError({
+        title: "No payment method is available for this route or order amount.",
+        details: "Details: step=select_payment_method, code=NO_PAYMENT_METHOD",
+      });
+      return;
+    }
+
     submitLockRef.current = true;
     setSubmitting(true);
-    setSubmitError("");
+    setSubmitError(null);
     setCancelNotice("");
 
     const attemptKey =
@@ -574,46 +893,56 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
         ? `bk_${crypto.randomUUID()}`
         : `bk_${Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, "0")).join("")}`;
 
-    const controller = new AbortController();
     let timerHandle: number | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
       timerHandle = window.setTimeout(() => {
-        controller.abort();
-        reject(new Error("BOOKING_TIMEOUT"));
+        reject(
+          new StepError(
+            "booking_timeout",
+            "TIMEOUT",
+            "Booking request timed out after 30 seconds. Please check your connection and try again."
+          )
+        );
       }, 30000);
     });
 
     try {
-      console.log("[ShipWizard] Starting booking", {
-        paymentMethod,
-        attemptKey,
-        photoCount: photos.length,
-      });
-
       const runBookingSteps = async () => {
         const token =
           freshIdToken || (await user?.getIdToken().catch(() => null)) || "";
         if (!token) {
-          throw new Error("SESSION_EXPIRED");
+          throw new StepError(
+            "auth_token",
+            "UNAUTHENTICATED",
+            "Your session expired. Sign in again to confirm your booking."
+          );
         }
 
         const code = await reserveTrackingCode();
-        console.log("[ShipWizard] Tracking code prepared", { code });
 
         let uploadedPhotoUrls: string[];
         try {
           uploadedPhotoUrls = await Promise.all(
-            photos.map((photo, index) =>
-              uploadShipmentPhotoBlob({
-                code,
-                index,
-                blob: photo.blob,
-                fallbackDataUrl: photo.fallbackDataUrl,
-              })
-            )
+            photos.map(async (photo, index) => {
+              if (photo.uploadedUrl && !photo.uploadedUrl.startsWith("blob:")) {
+                return photo.uploadedUrl;
+              }
+              if (photo.blob) {
+                return await uploadShipmentPhotoBlob({
+                  code,
+                  index,
+                  blob: photo.blob,
+                  fallbackDataUrl: photo.fallbackDataUrl,
+                });
+              }
+              if (photo.fallbackDataUrl) return photo.fallbackDataUrl;
+              throw new Error("Missing photo binary");
+            })
           );
         } catch (uploadErr) {
-          throw new Error(
+          throw new StepError(
+            "upload_photos",
+            "STORAGE_UPLOAD_FAILED",
             uploadErr instanceof Error
               ? `Photo upload failed: ${uploadErr.message}`
               : "Could not upload item photos. Please try again."
@@ -621,15 +950,28 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
         }
 
         if (!uploadedPhotoUrls.length) {
-          throw new Error("At least 1 uploaded item photo is required.");
+          throw new StepError(
+            "validate_photos",
+            "MISSING_PHOTOS",
+            "At least 1 uploaded item photo is required."
+          );
         }
-        console.log("[ShipWizard] Photos ready, calling /api/bookings", {
-          count: uploadedPhotoUrls.length,
-        });
 
-        const res = await fetch("/api/bookings", {
+        const data = await apiFetch<{
+          ok: boolean;
+          awaitingPayment: boolean;
+          code: string;
+          trackingCode: string;
+          bookingId: string;
+          status: string;
+          totalUsd: number;
+          paymentChannel: string;
+          paymentStatus: string;
+          checkoutUrl?: string | null;
+          shipment?: ShipmentRecord;
+          payment?: ManualPaymentRecord | null;
+        }>("/api/bookings", {
           method: "POST",
-          signal: controller.signal,
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${token}`,
@@ -665,27 +1007,15 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
             contents: pDesc.trim(),
             declaredValue: declaredNum,
             service,
-            paymentMethod,
+            paymentMethodId: selectedMethod.id,
+            paymentMethod: selectedMethod.name,
             photos: uploadedPhotoUrls,
           }),
+          step: "createBooking",
+          timeoutMs: 28000,
         });
 
-        const data = await res.json().catch(() => ({}));
-        console.log("[ShipWizard] /api/bookings response", {
-          status: res.status,
-          ok: res.ok,
-          awaitingPayment: data?.awaitingPayment,
-          paymentChannel: data?.paymentChannel,
-        });
-
-        if (res.status === 401) {
-          throw new Error("SESSION_EXPIRED");
-        }
-        if (!res.ok) {
-          throw new Error(data.error || "Could not create booking.");
-        }
-
-        return { code, data };
+        return { code: data.trackingCode || code, data };
       };
 
       const { code, data } = await Promise.race([
@@ -693,20 +1023,77 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
         timeoutPromise,
       ]);
 
-      if (data.paymentChannel === "pay_on_pickup" || !data.awaitingPayment) {
-        const bundled: ShipmentRecord | undefined = data.shipment
-          ? (data.shipment as ShipmentRecord)
-          : undefined;
-        await finishBookingSuccess(
-          data.trackingCode || code,
-          "Booked, payment due at pickup",
-          bundled
+      // 1. Manual payment method (Bank transfer / Crypto / Mobile money / Other)
+      if (data.payment) {
+        await cleanupDraftAfterBooking(uid);
+        await refreshOpenAlerts().catch(() => undefined);
+        setManualPaymentState({
+          shipment:
+            data.shipment ||
+            ({
+              code,
+              senderId: uid,
+              senderEmail: normalizeEmail(sEmail),
+              receiverEmail: normalizeEmail(rEmail),
+              sender: {
+                name: sName.trim(),
+                email: normalizeEmail(sEmail),
+                phone: sPhone.trim(),
+                address: sAddr.trim(),
+                city: sCity.trim(),
+                postal: sPostal.trim(),
+                country: sCountry,
+              },
+              receiver: {
+                name: rName.trim(),
+                email: normalizeEmail(rEmail),
+                phone: rPhone.trim(),
+                address: rAddr.trim(),
+                city: rCity.trim(),
+                postal: rPostal.trim(),
+                country: rCountry,
+              },
+              service,
+              weightKg: chargeableKg,
+              packageType: pType,
+              contents: pDesc.trim(),
+              declaredValue: declaredNum,
+              priceTotal: data.totalUsd,
+              paymentMethod: selectedMethod.name,
+              paymentStatus: "awaiting_payment",
+              bookingStatus: "awaiting_payment",
+              status: "Booked",
+              eta: addBusinessDays(new Date(), activeQuote.days[1] + 1).getTime(),
+              photos: [],
+              review: { state: "pending", note: "", at: null, by: null },
+            } as ShipmentRecord),
+          payment: data.payment,
+        });
+        window.scrollTo({ top: 0, behavior: "smooth" });
+        toast.success(
+          `Booking ${code} created — follow payment instructions below.`
         );
         return;
       }
 
+      // 2. Pay on delivery / cash (immediate confirmed ticket)
+      if (!data.awaitingPayment) {
+        await finishBookingSuccess(
+          code,
+          "Booked, payment due on delivery",
+          data.shipment,
+          uid
+        );
+        return;
+      }
+
+      // 3. Automatic gateway (Bachs / Stripe / Paystack)
       if (!data.checkoutUrl || !data.bookingId) {
-        throw new Error("Checkout URL was not returned by the server.");
+        throw new StepError(
+          "checkout_url",
+          "MISSING_CHECKOUT_URL",
+          "Checkout URL was not returned by the server."
+        );
       }
 
       const bookingId = String(data.bookingId);
@@ -716,15 +1103,21 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
       setConfirmingPayment({
         bookingId,
         trackingCode,
-        totalUsd: Number(data.totalUsd || activeQuote.total),
+        totalUsd: Number(data.totalUsd || activeAmounts.totalUsd),
         checkoutUrl,
         overlayOpened: true,
-        statusMessage: "Complete payment in the secure Bachs window…",
+        statusMessage: `Complete payment in the secure ${selectedMethod.name} window…`,
       });
 
-      attachBookingListeners(bookingId, trackingCode);
+      attachBookingListeners(bookingId, trackingCode, data.shipment, uid);
 
-      console.log("[ShipWizard] Opening Bachs checkout", { trackingCode });
+      if (selectedMethod.gateway === "stripe" || selectedMethod.gateway === "paystack") {
+        // Delete draft now so they can resume via Dashboard > Sent if they return without completing
+        await cleanupDraftAfterBooking(uid);
+        window.location.assign(checkoutUrl);
+        return;
+      }
+
       let completedEventSeen = false;
       await openBachsOverlay(
         checkoutUrl,
@@ -743,9 +1136,11 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
           } else if (evType === "checkout.failed" || evType === "checkout.error") {
             cleanupBookingListeners();
             setConfirmingPayment(null);
-            setSubmitError(
-              "Payment was not completed. Please check your details and try again."
-            );
+            setSubmitError({
+              title:
+                "Payment was not completed. Please check your details and try again.",
+              details: "Details: step=bachs_overlay, code=CHECKOUT_FAILED",
+            });
           } else if (evType === "checkout.closed") {
             if (completedEventSeen) return;
             window.setTimeout(() => {
@@ -768,23 +1163,22 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
                   overlayOpened: false,
                   fallbackNotice: reason,
                   statusMessage:
-                    "Complete payment in the Bachs checkout tab below, then return here while webhook confirms.",
+                    "Complete payment in the checkout tab below, then return here while webhook confirms.",
                 }
               : prev
           );
         }
       );
     } catch (err) {
-      console.error("[ShipWizard] Booking failed:", err);
-      if (
-        err instanceof Error &&
-        (err.name === "AbortError" || err.message === "BOOKING_TIMEOUT")
-      ) {
-        const timeoutMsg =
-          "Booking request timed out after 30 seconds. Please check your connection and try again.";
-        setSubmitError(timeoutMsg);
-        toast.error(timeoutMsg);
-      } else if (err instanceof Error && err.message === "SESSION_EXPIRED") {
+      const formatted = formatUserFacingError(err, "createBooking");
+      console.error("[ShipWizard] Booking failed:", {
+        step: formatted.step,
+        code: formatted.code,
+        message: formatted.title,
+        raw: err,
+      });
+
+      if (formatted.code === "UNAUTHENTICATED" || formatted.code === "HTTP_401") {
         openAuth({
           mode: "login",
           prompt: "Your session expired. Sign in again to confirm your booking.",
@@ -795,10 +1189,17 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
           },
         });
       } else {
-        const msg =
-          err instanceof Error ? err.message : "Could not complete booking.";
-        setSubmitError(msg);
-        toast.error(msg);
+        logClientError({
+          uid,
+          step: formatted.step,
+          code: formatted.code,
+          message: formatted.title,
+        });
+        setSubmitError({
+          title: formatted.title,
+          details: formatted.details,
+        });
+        toast.error(formatted.title);
       }
     } finally {
       if (timerHandle !== undefined) window.clearTimeout(timerHandle);
@@ -825,6 +1226,11 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
         toast.error("Complete Step 2 package & photo details first.");
         return;
       }
+    }
+
+    if (!selectedMethod) {
+      toast.error("No eligible payment method selected.");
+      return;
     }
 
     if (!termsAccepted) {
@@ -854,10 +1260,13 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
 
   const handleResetWizard = () => {
     cleanupBookingListeners();
-    clearDraft();
+    clearGuestDraft();
+    setActiveDraftId(makeDraftId());
+    setDraftCreatedAtMs(Date.now());
     setCompleted(null);
+    setManualPaymentState(null);
     setConfirmingPayment(null);
-    setSubmitError("");
+    setSubmitError(null);
     setCancelNotice("");
     setStep(1);
     setPhotos([]);
@@ -870,8 +1279,14 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
 
   if (!authReady) {
     return (
-      <div className={embedded ? "ship dx-embed" : "wrap"} style={embedded ? undefined : { paddingTop: 48, paddingBottom: 64 }}>
-        <div className="dx-skel" style={{ height: 220, maxWidth: 640, margin: "0 auto" }} />
+      <div
+        className={embedded ? "ship dx-embed" : "wrap"}
+        style={embedded ? undefined : { paddingTop: 48, paddingBottom: 64 }}
+      >
+        <div
+          className="dx-skel"
+          style={{ height: 220, maxWidth: 640, margin: "0 auto" }}
+        />
       </div>
     );
   }
@@ -928,6 +1343,63 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
     );
   }
 
+  if (manualPaymentState) {
+    const ms = manualPaymentState.shipment;
+    const mp = manualPaymentState.payment;
+    return (
+      <div className={embedded ? "ship dx-embed" : "wrap"}>
+        <div className="done" style={{ maxWidth: 660 }}>
+          <div className="eyebrow c">
+            {mp.status === "paid"
+              ? "Payment approved"
+              : mp.status === "pending_review"
+                ? "Payment proof submitted"
+                : "Complete payment to release dispatch"}
+          </div>
+          <h1
+            className="bebas"
+            style={{
+              fontWeight: 400,
+              fontSize: "clamp(2.2rem,8vw,3.4rem)",
+              lineHeight: 0.95,
+              marginBottom: 12,
+            }}
+          >
+            BOOKING {ms.code}
+          </h1>
+          <p className="lead" style={{ marginBottom: 20 }}>
+            Route: {ms.sender.city} → {ms.receiver.city}. You can pay now below or come back anytime from Dashboard → Sent.
+          </p>
+
+          <div style={{ textAlign: "left" }}>
+            <ManualPaymentPanel
+              payment={mp}
+              trackingHref={trackHref(ms.code)}
+              onUpdated={(nextPayment) => {
+                setManualPaymentState((prev) =>
+                  prev ? { ...prev, payment: nextPayment } : prev
+                );
+              }}
+            />
+          </div>
+
+          <div className="acts" style={{ justifyContent: "center", marginTop: 18 }}>
+            <Link className="sw-btn sw-btn-ghost sw-btn-lg" to="/dashboard/sent">
+              Go to Sent &amp; Drafts
+            </Link>
+            <button
+              type="button"
+              className="sw-btn sw-btn-ghost sw-btn-lg"
+              onClick={handleResetWizard}
+            >
+              Start another shipment
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (confirmingPayment) {
     return (
       <div className={embedded ? "ship dx-embed" : "wrap"}>
@@ -958,8 +1430,15 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
             <div className="tt">
               <small>Reserved tracking number</small>
               <div className="code">{confirmingPayment.trackingCode}</div>
-              <small style={{ color: "var(--muted)", textTransform: "none", letterSpacing: 0 }}>
-                Total {formatMoney(confirmingPayment.totalUsd)} · Parcel dispatches once webhook verifies settlement
+              <small
+                style={{
+                  color: "var(--muted)",
+                  textTransform: "none",
+                  letterSpacing: 0,
+                }}
+              >
+                Total {formatMoney(confirmingPayment.totalUsd)} · Parcel
+                dispatches once webhook verifies settlement
               </small>
             </div>
           </div>
@@ -1092,29 +1571,6 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
     );
   }
 
-  const paymentChoices: {
-    value: "Pay now" | "Pay on delivery";
-    label: string;
-    sub: string;
-    icon: React.ComponentType<{ className?: string }>;
-    enabled: boolean;
-  }[] = [
-    {
-      value: "Pay now",
-      label: "Pay now",
-      sub: "Instant digital settlement",
-      icon: Zap,
-      enabled: checkoutOptions.bachsEnabled,
-    },
-    {
-      value: "Pay on delivery",
-      label: "Pay on delivery",
-      sub: "Settle when courier delivers",
-      icon: Truck,
-      enabled: checkoutOptions.payOnPickupEnabled,
-    },
-  ];
-
   return (
     <div className={embedded ? "ship dx-embed" : "wrap"}>
       {!embedded && (
@@ -1129,6 +1585,59 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
             Four quick steps. Live pricing updates as you go and your tracking
             number is issued instantly.
           </p>
+        </div>
+      )}
+
+      {resumePromptDraft && (
+        <div
+          className="panel"
+          style={{
+            marginBottom: 16,
+            padding: "14px 16px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
+          <div>
+            <b style={{ display: "block", fontSize: 14 }}>
+              Continue your shipment: {resumePromptDraft.data.sCity || resumePromptDraft.data.sCountry} →{" "}
+              {resumePromptDraft.data.rCity || resumePromptDraft.data.rCountry} (Step{" "}
+              {resumePromptDraft.step} of 4)
+            </b>
+            <small style={{ color: "var(--muted)", fontSize: 12.5 }}>
+              Saved {formatTimeAgo(resumePromptDraft.updatedAtMs)} · continue or start fresh
+            </small>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              className="sw-btn sw-btn-em"
+              onClick={() => {
+                appliedDraftRef.current = resumePromptDraft.id;
+                applyDraftRecord(resumePromptDraft);
+              }}
+            >
+              Continue draft
+            </button>
+            <button
+              type="button"
+              className="sw-btn sw-btn-ghost"
+              onClick={async () => {
+                if (user) {
+                  await deleteUserDraft(user.uid, resumePromptDraft).catch(
+                    () => null
+                  );
+                }
+                setResumePromptDraft(null);
+              }}
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Discard
+            </button>
+          </div>
         </div>
       )}
 
@@ -1150,6 +1659,7 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
                   type="button"
                   className={`ps ${cls}`}
                   onClick={() => {
+                    persistDraftNow();
                     if (item.n < step) {
                       setStep(item.n);
                       return;
@@ -1473,6 +1983,7 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
                   onClick={() => {
                     if (validateStep(1)) {
                       setStep(2);
+                      persistDraftNow();
                       window.scrollTo({ top: 0, behavior: "smooth" });
                     }
                   }}
@@ -1494,8 +2005,7 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
                   <div>
                     <b>Package details</b>
                     <small>
-                      Chargeable weight uses the higher of actual and
-                      volumetric
+                      Chargeable weight uses the higher of actual and volumetric
                     </small>
                   </div>
                 </div>
@@ -1622,7 +2132,7 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
                     {photos.length > 0 && (
                       <div className="pf-grid">
                         {photos.map((item, idx) => (
-                          <div key={item.previewUrl} className="pf-th">
+                          <div key={item.id} className="pf-th">
                             <img
                               src={item.previewUrl}
                               alt={`Uploaded item ${idx + 1}`}
@@ -1631,7 +2141,9 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
                               type="button"
                               aria-label="Remove photo"
                               onClick={() => {
-                                URL.revokeObjectURL(item.previewUrl);
+                                if (item.previewUrl.startsWith("blob:")) {
+                                  URL.revokeObjectURL(item.previewUrl);
+                                }
                                 setPhotos((prev) =>
                                   prev.filter((_, i) => i !== idx)
                                 );
@@ -1688,7 +2200,10 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
                 <button
                   type="button"
                   className="sw-btn sw-btn-ghost sw-btn-lg"
-                  onClick={() => setStep(1)}
+                  onClick={() => {
+                    persistDraftNow();
+                    setStep(1);
+                  }}
                 >
                   ← Back
                 </button>
@@ -1699,6 +2214,7 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
                   onClick={() => {
                     if (validateStep(2)) {
                       setStep(3);
+                      persistDraftNow();
                       window.scrollTo({ top: 0, behavior: "smooth" });
                     }
                   }}
@@ -1765,7 +2281,10 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
                 <button
                   type="button"
                   className="sw-btn sw-btn-ghost sw-btn-lg"
-                  onClick={() => setStep(2)}
+                  onClick={() => {
+                    persistDraftNow();
+                    setStep(2);
+                  }}
                 >
                   ← Back
                 </button>
@@ -1775,6 +2294,7 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
                   className="sw-btn sw-btn-em sw-btn-lg"
                   onClick={() => {
                     setStep(4);
+                    persistDraftNow();
                     window.scrollTo({ top: 0, behavior: "smooth" });
                   }}
                 >
@@ -1788,7 +2308,14 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
           {step === 4 && (
             <div>
               {cancelNotice && (
-                <div className="tk-hold a" style={{ marginBottom: 14, borderRadius: 14, border: "1px solid rgba(245, 158, 11, 0.35)" }}>
+                <div
+                  className="tk-hold a"
+                  style={{
+                    marginBottom: 14,
+                    borderRadius: 14,
+                    border: "1px solid rgba(245, 158, 11, 0.35)",
+                  }}
+                >
                   <AlertCircle className="w-5 h-5 hi shrink-0" />
                   <div>
                     <b>Payment notice</b>
@@ -1798,7 +2325,14 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
               )}
 
               {!allPreviousValid && (
-                <div className="tk-hold r" style={{ marginBottom: 14, borderRadius: 14, border: "1px solid rgba(244, 63, 94, 0.35)" }}>
+                <div
+                  className="tk-hold r"
+                  style={{
+                    marginBottom: 14,
+                    borderRadius: 14,
+                    border: "1px solid rgba(244, 63, 94, 0.35)",
+                  }}
+                >
                   <AlertCircle className="w-5 h-5 hi shrink-0" />
                   <div style={{ flex: 1 }}>
                     <b>Details needed before confirmation</b>
@@ -1900,10 +2434,35 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
                         )}
                       </b>
                     </div>
+                    {activeAmounts.feeAmountUsd !== 0 && (
+                      <div className="r">
+                        <span>
+                          {activeAmounts.feeAmountUsd > 0
+                            ? "Payment fee"
+                            : "Payment discount"}
+                        </span>
+                        <b>
+                          {activeAmounts.feeAmountUsd > 0 ? "+" : "-"}
+                          {formatMoney(Math.abs(activeAmounts.feeAmountUsd))}
+                        </b>
+                      </div>
+                    )}
                     <div className="r">
                       <span>Total due</span>
                       <b style={{ color: "var(--em)" }}>
-                        {formatMoney(activeQuote.total)}
+                        {formatMoney(activeAmounts.totalUsd)}
+                        {activeAmounts.currency !== "USD" && (
+                          <small
+                            style={{
+                              marginLeft: 6,
+                              color: "var(--muted)",
+                              fontWeight: 500,
+                            }}
+                          >
+                            ({activeAmounts.convertedAmount}{" "}
+                            {activeAmounts.currency})
+                          </small>
+                        )}
                       </b>
                     </div>
                     <hr />
@@ -1912,7 +2471,7 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
                       <div className="flex gap-2 justify-end flex-wrap">
                         {photos.map((item, i) => (
                           <img
-                            key={item.previewUrl}
+                            key={item.id}
                             src={item.previewUrl}
                             alt={`Item ${i + 1}`}
                             style={{
@@ -1941,38 +2500,75 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
                   </div>
                 </div>
                 <div className="panel-b">
-                  <div className="pay">
-                    {paymentChoices.map((pm) => {
-                      const Icon = pm.icon;
-                      return (
-                        <label
-                          key={pm.value}
-                          style={{
-                            opacity: pm.enabled ? 1 : 0.45,
-                            cursor: pm.enabled ? "pointer" : "not-allowed",
-                          }}
-                        >
-                          <input
-                            type="radio"
-                            name="pay"
-                            value={pm.value}
-                            disabled={!pm.enabled}
-                            checked={paymentMethod === pm.value}
-                            onChange={() => {
-                              if (pm.enabled) setPaymentMethod(pm.value);
-                            }}
-                          />
-                          <span>
-                            <Icon className="w-5 h-5" />
-                            <b>{pm.label}</b>
-                            <small style={{ fontSize: 11, fontWeight: 400 }}>
-                              {pm.enabled ? pm.sub : "Unavailable right now"}
-                            </small>
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
+                  {eligibleMethods.length === 0 ? (
+                    <div className="au-err" style={{ marginBottom: 14 }}>
+                      <span>
+                        No payment method is currently available for this route
+                        or amount. Please contact support at support@mail.shipwell.cc.
+                      </span>
+                      <button
+                        type="button"
+                        className="sw-btn sw-btn-ghost"
+                        style={{ marginTop: 8, padding: "5px 10px", fontSize: 12 }}
+                        onClick={() => openContact()}
+                      >
+                        Contact support
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="pay">
+                      {eligibleMethods.map((pm) => {
+                        const Icon = getMethodIcon(pm.type);
+                        const pmAmt = calculateMethodAmounts(
+                          activeQuote.total,
+                          pm
+                        );
+                        return (
+                          <label key={pm.id} style={{ cursor: "pointer" }}>
+                            <input
+                              type="radio"
+                              name="pay"
+                              value={pm.id}
+                              checked={selectedMethod?.id === pm.id}
+                              onChange={() => setSelectedMethodId(pm.id)}
+                            />
+                            <span>
+                              {pm.iconUrl ? (
+                                <img
+                                  src={pm.iconUrl}
+                                  alt=""
+                                  style={{
+                                    width: 20,
+                                    height: 20,
+                                    objectFit: "contain",
+                                    borderRadius: 4,
+                                  }}
+                                />
+                              ) : (
+                                <Icon className="w-5 h-5" />
+                              )}
+                              <b>{pm.name}</b>
+                              <small style={{ fontSize: 11, fontWeight: 400 }}>
+                                {pm.subtitle}
+                                {pmAmt.feeAmountUsd !== 0
+                                  ? ` · ${pmAmt.feeAmountUsd > 0 ? "+" : "-"}${formatMoney(Math.abs(pmAmt.feeAmountUsd))}`
+                                  : ""}
+                                {pmAmt.currency !== "USD"
+                                  ? ` · ${pmAmt.convertedAmount} ${pmAmt.currency}`
+                                  : ""}
+                              </small>
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {!methodsLoaded && (
+                    <small style={{ color: "var(--muted)", fontSize: 11.5 }}>
+                      Refreshing live payment options…
+                    </small>
+                  )}
 
                   <div className={`fw ${errors.terms ? "err" : ""}`}>
                     <label className="chk">
@@ -2002,8 +2598,22 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
                   </div>
 
                   {submitError && (
-                    <div className="au-err" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                      <span>{submitError}</span>
+                    <div
+                      className="au-err"
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 12,
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <div style={{ display: "grid", gap: 3 }}>
+                        <span>{submitError.title}</span>
+                        <small style={{ fontSize: 11.5, opacity: 0.85 }}>
+                          {submitError.details}
+                        </small>
+                      </div>
                       <button
                         type="button"
                         className="sw-btn sw-btn-ghost"
@@ -2023,7 +2633,10 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
                   type="button"
                   className="sw-btn sw-btn-ghost sw-btn-lg"
                   disabled={submitting}
-                  onClick={() => setStep(3)}
+                  onClick={() => {
+                    persistDraftNow();
+                    setStep(3);
+                  }}
                 >
                   ← Back
                 </button>
@@ -2031,7 +2644,12 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
                 <button
                   type="button"
                   className="sw-btn sw-btn-em sw-btn-lg"
-                  disabled={submitting || !termsAccepted || !allPreviousValid}
+                  disabled={
+                    submitting ||
+                    !termsAccepted ||
+                    !allPreviousValid ||
+                    !selectedMethod
+                  }
                   onClick={handleConfirm}
                 >
                   {submitting ? (
@@ -2041,9 +2659,11 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
                   )}
                   {submitting
                     ? "Processing booking..."
-                    : paymentMethod === "Pay on delivery"
+                    : selectedMethod?.type === "cash"
                       ? "Confirm Booking"
-                      : `Confirm & Pay ${formatMoney(activeQuote.total)}`}
+                      : selectedMethod?.type === "automatic"
+                        ? `Confirm & Pay ${formatMoney(activeAmounts.totalUsd)}`
+                        : `Create Booking · ${formatMoney(activeAmounts.totalUsd)}`}
                 </button>
               </div>
             </div>
@@ -2055,7 +2675,11 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
           <div className="panel">
             <div className="sum-h">
               <b>Shipment summary</b>
-              <small>Updates as you type · recalculated at checkout</small>
+              <small>
+                {draftSaveLabel
+                  ? `${draftSaveLabel} · recalculated at checkout`
+                  : "Updates as you type · recalculated at checkout"}
+              </small>
             </div>
             <div className="sum-b">
               <div className="sr">
@@ -2097,11 +2721,32 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
                   <b>{formatMoney(activeQuote.duty)}</b>
                 </div>
               )}
+              {activeAmounts.feeAmountUsd !== 0 && (
+                <div className="sr">
+                  <span>
+                    {activeAmounts.feeAmountUsd > 0
+                      ? "Method fee"
+                      : "Method discount"}
+                  </span>
+                  <b>
+                    {activeAmounts.feeAmountUsd > 0 ? "+" : "-"}
+                    {formatMoney(Math.abs(activeAmounts.feeAmountUsd))}
+                  </b>
+                </div>
+              )}
               <hr />
               <div className="sum-tot">
                 <span>Total</span>
-                <b>{formatMoney(activeQuote.total)}</b>
+                <b>{formatMoney(activeAmounts.totalUsd)}</b>
               </div>
+              {activeAmounts.currency !== "USD" && (
+                <div className="sr">
+                  <span>Pay in {activeAmounts.currency}</span>
+                  <b>
+                    {activeAmounts.convertedAmount} {activeAmounts.currency}
+                  </b>
+                </div>
+              )}
               <div className="note">
                 Price verified on server. Import duties and taxes at destination
                 may apply.
@@ -2115,7 +2760,7 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
       <div className="mbar">
         <div>
           <small>Step {step} of 4</small>
-          <b>{formatMoney(activeQuote.total)}</b>
+          <b>{formatMoney(activeAmounts.totalUsd)}</b>
         </div>
         <span className="chip g">{SERVICES[service].name}</span>
       </div>

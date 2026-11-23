@@ -457,6 +457,20 @@ export async function fetchFullShipmentBundle(
   }
 }
 
+export async function fetchFullShipmentBundleWithRetry(
+  code: string,
+  maxAttempts = 3
+): Promise<ShipmentRecord | null> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const bundle = await fetchFullShipmentBundle(code);
+    if (bundle) return bundle;
+    if (attempt < maxAttempts) {
+      await new Promise((r) => setTimeout(r, 450 * attempt));
+    }
+  }
+  return null;
+}
+
 export async function fetchCustomerShipments(params: {
   uid: string;
   email: string;

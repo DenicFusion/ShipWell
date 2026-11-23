@@ -3,14 +3,16 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.onShipmentAlertCreated = exports.onShipmentWritten = exports.onShipmentEventCreated = exports.inboundEmail = exports.api = void 0;
+exports.expireOverduePayments = exports.draftCleanup30d = exports.draftReminder24h = exports.onShipmentAlertCreated = exports.onShipmentWritten = exports.onShipmentEventCreated = exports.inboundEmail = exports.api = void 0;
 const node_crypto_1 = __importDefault(require("node:crypto"));
 const express_1 = __importDefault(require("express"));
 const app_1 = require("firebase-admin/app");
 const auth_1 = require("firebase-admin/auth");
 const firestore_1 = require("firebase-admin/firestore");
+const storage_1 = require("firebase-admin/storage");
 const https_1 = require("firebase-functions/v2/https");
 const firestore_2 = require("firebase-functions/v2/firestore");
+const scheduler_1 = require("firebase-functions/v2/scheduler");
 const libphonenumber_js_1 = require("libphonenumber-js");
 if ((0, app_1.getApps)().length === 0) {
     (0, app_1.initializeApp)();
@@ -27,7 +29,23 @@ const DEFAULT_APP_URL = "https://shipwell.cc";
 const DEFAULT_EMAIL_FROM = "ShipWell <notifications@mail.shipwell.cc>";
 const DEFAULT_EMAIL_REPLY_TO = "support@mail.shipwell.cc";
 const DEFAULT_SUPPORT_INBOX = "support@mail.shipwell.cc";
+const DEFAULT_FROM_SECURITY = "ShipWell Security <noreply@mail.shipwell.cc>";
+const DEFAULT_FROM_TRACKING = "ShipWell Tracking <tracking@mail.shipwell.cc>";
+const DEFAULT_FROM_BILLING = "ShipWell Billing <billing@mail.shipwell.cc>";
+const DEFAULT_FROM_PAYMENTS = "ShipWell Payments <payments@mail.shipwell.cc>";
+const DEFAULT_FROM_NOTIFICATIONS = "ShipWell <notifications@mail.shipwell.cc>";
+const DEFAULT_FROM_SUPPORT = "ShipWell Support <support@mail.shipwell.cc>";
 const CODE_RE = /^SW-\d{8}-[A-F0-9]{8}$/;
+const fnRateMap = new Map();
+function checkFnRateLimit(key, max, windowMs) {
+    const now = Date.now();
+    const prev = (fnRateMap.get(key) || []).filter((t) => now - t < windowMs);
+    if (prev.length >= max)
+        return false;
+    prev.push(now);
+    fnRateMap.set(key, prev);
+    return true;
+}
 function upgradeLegacyDomain(val, fallback) {
     const s = String(val || "").trim();
     if (!s)
@@ -182,6 +200,12 @@ async function loadSettings() {
     const emailFrom = upgradeLegacyDomain(resendObj.from || process.env.EMAIL_FROM, DEFAULT_EMAIL_FROM);
     const emailReplyTo = upgradeLegacyDomain(resendObj.replyTo || process.env.EMAIL_REPLY_TO, DEFAULT_EMAIL_REPLY_TO);
     const supportInbox = upgradeLegacyDomain(resendObj.supportInbox || process.env.SUPPORT_INBOX, DEFAULT_SUPPORT_INBOX);
+    const fromSecurity = upgradeLegacyDomain(resendObj.fromSecurity || process.env.FROM_SECURITY, DEFAULT_FROM_SECURITY);
+    const fromTracking = upgradeLegacyDomain(resendObj.fromTracking || process.env.FROM_TRACKING, DEFAULT_FROM_TRACKING);
+    const fromBilling = upgradeLegacyDomain(resendObj.fromBilling || process.env.FROM_BILLING, DEFAULT_FROM_BILLING);
+    const fromPayments = upgradeLegacyDomain(resendObj.fromPayments || process.env.FROM_PAYMENTS, DEFAULT_FROM_PAYMENTS);
+    const fromNotifications = upgradeLegacyDomain(resendObj.fromNotifications || resendObj.from || process.env.FROM_NOTIFICATIONS || process.env.EMAIL_FROM, DEFAULT_FROM_NOTIFICATIONS);
+    const fromSupport = upgradeLegacyDomain(resendObj.fromSupport || process.env.FROM_SUPPORT, DEFAULT_FROM_SUPPORT);
     const bundle = {
         pub: {
             bachs: {
@@ -204,6 +228,12 @@ async function loadSettings() {
                 from: emailFrom,
                 replyTo: emailReplyTo,
                 supportInbox,
+                fromSecurity,
+                fromTracking,
+                fromBilling,
+                fromPayments,
+                fromNotifications,
+                fromSupport,
                 secrets: resendObj.secrets || {
                     apiKey: { configured: Boolean(process.env.RESEND_API_KEY) },
                     inboundWebhookSecret: { configured: Boolean(process.env.RESEND_INBOUND_SECRET) },
@@ -253,6 +283,12 @@ async function loadSettings() {
         emailFrom,
         emailReplyTo,
         supportInbox,
+        fromSecurity,
+        fromTracking,
+        fromBilling,
+        fromPayments,
+        fromNotifications,
+        fromSupport,
     };
     bundleCache = { data: bundle, expiresAt: Date.now() + 180_000 };
     return bundle;
@@ -466,6 +502,21 @@ function renderSimpleMailHtml(params) {
 }
 async function sendResendEmail(params) {
     const database = db();
+    const cleanTo = params.to.trim().toLowerCase();
+    if (params.category !== "security" && params.prefKey) {
+        try {
+            const uSnap = await database.collection("users").where("email", "==", cleanTo).limit(1).get();
+            if (!uSnap.empty) {
+                const prefs = uSnap.docs[0].data()?.prefs;
+                if (prefs && prefs[params.prefKey] === false) {
+                    return { status: "skipped_prefs" };
+                }
+            }
+        }
+        catch {
+            // ignore
+        }
+    }
     if (params.dedupKey) {
         const dedupRef = database.collection("emailDedup").doc(params.dedupKey);
         const alreadySent = await database.runTransaction(async (tx) => {
@@ -473,7 +524,7 @@ async function sendResendEmail(params) {
             if (snap.exists)
                 return true;
             tx.set(dedupRef, {
-                to: params.to,
+                to: cleanTo,
                 template: params.template,
                 createdAt: firestore_1.FieldValue.serverTimestamp(),
             });
@@ -484,26 +535,38 @@ async function sendResendEmail(params) {
         }
     }
     const settings = await loadSettings();
-    const effectiveFrom = params.from || settings.emailFrom;
-    const effectiveReplyTo = params.replyTo || settings.emailReplyTo;
+    const categoryFromMap = {
+        security: settings.fromSecurity,
+        tracking: settings.fromTracking,
+        billing: settings.fromBilling,
+        payments: settings.fromPayments,
+        notifications: settings.fromNotifications,
+        support: settings.fromSupport,
+    };
+    const effectiveFrom = params.from || (params.category ? categoryFromMap[params.category] : settings.emailFrom);
+    const effectiveReplyTo = params.omitReplyTo || params.category === "security"
+        ? undefined
+        : params.replyTo || settings.supportInbox || settings.emailReplyTo;
     let status = "queued_preview";
     let providerId = `preview_${Date.now().toString(36)}`;
     if (settings.sec.resendApiKey) {
         try {
+            const bodyPayload = {
+                from: effectiveFrom,
+                to: [cleanTo],
+                subject: params.subject,
+                html: params.html,
+                text: params.text,
+            };
+            if (effectiveReplyTo)
+                bodyPayload.reply_to = effectiveReplyTo;
             const res = await fetch("https://api.resend.com/emails", {
                 method: "POST",
                 headers: {
                     Authorization: `Bearer ${settings.sec.resendApiKey}`,
                     "Content-Type": "application/json",
                 },
-                body: JSON.stringify({
-                    from: effectiveFrom,
-                    to: [params.to],
-                    reply_to: effectiveReplyTo,
-                    subject: params.subject,
-                    html: params.html,
-                    text: params.text,
-                }),
+                body: JSON.stringify(bodyPayload),
             });
             if (res.ok) {
                 const json = (await res.json());
@@ -521,7 +584,7 @@ async function sendResendEmail(params) {
     await database
         .collection("emailLogs")
         .add({
-        to: params.to.slice(0, 160),
+        to: cleanTo.slice(0, 160),
         from: effectiveFrom.slice(0, 160),
         code: (params.code || "").slice(0, 24),
         template: params.template,
@@ -530,6 +593,17 @@ async function sendResendEmail(params) {
         providerId,
         htmlPreview: params.html.slice(0, 24000),
         createdBy: params.createdBy || "cloud-function",
+        createdAt: firestore_1.FieldValue.serverTimestamp(),
+    })
+        .catch(() => null);
+    await database
+        .collection("mail")
+        .add({
+        to: cleanTo.slice(0, 160),
+        from: effectiveFrom.slice(0, 160),
+        template: params.template,
+        subject: params.subject.slice(0, 240),
+        status,
         createdAt: firestore_1.FieldValue.serverTimestamp(),
     })
         .catch(() => null);
@@ -1467,6 +1541,20 @@ app.post("/api/admin/settings", async (req, res) => {
                 nextPub.resend.replyTo = patch.resend.replyTo;
             if (typeof patch.resend.supportInbox === "string")
                 nextPub.resend.supportInbox = patch.resend.supportInbox;
+            if (typeof patch.resend.fromSecurity === "string")
+                nextPub.resend.fromSecurity = patch.resend.fromSecurity;
+            if (typeof patch.resend.fromTracking === "string")
+                nextPub.resend.fromTracking = patch.resend.fromTracking;
+            if (typeof patch.resend.fromBilling === "string")
+                nextPub.resend.fromBilling = patch.resend.fromBilling;
+            if (typeof patch.resend.fromPayments === "string")
+                nextPub.resend.fromPayments = patch.resend.fromPayments;
+            if (typeof patch.resend.fromNotifications === "string") {
+                nextPub.resend.fromNotifications = patch.resend.fromNotifications;
+                nextPub.resend.from = patch.resend.fromNotifications;
+            }
+            if (typeof patch.resend.fromSupport === "string")
+                nextPub.resend.fromSupport = patch.resend.fromSupport;
         }
         if (patch.stripe) {
             applySecret(patch.stripe.secretKey, "stripeSecretKey", "stripe", "secretKey");
@@ -1872,6 +1960,40 @@ async function handleInboundEmailRequest(req, res) {
             .slice(0, 4000);
         if (!fromEmail.includes("@") || fromEmail.endsWith("@mail.shipwell.cc")) {
             res.json({ ok: true, ignored: true });
+            return;
+        }
+        const rawTo = inner.to ?? payload.to;
+        const rawToArr = Array.isArray(rawTo) ? rawTo : rawTo ? [rawTo] : [];
+        const toList = rawToArr
+            .map((item) => {
+            const s = String(item || "");
+            const mm = s.match(/<([^>]+)>/);
+            return (mm ? mm[1] : s).trim().toLowerCase();
+        })
+            .filter((x) => x.includes("@"));
+        const supportAddr = String(settings.supportInbox || DEFAULT_SUPPORT_INBOX).trim().toLowerCase();
+        if (toList.length > 0 && !toList.includes(supportAddr)) {
+            const attemptedAddress = toList[0];
+            if (checkFnRateLimit(`unmonitored:${fromEmail}`, 1, 24 * 60 * 60 * 1000)) {
+                await sendResendEmail({
+                    to: fromEmail,
+                    subject: "This ShipWell email address is not monitored",
+                    html: renderSimpleMailHtml({
+                        baseUrl: DEFAULT_APP_URL,
+                        heading: "Please message support@mail.shipwell.cc",
+                        bodyHtml: `<p>Your message to <code>${escapeHtml(attemptedAddress)}</code> reached an unmonitored automated address. Please write to <a href="mailto:support@mail.shipwell.cc" style="color:#34D399;">support@mail.shipwell.cc</a> instead.</p>`,
+                        ctaLabel: "Open Support",
+                        ctaUrl: `${DEFAULT_APP_URL}/dashboard/support`,
+                        footer: "Automated notice · max 1 notice per 24 hours",
+                    }),
+                    text: `Your message to ${attemptedAddress} was sent to an unmonitored address. Please contact support@mail.shipwell.cc instead.`,
+                    template: "unmonitored_redirect",
+                    category: "security",
+                    omitReplyTo: true,
+                    createdBy: "resend-inbound",
+                }).catch(() => null);
+            }
+            res.json({ ok: true, ignored: true, reason: "unmonitored_address" });
             return;
         }
         const tkt = subject.match(/\[(TKT-[A-Z0-9]+)\]/i)?.[1]?.toUpperCase();
@@ -2323,8 +2445,239 @@ exports.onShipmentAlertCreated = (0, firestore_2.onDocumentCreated)({
         }),
         text: `${chargeLabel} ${amtStr}: ${String(alert.message || "")}`,
         template: isDuty ? "trigger_customs_charge" : "trigger_action_required",
+        category: isDuty ? "billing" : "tracking",
+        prefKey: "action",
         code,
         dedupKey: `alert_${code}_${alertId}`,
     });
+});
+app.post("/api/auth/send-verification", async (req, res) => {
+    try {
+        const actor = await verifyActor(req);
+        if (!actor || !actor.email) {
+            res.status(401).json({ error: "Please log in first." });
+            return;
+        }
+        if (!checkFnRateLimit(`verify:${actor.uid}`, 1, 60_000)) {
+            res.status(429).json({ error: "Please wait 60 seconds before requesting another verification email." });
+            return;
+        }
+        const baseUrl = getBaseUrl(req);
+        const verifyUrl = await (0, auth_1.getAuth)().generateEmailVerificationLink(actor.email, {
+            url: `${baseUrl}/auth/action`,
+            handleCodeInApp: false,
+        });
+        const name = String(req.body?.name || actor.email.split("@")[0]);
+        const result = await sendResendEmail({
+            to: actor.email,
+            subject: "Verify your email address for ShipWell",
+            html: renderSimpleMailHtml({
+                baseUrl,
+                heading: "Verify your email address",
+                bodyHtml: `<p>Hello ${escapeHtml(name.split(/\s+/)[0])},</p><p>Confirm your email address to unlock your ShipWell dashboard and live shipment tracking.</p>`,
+                ctaLabel: "Verify email",
+                ctaUrl: verifyUrl,
+                footer: "Sent from an unmonitored security address. Need help? Email support@mail.shipwell.cc.",
+            }),
+            text: `Verify your ShipWell email: ${verifyUrl}`,
+            template: "auth_verification",
+            category: "security",
+            omitReplyTo: true,
+            createdBy: actor.uid,
+        });
+        res.json({ ok: true, status: result.status });
+    }
+    catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : "Failed to send verification email." });
+    }
+});
+app.post("/api/auth/send-password-reset", async (req, res) => {
+    try {
+        const email = String(req.body?.email || "").trim().toLowerCase();
+        if (!email.includes("@")) {
+            res.status(400).json({ error: "Valid email required." });
+            return;
+        }
+        if (!checkFnRateLimit(`pwreset:${email}`, 1, 30_000)) {
+            res.status(429).json({ error: "Please wait before requesting another reset link." });
+            return;
+        }
+        const baseUrl = getBaseUrl(req);
+        try {
+            const user = await (0, auth_1.getAuth)().getUserByEmail(email);
+            const resetUrl = await (0, auth_1.getAuth)().generatePasswordResetLink(email, {
+                url: `${baseUrl}/auth/action`,
+                handleCodeInApp: false,
+            });
+            await sendResendEmail({
+                to: email,
+                subject: "Reset your ShipWell password",
+                html: renderSimpleMailHtml({
+                    baseUrl,
+                    heading: "Reset your password",
+                    bodyHtml: `<p>Hello ${escapeHtml((user.displayName || "there").split(/\s+/)[0])},</p><p>Use the button below to choose a new password for your ShipWell account.</p>`,
+                    ctaLabel: "Reset password",
+                    ctaUrl: resetUrl,
+                    footer: "Sent from an unmonitored security address. Need help? Email support@mail.shipwell.cc.",
+                }),
+                text: `Reset your ShipWell password: ${resetUrl}`,
+                template: "auth_password_reset",
+                category: "security",
+                omitReplyTo: true,
+                createdBy: "password_reset",
+            });
+        }
+        catch {
+            // Do not reveal account existence
+        }
+        res.json({ ok: true });
+    }
+    catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : "Failed" });
+    }
+});
+exports.draftReminder24h = (0, scheduler_1.onSchedule)({
+    schedule: "every 1 hours",
+    region: "us-central1",
+    secrets: ["SETTINGS_ENCRYPTION_KEY"],
+}, async () => {
+    const database = db();
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    const snap = await database
+        .collection("draftSummaries")
+        .where("updatedAtMs", "<=", cutoff)
+        .limit(100)
+        .get();
+    for (const d of snap.docs) {
+        const data = d.data();
+        if (data.reminderSent || !data.email)
+            continue;
+        const route = data.originCountry && data.destCountry
+            ? `${data.originCountry} → ${data.destCountry}`
+            : "your saved shipment";
+        const draftUrl = `${DEFAULT_APP_URL}/dashboard?view=ship&draft=${encodeURIComponent(data.draftId)}`;
+        const res = await sendResendEmail({
+            to: data.email,
+            subject: "You left a shipment draft on ShipWell",
+            html: renderSimpleMailHtml({
+                baseUrl: DEFAULT_APP_URL,
+                heading: "Continue your shipment draft",
+                bodyHtml: `<p>You left an unfinished shipment (${escapeHtml(route)}) on ShipWell. Your details are still saved.</p>`,
+                ctaLabel: "Continue draft",
+                ctaUrl: draftUrl,
+                footer: "Manage notification preferences in Account settings.",
+            }),
+            text: `You left a shipment draft (${route}) on ShipWell. Continue here: ${draftUrl}`,
+            template: "draft_reminder_24h",
+            category: "notifications",
+            prefKey: "action",
+            dedupKey: `draft_rem_${d.id}`,
+        });
+        if (res.status !== "failed") {
+            await d.ref.update({ reminderSent: true }).catch(() => null);
+            await database
+                .collection("drafts")
+                .doc(data.uid)
+                .collection("items")
+                .doc(data.draftId)
+                .update({ reminderSent: true })
+                .catch(() => null);
+        }
+    }
+});
+exports.draftCleanup30d = (0, scheduler_1.onSchedule)({
+    schedule: "every 24 hours",
+    region: "us-central1",
+}, async () => {
+    const database = db();
+    const bucket = (0, storage_1.getStorage)().bucket();
+    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    const snap = await database
+        .collection("draftSummaries")
+        .where("updatedAtMs", "<=", cutoff)
+        .limit(100)
+        .get();
+    for (const d of snap.docs) {
+        const data = d.data();
+        await bucket
+            .deleteFiles({ prefix: `drafts/${data.uid}/${data.draftId}/` })
+            .catch(() => null);
+        await database
+            .collection("drafts")
+            .doc(data.uid)
+            .collection("items")
+            .doc(data.draftId)
+            .delete()
+            .catch(() => null);
+        await d.ref.delete().catch(() => null);
+    }
+});
+exports.expireOverduePayments = (0, scheduler_1.onSchedule)({
+    schedule: "every 30 minutes",
+    region: "us-central1",
+    secrets: ["SETTINGS_ENCRYPTION_KEY"],
+}, async () => {
+    const database = db();
+    const now = Date.now();
+    const paySnap = await database
+        .collection("payments")
+        .where("status", "==", "awaiting_payment")
+        .limit(100)
+        .get();
+    for (const docSnap of paySnap.docs) {
+        const p = docSnap.data();
+        const exp = Number(p.expiresAt || 0);
+        if (!exp || exp > now)
+            continue;
+        const code = String(p.trackingCode || "");
+        const ref = String(p.reference || "");
+        const userEmail = String(p.userEmail || "");
+        await docSnap.ref.update({
+            status: "expired",
+            updatedAtMs: now,
+            updatedAt: firestore_1.FieldValue.serverTimestamp(),
+        });
+        if (p.bookingId) {
+            await database
+                .collection("bookings")
+                .doc(String(p.bookingId))
+                .update({
+                paymentStatus: "expired",
+                bookingStatus: "expired",
+                lastError: "Payment window elapsed.",
+            })
+                .catch(() => null);
+        }
+        if (code) {
+            await database
+                .collection("shipments")
+                .doc(code)
+                .update({
+                paymentStatus: "expired",
+                bookingStatus: "expired",
+                updatedAt: firestore_1.FieldValue.serverTimestamp(),
+            })
+                .catch(() => null);
+        }
+        if (userEmail.includes("@")) {
+            await sendResendEmail({
+                to: userEmail,
+                subject: `Payment window expired (${ref}) — ${code}`,
+                html: renderSimpleMailHtml({
+                    baseUrl: DEFAULT_APP_URL,
+                    heading: "Payment window expired",
+                    bodyHtml: `<p>The payment window for ${escapeHtml(ref)} (${escapeHtml(code)}) expired before payment was completed, so dispatch did not start.</p>`,
+                    ctaLabel: "Start a new booking",
+                    ctaUrl: `${DEFAULT_APP_URL}/dashboard/ship`,
+                    footer: "Need help? Email support@mail.shipwell.cc",
+                }),
+                text: `Payment window expired for ${ref} (${code}).`,
+                template: "payment_expired",
+                category: "billing",
+                code,
+                dedupKey: `pay_exp_${docSnap.id}`,
+            }).catch(() => null);
+        }
+    }
 });
 //# sourceMappingURL=index.js.map

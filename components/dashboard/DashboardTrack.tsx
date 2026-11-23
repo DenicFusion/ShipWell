@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import type { User } from "firebase/auth";
 import {
@@ -21,9 +21,12 @@ import {
   X,
 } from "lucide-react";
 import toast from "react-hot-toast";
+import { auth } from "@/lib/firebase";
+import { apiFetch } from "@/lib/api-client";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
 import { RouteArcMap, StageStepper } from "@/components/dashboard/RouteArcMap";
 import { CustomsLedger } from "@/components/tracking/CustomsLedger";
+import { ManualPaymentPanel } from "@/components/payments/ManualPaymentPanel";
 import {
   getEtaSummary,
   myOpenAlertsForShipment,
@@ -38,6 +41,7 @@ import {
   normalizeEmail,
   STAGE_HEAD,
   type AlertKind,
+  type ManualPaymentRecord,
   type ShipmentRecord,
   type TrackingEvent,
 } from "@/types/tracking";
@@ -306,15 +310,57 @@ function FullTrackedContent({
   const [searchParams] = useSearchParams();
   const isBookingRedirect =
     searchParams.get("paid") === "1" && searchParams.get("booking") === "1";
+  const [bookingManualPay, setBookingManualPay] =
+    useState<ManualPaymentRecord | null>(null);
+
+  useEffect(() => {
+    if (!isSender && !isAdmin) return;
+    if (
+      !shipment.paymentId &&
+      shipment.paymentStatus !== "awaiting_payment" &&
+      shipment.paymentStatus !== "pending_review" &&
+      shipment.paymentStatus !== "rejected" &&
+      shipment.paymentStatus !== "info_requested" &&
+      shipment.paymentStatus !== "expired"
+    ) {
+      return;
+    }
+    let active = true;
+    auth.currentUser
+      ?.getIdToken()
+      .then((token) =>
+        apiFetch<{ ok: boolean; payments: ManualPaymentRecord[] }>(
+          `/api/payments/my?code=${encodeURIComponent(shipment.code)}`,
+          {
+            headers: { Authorization: `Bearer ${token}` },
+            step: "track_load_payment",
+          }
+        )
+      )
+      .then((res) => {
+        if (!active || !Array.isArray(res.payments)) return;
+        const found = res.payments.find((p) => p.kind === "booking") || null;
+        setBookingManualPay(found);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [shipment.code, shipment.paymentId, shipment.paymentStatus, isSender, isAdmin]);
 
   const paymentChip = useMemo(() => {
-    const ps = shipment.paymentStatus;
+    const ps = bookingManualPay?.status || shipment.paymentStatus;
     if (!ps) return null;
     if (ps === "paid") return { tone: "g", label: "Booking paid" };
-    if (ps === "pay_on_pickup") return { tone: "b", label: "Booked, payment due at pickup" };
+    if (ps === "pay_on_pickup")
+      return { tone: "b", label: "Booked, payment due at pickup" };
+    if (ps === "pending_review") return { tone: "b", label: "Proof under review" };
+    if (ps === "rejected") return { tone: "r", label: "Payment rejected" };
+    if (ps === "info_requested") return { tone: "a", label: "Info requested" };
+    if (ps === "expired") return { tone: "r", label: "Payment expired" };
     if (ps === "refunded") return { tone: "n", label: "Booking refunded" };
     return { tone: "a", label: "Awaiting payment" };
-  }, [shipment.paymentStatus]);
+  }, [shipment.paymentStatus, bookingManualPay?.status]);
 
   return (
     <>
@@ -524,10 +570,7 @@ function FullTrackedContent({
                   <Shield className="w-[17px] h-[17px]" />
                 </span>
                 <span>
-                  <b>Admin view.</b>{" "}
-                  <Link to={`/admin/shipment/${shipment.code}`}>
-                    Manage this shipment →
-                  </Link>
+                  <b>Operations administrator view.</b>
                 </span>
               </>
             )}
@@ -550,6 +593,17 @@ function FullTrackedContent({
           </div>
         </div>
       </section>
+
+      {bookingManualPay &&
+        bookingManualPay.status !== "paid" &&
+        shipment.paymentStatus !== "pay_on_pickup" && (
+          <div style={{ marginBottom: 18 }}>
+            <ManualPaymentPanel
+              payment={bookingManualPay}
+              onUpdated={(next) => setBookingManualPay(next)}
+            />
+          </div>
+        )}
 
       <div className="dxt-cols">
         {/* Shipment History Timeline */}

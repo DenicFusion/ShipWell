@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
 import {
   DashboardShell,
@@ -23,8 +23,10 @@ export default function DashboardPage({
 }) {
   const { user, profile, isAdmin } = useShipWell();
   const params = useParams<{ code?: string; threadId?: string }>();
+  const [searchParams] = useSearchParams();
   const routeCode = params.code ? formatTrackingCode(params.code) : "";
   const routeThreadId = params.threadId || "";
+  const draftParam = searchParams.get("draft");
 
   const {
     loading,
@@ -144,6 +146,7 @@ export default function DashboardPage({
       {user && section === "incoming" && (
         <DashboardParcelList
           mode="incoming"
+          uid={user.uid}
           list={incoming}
           userEmail={user.email || ""}
           receiverStatusMap={receiverStatusMap}
@@ -153,6 +156,7 @@ export default function DashboardPage({
       {user && section === "sent" && (
         <DashboardParcelList
           mode="sent"
+          uid={user.uid}
           list={sent}
           userEmail={user.email || ""}
           receiverStatusMap={receiverStatusMap}
@@ -187,7 +191,9 @@ export default function DashboardPage({
 
       {user && section === "quote" && <QuoteCalculator embedded />}
 
-      {user && section === "ship" && <ShipWizard embedded />}
+      {user && section === "ship" && (
+        <ShipWizard embedded draftIdParam={draftParam} />
+      )}
 
       {user && section === "account" && (
         <DashboardAccount user={user} profile={profile} />
