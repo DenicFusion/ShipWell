@@ -1,0 +1,6 @@
+functions/
+prisma/
+server.ts
+.aistudio/
+dist/
+node_modules/
