@@ -41,7 +41,7 @@ export const CHARGE_TYPES: ChargeType[] = [
   "Other charge",
 ];
 
-export type GatewayId = "bachs" | "stripe" | "paystack" | "manual";
+export type GatewayId = "bachs" | "stripe" | "paystack";
 
 export interface CustomsPaymentEvent {
   type: string;
@@ -202,8 +202,7 @@ export type BookingPaymentChannel =
   | "mobile_money"
   | "cash"
   | "other"
-  | "pay_on_pickup"
-  | "manual";
+  | "pay_on_pickup";
 
 export type PaymentMethodType =
   | "automatic"
