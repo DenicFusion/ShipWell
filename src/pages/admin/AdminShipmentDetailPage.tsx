@@ -439,7 +439,7 @@ export default function AdminShipmentDetailPage() {
                   {shipment.paymentStatus === "paid"
                     ? "Paid"
                     : shipment.paymentStatus === "pay_on_pickup"
-                      ? "Pay on pickup"
+                      ? "Pay on delivery"
                       : shipment.paymentStatus === "refunded"
                         ? "Refunded"
                         : shipment.paymentStatus === "awaiting_payment"

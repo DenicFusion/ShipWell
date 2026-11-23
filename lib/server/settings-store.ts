@@ -18,9 +18,13 @@ import {
   type VerifiedServerUser,
 } from "./firebase-admin.ts";
 
-export const DEFAULT_EMAIL_FROM = "ShipWell <notifications@info.shipwell.cc>";
-export const DEFAULT_EMAIL_REPLY_TO = "support@info.shipwell.cc";
-export const DEFAULT_SUPPORT_INBOX = "support@info.shipwell.cc";
+export const DEFAULT_EMAIL_FROM = "ShipWell <notifications@mail.shipwell.cc>";
+export const DEFAULT_EMAIL_REPLY_TO = "support@mail.shipwell.cc";
+export const DEFAULT_SUPPORT_INBOX = "support@mail.shipwell.cc";
+
+function upgradeLegacyEmailDomain(val: unknown): string {
+  return String(val || "").replace(/@info\.shipwell\.cc\b/gi, "@mail.shipwell.cc");
+}
 
 export interface ResolvedSecrets {
   bachsSandboxKey: string;
@@ -88,14 +92,16 @@ export function defaultPublicSettings(): AdminPaymentSettingsPublic {
       },
     },
     resend: {
-      from: process.env.EMAIL_FROM || DEFAULT_EMAIL_FROM,
-      replyTo: process.env.EMAIL_REPLY_TO || DEFAULT_EMAIL_REPLY_TO,
-      supportInbox: process.env.SUPPORT_INBOX || DEFAULT_SUPPORT_INBOX,
+      from: upgradeLegacyEmailDomain(process.env.EMAIL_FROM || DEFAULT_EMAIL_FROM),
+      replyTo: upgradeLegacyEmailDomain(process.env.EMAIL_REPLY_TO || DEFAULT_EMAIL_REPLY_TO),
+      supportInbox: upgradeLegacyEmailDomain(process.env.SUPPORT_INBOX || DEFAULT_SUPPORT_INBOX),
       secrets: {
         apiKey: process.env.RESEND_API_KEY
           ? buildSecretMask(process.env.RESEND_API_KEY, "env")
           : emptyMask(),
-        inboundWebhookSecret: emptyMask(),
+        inboundWebhookSecret: process.env.RESEND_INBOUND_SECRET
+          ? buildSecretMask(process.env.RESEND_INBOUND_SECRET, "env")
+          : emptyMask(),
       },
     },
     stripe: {
@@ -135,7 +141,7 @@ function defaultSecrets(): ResolvedSecrets {
     bachsLiveWebhook: "",
     bachsPreviousWebhook: "",
     resendApiKey: process.env.RESEND_API_KEY || "",
-    resendInboundSecret: "",
+    resendInboundSecret: process.env.RESEND_INBOUND_SECRET || "",
     stripeSecretKey: "",
     stripeWebhookSecret: "",
     paystackSecretKey: "",
@@ -180,6 +186,11 @@ export async function loadSettingsBundle(): Promise<{
         basePublic.resend = {
           ...basePublic.resend,
           ...data.resend,
+          from: upgradeLegacyEmailDomain(data.resend.from || basePublic.resend.from),
+          replyTo: upgradeLegacyEmailDomain(data.resend.replyTo || basePublic.resend.replyTo),
+          supportInbox: upgradeLegacyEmailDomain(
+            data.resend.supportInbox || basePublic.resend.supportInbox
+          ),
           secrets: {
             ...basePublic.resend.secrets,
             ...(data.resend.secrets || {}),
@@ -237,7 +248,10 @@ export async function loadSettingsBundle(): Promise<{
         decryptOrEmpty(enc.resendApiKey),
         baseSecrets.resendApiKey
       );
-      baseSecrets.resendInboundSecret = decryptOrEmpty(enc.resendInboundSecret);
+      baseSecrets.resendInboundSecret = maybe(
+        decryptOrEmpty(enc.resendInboundSecret),
+        baseSecrets.resendInboundSecret
+      );
       baseSecrets.stripeSecretKey = decryptOrEmpty(enc.stripeSecretKey);
       baseSecrets.stripeWebhookSecret = decryptOrEmpty(enc.stripeWebhookSecret);
       baseSecrets.paystackSecretKey = decryptOrEmpty(enc.paystackSecretKey);

@@ -194,7 +194,14 @@ async function startServer() {
     }
   );
 
-  app.use(express.json({ limit: "2mb" }));
+  app.use(
+    express.json({
+      limit: "2mb",
+      verify: (req, _res, buf) => {
+        (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
+      },
+    })
+  );
 
   // ── QUOTE & CHECKOUT OPTIONS API ──
   app.post("/api/quote", (req, res) => {
@@ -236,8 +243,10 @@ async function startServer() {
       res.json(options);
     } catch {
       res.json({
+        ok: true,
         bachsEnabled: true,
         bachsConfigured: false,
+        bachsProductConfigured: false,
         payOnPickupEnabled: true,
         environment: "sandbox",
         currency: "USD",
@@ -386,10 +395,10 @@ async function startServer() {
       const result = await dispatchTransactionalEmail(
         targetEmail,
         {
-          subject: "ShipWell Email Delivery Test (info.shipwell.cc)",
-          preheader: "Resend outbound settings verified",
-          html: `<!DOCTYPE html><html><body style="background:#07090F;color:#F1F5F9;font-family:sans-serif;padding:24px"><div style="max-width:520px;margin:0 auto;background:#0D1117;border:1px solid #1E293B;border-radius:16px;padding:28px"><h2 style="margin:0 0 12px;color:#10B981">ShipWell Test Email</h2><p style="color:#CBD5E1;font-size:14.5px;line-height:1.6">Your Resend outbound email configuration on <strong>info.shipwell.cc</strong> is working properly.</p><p style="color:#94A3B8;font-size:12.5px">Origin: ${escapeHtml(origin)} · Sent by ${escapeHtml(actor.email)}</p></div></body></html>`,
-          text: `ShipWell Test Email\nYour Resend outbound email configuration is working.\nSent by ${actor.email}`,
+          subject: "ShipWell Email Delivery Test (mail.shipwell.cc)",
+          preheader: "Resend outbound & inbound settings verified",
+          html: `<!DOCTYPE html><html><body style="background:#07090F;color:#F1F5F9;font-family:sans-serif;padding:24px"><div style="max-width:520px;margin:0 auto;background:#0D1117;border:1px solid #1E293B;border-radius:16px;padding:28px"><h2 style="margin:0 0 12px;color:#10B981">ShipWell Test Email</h2><p style="color:#CBD5E1;font-size:14.5px;line-height:1.6">Your Resend outbound and inbound email configuration on <strong>mail.shipwell.cc</strong> is working properly.</p><p style="color:#94A3B8;font-size:12.5px">Origin: ${escapeHtml(origin)} · Sent by ${escapeHtml(actor.email)}</p></div></body></html>`,
+          text: `ShipWell Test Email\nYour Resend email configuration on mail.shipwell.cc is working.\nSent by ${actor.email}`,
         },
         {
           template: "admin_test_email",
@@ -656,6 +665,8 @@ async function startServer() {
       if (message) {
         const { publicSettings } = await loadSettingsBundle();
         if (actor.isAdmin) {
+          const supportAddress =
+            publicSettings.resend.supportInbox || "support@mail.shipwell.cc";
           await dispatchTransactionalEmail(
             thread.userEmail,
             buildSupportReplyEmail({
@@ -670,6 +681,8 @@ async function startServer() {
             {
               template: "support_reply",
               code: thread.code || null,
+              fromOverride: `ShipWell Support <${supportAddress}>`,
+              replyToOverride: supportAddress,
               createdBy: actor.uid,
             }
           );
@@ -706,17 +719,64 @@ async function startServer() {
   app.post("/api/inbound-email", async (req, res) => {
     try {
       const { publicSettings, secrets } = await loadSettingsBundle();
-      if (secrets.resendInboundSecret) {
-        const sigHeader =
-          String(req.headers["svix-signature"] || req.headers["x-resend-signature"] || "");
-        const authQuery = String(req.query.secret || "");
-        if (!sigHeader && authQuery !== secrets.resendInboundSecret) {
-          res.status(401).json({ error: "Inbound webhook secret mismatch." });
+      const db = getAdminDb();
+      const rawBuf = (req as express.Request & { rawBody?: Buffer }).rawBody;
+      const rawText = rawBuf ? rawBuf.toString("utf8") : JSON.stringify(req.body || {});
+      const svixId = String(req.headers["svix-id"] || "").trim();
+      const svixTs = String(req.headers["svix-timestamp"] || "").trim();
+      const svixSig = String(req.headers["svix-signature"] || "").trim();
+
+      const inboundSecret = secrets.resendInboundSecret || process.env.RESEND_INBOUND_SECRET || "";
+      if (inboundSecret) {
+        let verified = false;
+        if (svixId && svixTs && svixSig) {
+          const tsNum = Number(svixTs);
+          const nowSec = Math.floor(Date.now() / 1000);
+          if (Number.isFinite(tsNum) && Math.abs(nowSec - tsNum) <= 300) {
+            const keyBytes = inboundSecret.startsWith("whsec_")
+              ? Buffer.from(inboundSecret.slice(6), "base64")
+              : Buffer.from(inboundSecret, "utf8");
+            const expectedB64 = crypto
+              .createHmac("sha256", keyBytes)
+              .update(`${svixId}.${svixTs}.${rawText}`, "utf8")
+              .digest("base64");
+            const expectedBuf = Buffer.from(expectedB64, "utf8");
+            for (const part of svixSig.split(/\s+/)) {
+              const idx = part.indexOf(",");
+              const sigVal = idx >= 0 ? part.slice(idx + 1).trim() : part.trim();
+              const sigBuf = Buffer.from(sigVal, "utf8");
+              if (sigBuf.length === expectedBuf.length && crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+                verified = true;
+                break;
+              }
+            }
+          }
+        } else if (req.headers["x-resend-signature"]) {
+          const provided = String(req.headers["x-resend-signature"]).trim().toLowerCase();
+          const expected = crypto.createHmac("sha256", inboundSecret).update(rawText, "utf8").digest("hex").toLowerCase();
+          const pBuf = Buffer.from(provided, "utf8");
+          const eBuf = Buffer.from(expected, "utf8");
+          if (pBuf.length === eBuf.length && crypto.timingSafeEqual(pBuf, eBuf)) {
+            verified = true;
+          }
+        }
+
+        if (!verified) {
+          await db.collection("webhookLogs").add({
+            provider: "resend-inbound",
+            eventType: "signature_error",
+            reference: svixId || "",
+            result: "rejected-signature",
+            detail: "Invalid or missing Svix/Resend inbound signature",
+            ts: Date.now(),
+          }).catch(() => null);
+          res.status(401).json({ error: "Inbound webhook signature verification failed." });
           return;
         }
       }
 
       const payload = (req.body || {}) as {
+        id?: string;
         type?: string;
         data?: Record<string, unknown>;
         from?: string;
@@ -726,6 +786,38 @@ async function startServer() {
       };
 
       const inner = payload.data && typeof payload.data === "object" ? payload.data : payload;
+      const eventKey = String(
+        svixId ||
+          payload.id ||
+          inner.email_id ||
+          crypto.createHash("sha256").update(rawText).digest("hex").slice(0, 32)
+      ).replace(/[^a-zA-Z0-9_-]/g, "_");
+
+      const dedupRef = db.collection("emailDedup").doc(`inbound_${eventKey}`);
+      const isDuplicate = await db.runTransaction(async (tx) => {
+        const snap = await tx.get(dedupRef);
+        if (snap.exists) return true;
+        tx.set(dedupRef, {
+          provider: "resend-inbound",
+          eventId: eventKey,
+          createdAt: FieldValue.serverTimestamp(),
+        });
+        return false;
+      });
+
+      if (isDuplicate) {
+        await db.collection("webhookLogs").add({
+          provider: "resend-inbound",
+          eventType: payload.type || "email.received",
+          reference: eventKey,
+          result: "duplicate",
+          detail: "Duplicate inbound email webhook ignored",
+          ts: Date.now(),
+        }).catch(() => null);
+        res.status(200).json({ ok: true, duplicate: true });
+        return;
+      }
+
       const fromRaw = String(inner.from || payload.from || "");
       const emailMatch = fromRaw.match(/<([^>]+)>/);
       const fromEmail = normalizeEmail(emailMatch ? emailMatch[1] : fromRaw);
@@ -737,19 +829,18 @@ async function startServer() {
       const subject = sanitizeHeaderText(
         String(inner.subject || payload.subject || "(No subject)")
       );
-      const rawText = String(inner.text || payload.text || "").trim();
+      const rawTextBody = String(inner.text || payload.text || "").trim();
       const rawHtml = String(inner.html || payload.html || "").trim();
-      const cleanBody = (rawText || stripHtmlTags(rawHtml) || "(Empty message)").slice(
+      const cleanBody = (rawTextBody || stripHtmlTags(rawHtml) || "(Empty message)").slice(
         0,
         4000
       );
 
-      if (!fromEmail.includes("@")) {
+      if (!fromEmail.includes("@") || fromEmail.endsWith("@mail.shipwell.cc")) {
         res.status(200).json({ ok: true, ignored: true });
         return;
       }
 
-      const db = getAdminDb();
       const tktMatch = subject.match(/\[(TKT-[A-Z0-9]+)\]/i);
       const codeMatch = `${subject} ${cleanBody}`.match(/\b(SW-\d{8}-[A-F0-9]{8})\b/i);
       const matchedCode = codeMatch ? codeMatch[1].toUpperCase() : null;

@@ -119,7 +119,7 @@ function ShipmentsListContent() {
                 s.paymentStatus === "paid"
                   ? "Paid"
                   : s.paymentStatus === "pay_on_pickup"
-                    ? "Pay on pickup"
+                    ? "Pay on delivery"
                     : s.paymentStatus === "refunded"
                       ? "Refunded"
                       : s.paymentStatus === "awaiting_payment"

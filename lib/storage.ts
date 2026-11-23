@@ -62,6 +62,22 @@ export async function prepareShipmentPhoto(file: File): Promise<PreparedPhoto> {
   });
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${label} timed out`)), ms);
+    promise.then(
+      (val) => {
+        clearTimeout(t);
+        resolve(val);
+      },
+      (err) => {
+        clearTimeout(t);
+        reject(err);
+      }
+    );
+  });
+}
+
 export async function uploadShipmentPhotoBlob(params: {
   code: string;
   index: number;
@@ -72,19 +88,23 @@ export async function uploadShipmentPhotoBlob(params: {
   const storageRef = ref(storage, path);
 
   try {
-    await uploadBytes(storageRef, params.blob, {
-      contentType: "image/jpeg",
-      cacheControl: "public,max-age=31536000",
-    });
-    return await getDownloadURL(storageRef);
+    await withTimeout(
+      uploadBytes(storageRef, params.blob, {
+        contentType: "image/jpeg",
+        cacheControl: "public,max-age=31536000",
+      }),
+      8000,
+      "Photo upload"
+    );
+    return await withTimeout(getDownloadURL(storageRef), 5000, "Photo URL fetch");
   } catch (err) {
-    // If Cloud Storage rules are not yet deployed on a preview bucket, fall back to the compressed JPEG if under Firestore limit
+    // If Cloud Storage rules or CORS are unavailable, fall back to compressed JPEG under Firestore limit
     if (
       params.fallbackDataUrl &&
       params.fallbackDataUrl.length <= 320000
     ) {
       console.warn(
-        "Firebase Storage upload unavailable; using compressed fallback:",
+        "Firebase Storage upload unavailable/timed out; using compressed fallback:",
         err
       );
       return params.fallbackDataUrl;

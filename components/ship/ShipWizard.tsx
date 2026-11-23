@@ -5,12 +5,12 @@ import { doc, onSnapshot } from "firebase/firestore";
 import {
   AlertCircle,
   Boxes,
-  Building2,
   Camera,
   Check,
   Copy,
   CreditCard,
   DollarSign,
+  ExternalLink,
   FileText,
   Home as HomeIcon,
   Loader2,
@@ -238,13 +238,15 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
     payOnPickupEnabled: true,
   });
 
-  // Live confirmation state (for Bachs overlay -> webhook completion)
+  // Live confirmation state (for Bachs overlay / fallback -> webhook completion)
   const [confirmingPayment, setConfirmingPayment] = useState<{
     bookingId: string;
     trackingCode: string;
     totalUsd: number;
+    checkoutUrl: string;
     overlayOpened: boolean;
     statusMessage: string;
+    fallbackNotice?: string;
     timedOut?: boolean;
   } | null>(null);
 
@@ -320,7 +322,7 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
     fetch("/api/checkout/options")
       .then((r) => r.json())
       .then((data) => {
-        if (!active || !data?.ok) return;
+        if (!active || !data || typeof data.bachsEnabled !== "boolean") return;
         const nextOpts = {
           bachsEnabled: Boolean(data.bachsEnabled),
           bachsProductConfigured: Boolean(data.bachsProductConfigured),
@@ -328,13 +330,11 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
         };
         setCheckoutOptions(nextOpts);
         setPaymentMethod((prev) => {
-          const bachsReady =
-            nextOpts.bachsEnabled && nextOpts.bachsProductConfigured;
-          if (!bachsReady && prev !== "Pay on pickup" && nextOpts.payOnPickupEnabled) {
-            return "Pay on pickup";
+          if (!nextOpts.bachsEnabled && prev === "Pay now" && nextOpts.payOnPickupEnabled) {
+            return "Pay on delivery";
           }
-          if (!nextOpts.payOnPickupEnabled && prev === "Pay on pickup" && bachsReady) {
-            return "Card";
+          if (!nextOpts.payOnPickupEnabled && prev === "Pay on delivery" && nextOpts.bachsEnabled) {
+            return "Pay now";
           }
           return prev;
         });
@@ -492,7 +492,13 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
       if (!liveShipment) {
         liveShipment = await fetchFullShipmentBundle(trackingCode).catch(() => null);
       }
-      if (!liveShipment) return;
+      if (!liveShipment) {
+        setConfirmingPayment(null);
+        setSubmitError(
+          `Booking ${trackingCode} was recorded, but live shipment details could not load yet. Open Track to view it.`
+        );
+        return;
+      }
       const recHasAccount = await checkAccountExists(
         liveShipment.receiverEmail
       ).catch(() => false);
@@ -569,91 +575,123 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
         : `bk_${Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, "0")).join("")}`;
 
     const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 12000);
+    let timerHandle: number | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timerHandle = window.setTimeout(() => {
+        controller.abort();
+        reject(new Error("BOOKING_TIMEOUT"));
+      }, 30000);
+    });
 
     try {
-      const token =
-        freshIdToken || (await user?.getIdToken().catch(() => null)) || "";
-      if (!token) {
-        throw new Error("SESSION_EXPIRED");
-      }
-
-      const code = await reserveTrackingCode();
-
-      let uploadedPhotoUrls: string[];
-      try {
-        uploadedPhotoUrls = await Promise.all(
-          photos.map((photo, index) =>
-            uploadShipmentPhotoBlob({
-              code,
-              index,
-              blob: photo.blob,
-              fallbackDataUrl: photo.fallbackDataUrl,
-            })
-          )
-        );
-      } catch (uploadErr) {
-        throw new Error(
-          uploadErr instanceof Error
-            ? `Photo upload failed: ${uploadErr.message}`
-            : "Could not upload item photos. Please try again."
-        );
-      }
-
-      if (!uploadedPhotoUrls.length) {
-        throw new Error("At least 1 uploaded item photo is required.");
-      }
-
-      const res = await fetch("/api/bookings", {
-        method: "POST",
-        signal: controller.signal,
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          code,
-          idempotencyKey: attemptKey,
-          embedded,
-          senderId: uid,
-          sender: {
-            name: sName.trim(),
-            email: sEmail.trim(),
-            phone: sPhone.trim(),
-            address: sAddr.trim(),
-            city: sCity.trim(),
-            postal: sPostal.trim(),
-            country: sCountry,
-          },
-          receiver: {
-            name: rName.trim(),
-            email: rEmail.trim(),
-            phone: rPhone.trim(),
-            address: rAddr.trim(),
-            city: rCity.trim(),
-            postal: rPostal.trim(),
-            country: rCountry,
-          },
-          weightKg: Number(pKg) || 0.1,
-          lengthCm: Number(pL) || 0,
-          widthCm: Number(pW) || 0,
-          heightCm: Number(pH) || 0,
-          packageType: pType,
-          contents: pDesc.trim(),
-          declaredValue: declaredNum,
-          service,
-          paymentMethod,
-          photos: uploadedPhotoUrls,
-        }),
+      console.log("[ShipWizard] Starting booking", {
+        paymentMethod,
+        attemptKey,
+        photoCount: photos.length,
       });
 
-      const data = await res.json().catch(() => ({}));
-      if (res.status === 401) {
-        throw new Error("SESSION_EXPIRED");
-      }
-      if (!res.ok) {
-        throw new Error(data.error || "Could not create booking.");
-      }
+      const runBookingSteps = async () => {
+        const token =
+          freshIdToken || (await user?.getIdToken().catch(() => null)) || "";
+        if (!token) {
+          throw new Error("SESSION_EXPIRED");
+        }
+
+        const code = await reserveTrackingCode();
+        console.log("[ShipWizard] Tracking code prepared", { code });
+
+        let uploadedPhotoUrls: string[];
+        try {
+          uploadedPhotoUrls = await Promise.all(
+            photos.map((photo, index) =>
+              uploadShipmentPhotoBlob({
+                code,
+                index,
+                blob: photo.blob,
+                fallbackDataUrl: photo.fallbackDataUrl,
+              })
+            )
+          );
+        } catch (uploadErr) {
+          throw new Error(
+            uploadErr instanceof Error
+              ? `Photo upload failed: ${uploadErr.message}`
+              : "Could not upload item photos. Please try again."
+          );
+        }
+
+        if (!uploadedPhotoUrls.length) {
+          throw new Error("At least 1 uploaded item photo is required.");
+        }
+        console.log("[ShipWizard] Photos ready, calling /api/bookings", {
+          count: uploadedPhotoUrls.length,
+        });
+
+        const res = await fetch("/api/bookings", {
+          method: "POST",
+          signal: controller.signal,
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            code,
+            idempotencyKey: attemptKey,
+            embedded,
+            senderId: uid,
+            sender: {
+              name: sName.trim(),
+              email: sEmail.trim(),
+              phone: sPhone.trim(),
+              address: sAddr.trim(),
+              city: sCity.trim(),
+              postal: sPostal.trim(),
+              country: sCountry,
+            },
+            receiver: {
+              name: rName.trim(),
+              email: rEmail.trim(),
+              phone: rPhone.trim(),
+              address: rAddr.trim(),
+              city: rCity.trim(),
+              postal: rPostal.trim(),
+              country: rCountry,
+            },
+            weightKg: Number(pKg) || 0.1,
+            lengthCm: Number(pL) || 0,
+            widthCm: Number(pW) || 0,
+            heightCm: Number(pH) || 0,
+            packageType: pType,
+            contents: pDesc.trim(),
+            declaredValue: declaredNum,
+            service,
+            paymentMethod,
+            photos: uploadedPhotoUrls,
+          }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+        console.log("[ShipWizard] /api/bookings response", {
+          status: res.status,
+          ok: res.ok,
+          awaitingPayment: data?.awaitingPayment,
+          paymentChannel: data?.paymentChannel,
+        });
+
+        if (res.status === 401) {
+          throw new Error("SESSION_EXPIRED");
+        }
+        if (!res.ok) {
+          throw new Error(data.error || "Could not create booking.");
+        }
+
+        return { code, data };
+      };
+
+      const { code, data } = await Promise.race([
+        runBookingSteps(),
+        timeoutPromise,
+      ]);
 
       if (data.paymentChannel === "pay_on_pickup" || !data.awaitingPayment) {
         const bundled: ShipmentRecord | undefined = data.shipment
@@ -661,7 +699,7 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
           : undefined;
         await finishBookingSuccess(
           data.trackingCode || code,
-          "Pay on pickup",
+          "Booked, payment due at pickup",
           bundled
         );
         return;
@@ -673,55 +711,79 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
 
       const bookingId = String(data.bookingId);
       const trackingCode = String(data.trackingCode || code);
+      const checkoutUrl = String(data.checkoutUrl);
 
       setConfirmingPayment({
         bookingId,
         trackingCode,
         totalUsd: Number(data.totalUsd || activeQuote.total),
+        checkoutUrl,
         overlayOpened: true,
         statusMessage: "Complete payment in the secure Bachs window…",
       });
 
       attachBookingListeners(bookingId, trackingCode);
 
+      console.log("[ShipWizard] Opening Bachs checkout", { trackingCode });
       let completedEventSeen = false;
-      await openBachsOverlay(data.checkoutUrl, (evType) => {
-        if (evType === "checkout.completed") {
-          completedEventSeen = true;
+      await openBachsOverlay(
+        checkoutUrl,
+        (evType) => {
+          if (evType === "checkout.completed") {
+            completedEventSeen = true;
+            setConfirmingPayment((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    statusMessage:
+                      "Confirming your payment… Waiting for Bachs webhook verification.",
+                  }
+                : prev
+            );
+          } else if (evType === "checkout.failed" || evType === "checkout.error") {
+            cleanupBookingListeners();
+            setConfirmingPayment(null);
+            setSubmitError(
+              "Payment was not completed. Please check your details and try again."
+            );
+          } else if (evType === "checkout.closed") {
+            if (completedEventSeen) return;
+            window.setTimeout(() => {
+              setConfirmingPayment((prev) => {
+                if (!prev) return prev;
+                cleanupBookingListeners();
+                setCancelNotice(
+                  "Payment not completed — your details are preserved."
+                );
+                return null;
+              });
+            }, 1500);
+          }
+        },
+        (_url, reason) => {
           setConfirmingPayment((prev) =>
             prev
               ? {
                   ...prev,
+                  overlayOpened: false,
+                  fallbackNotice: reason,
                   statusMessage:
-                    "Confirming your payment… Waiting for Bachs webhook verification.",
+                    "Complete payment in the Bachs checkout tab below, then return here while webhook confirms.",
                 }
               : prev
           );
-        } else if (evType === "checkout.failed" || evType === "checkout.error") {
-          cleanupBookingListeners();
-          setConfirmingPayment(null);
-          setSubmitError(
-            "Payment was not completed. Please check your card/bank details and try again."
-          );
-        } else if (evType === "checkout.closed") {
-          if (completedEventSeen) return;
-          window.setTimeout(() => {
-            setConfirmingPayment((prev) => {
-              if (!prev) return prev;
-              cleanupBookingListeners();
-              setCancelNotice(
-                "Payment not completed — your details are preserved."
-              );
-              return null;
-            });
-          }, 1500);
         }
-      });
+      );
     } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") {
-        setSubmitError(
-          "Booking request timed out after 30 seconds. Please check your connection and try again."
-        );
+      console.error("[ShipWizard] Booking failed:", err);
+      if (
+        err instanceof Error &&
+        (err.name === "AbortError" || err.message === "BOOKING_TIMEOUT")
+      ) {
+        const timeoutMsg =
+          "Booking request timed out after 30 seconds. Please check your connection and try again.";
+        setSubmitError(timeoutMsg);
+        toast.error(timeoutMsg);
       } else if (err instanceof Error && err.message === "SESSION_EXPIRED") {
         openAuth({
           mode: "login",
@@ -739,7 +801,7 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
         toast.error(msg);
       }
     } finally {
-      window.clearTimeout(timer);
+      if (timerHandle !== undefined) window.clearTimeout(timerHandle);
       submitLockRef.current = false;
       setSubmitting(false);
     }
@@ -886,6 +948,11 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
             CONFIRMING YOUR PAYMENT…
           </h1>
           <p className="lead">{confirmingPayment.statusMessage}</p>
+          {confirmingPayment.fallbackNotice && (
+            <p style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 8 }}>
+              {confirmingPayment.fallbackNotice}
+            </p>
+          )}
 
           <div className="ticket" style={{ marginTop: 22 }}>
             <div className="tt">
@@ -897,29 +964,39 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
             </div>
           </div>
 
-          {confirmingPayment.timedOut && (
-            <div className="acts" style={{ justifyContent: "center" }}>
+          <div className="acts" style={{ justifyContent: "center", marginTop: 18 }}>
+            <a
+              href={confirmingPayment.checkoutUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="sw-btn sw-btn-em sw-btn-lg"
+            >
+              <CreditCard className="w-4 h-4" />
+              Continue to payment
+              <ExternalLink className="w-3.5 h-3.5" />
+            </a>
+            {confirmingPayment.timedOut && (
               <Link
-                className="sw-btn sw-btn-em sw-btn-lg"
+                className="sw-btn sw-btn-ghost sw-btn-lg"
                 to={trackHref(confirmingPayment.trackingCode)}
               >
                 Check tracking status →
               </Link>
-              <button
-                type="button"
-                className="sw-btn sw-btn-ghost sw-btn-lg"
-                onClick={() => {
-                  cleanupBookingListeners();
-                  setConfirmingPayment(null);
-                  setCancelNotice(
-                    "Payment confirmation timed out — your form is preserved. Try again or check Track."
-                  );
-                }}
-              >
-                Back to checkout
-              </button>
-            </div>
-          )}
+            )}
+            <button
+              type="button"
+              className="sw-btn sw-btn-ghost sw-btn-lg"
+              onClick={() => {
+                cleanupBookingListeners();
+                setConfirmingPayment(null);
+                setCancelNotice(
+                  "Payment not completed — your details are preserved."
+                );
+              }}
+            >
+              Back to checkout
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -1015,8 +1092,6 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
     );
   }
 
-  const bachsReady =
-    checkoutOptions.bachsEnabled && checkoutOptions.bachsProductConfigured;
   const paymentChoices: {
     value: "Pay now" | "Pay on delivery";
     label: string;
@@ -1029,14 +1104,14 @@ export function ShipWizard({ embedded = false }: { embedded?: boolean }) {
       label: "Pay now",
       sub: "Instant digital settlement",
       icon: Zap,
-      enabled: true,
+      enabled: checkoutOptions.bachsEnabled,
     },
     {
       value: "Pay on delivery",
       label: "Pay on delivery",
       sub: "Settle when courier delivers",
       icon: Truck,
-      enabled: true,
+      enabled: checkoutOptions.payOnPickupEnabled,
     },
   ];
 

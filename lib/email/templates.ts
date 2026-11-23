@@ -188,7 +188,7 @@ export function buildReceiverInviteEmail(params: {
   const hintHtml = `Use <a href="mailto:${escapeHtml(receiverEmail)}" style="color:#34D399;text-decoration:none;font-weight:600;">${escapeHtml(receiverEmail)}</a> and your parcel finds you. Already made an account? <a href="${escapeHtml(loginUrl)}" style="color:#34D399;text-decoration:underline;font-weight:600;">Sign in</a>.`;
 
   const footerHtml = `
-    You are getting this because ${escapeHtml(params.senderFullName)} entered your email when booking a ShipWell shipment. Questions? Reply to this email.
+    You are getting this because ${escapeHtml(params.senderFullName)} entered your email when booking a ShipWell shipment. Questions? Email <a href="mailto:support@mail.shipwell.cc" style="color:#94A3B8;text-decoration:underline;">support@mail.shipwell.cc</a>.
     <br><br>
     ShipWell Logistics Ltd. &middot; 14 Broadwick Street, London W1F 8HS
     <br>
@@ -272,7 +272,7 @@ export function buildReceiverOnItsWayEmail(params: {
   const hintHtml = `Not you? <a href="${escapeHtml(switchAccountUrl)}" style="color:#34D399;text-decoration:underline;font-weight:600;">Sign in with a different account</a>.`;
 
   const footerHtml = `
-    You are getting this because ${escapeHtml(params.senderFullName)} entered ${escapeHtml(params.receiverEmail)} when booking a ShipWell shipment. Questions? Reply to this email.
+    You are getting this because ${escapeHtml(params.senderFullName)} entered ${escapeHtml(params.receiverEmail)} when booking a ShipWell shipment. Questions? Email <a href="mailto:support@mail.shipwell.cc" style="color:#94A3B8;text-decoration:underline;">support@mail.shipwell.cc</a>.
     <br><br>
     ShipWell Logistics Ltd. &middot; 14 Broadwick Street, London W1F 8HS
     ${params.inviteToken ? `<br><a href="${escapeHtml(unknownSenderUrl)}" style="color:#94A3B8;text-decoration:underline;">I don&apos;t know this sender</a>` : ""}
@@ -355,7 +355,7 @@ export function buildSenderBookingEmail(params: {
       ctaUrl: trackUrl,
       fallbackUrl: trackUrl,
       footerHtml:
-        "Questions? Reply to this email. &middot; ShipWell Logistics Ltd.",
+        'Questions? Email <a href="mailto:support@mail.shipwell.cc" style="color:#94A3B8;text-decoration:underline;">support@mail.shipwell.cc</a> &middot; ShipWell Logistics Ltd.',
     }),
     text: `Your shipment is booked\n\nTracking code: ${code}\nRoute: ${params.routeLabel}\nEstimated delivery: ${params.etaLabel}\nTotal: ${params.totalFormatted}\n\nWe've emailed ${params.receiverFullName} at ${params.receiverEmail} so they can follow it too.\n\nView shipment: ${trackUrl}`,
   };
@@ -419,7 +419,7 @@ export function buildShipmentUpdateEmail(params: {
       ctaUrl: deepUrl,
       fallbackUrl: deepUrl,
       footerHtml:
-        "You are receiving updates for an active ShipWell shipment. Questions? Reply to this email.",
+        'You are receiving updates for an active ShipWell shipment. Questions? Email <a href="mailto:support@mail.shipwell.cc" style="color:#94A3B8;text-decoration:underline;">support@mail.shipwell.cc</a>.',
     }),
     text: `${params.headline}\n\nHello ${first}, update for ${code}:\n${params.details}\n\nOpen: ${deepUrl}`,
   };
@@ -469,7 +469,7 @@ export function buildCustomsChargeEmail(params: {
       ctaUrl: payUrl,
       fallbackUrl: payUrl,
       footerHtml:
-        "Mandatory clearance payment notification for an active ShipWell shipment. Questions? Reply to this email.",
+        'Mandatory clearance payment notification for an active ShipWell shipment. Questions? Email <a href="mailto:support@mail.shipwell.cc" style="color:#94A3B8;text-decoration:underline;">support@mail.shipwell.cc</a>.',
     }),
     text: `Action required on ${code}: ${params.chargeType} (${params.amountFormatted})\n\n${params.note || ""}\nPay at: ${payUrl}`,
   };
@@ -519,7 +519,7 @@ export function buildChargePaidEmail(params: {
       ctaUrl: trackUrl,
       fallbackUrl: trackUrl,
       footerHtml:
-        "Thank you for using ShipWell. Questions? Reply to this email.",
+        'Thank you for using ShipWell. Questions? Email <a href="mailto:support@mail.shipwell.cc" style="color:#94A3B8;text-decoration:underline;">support@mail.shipwell.cc</a>.',
     }),
     text: `Payment confirmed for ${code}: ${params.chargeType} (${params.amountFormatted})\nRef: ${params.paymentId}\n${statusLine}\nView: ${trackUrl}`,
   };
@@ -555,7 +555,8 @@ export function buildHoldReleasedEmail(params: {
       ctaLabel: "Track live",
       ctaUrl: trackUrl,
       fallbackUrl: trackUrl,
-      footerHtml: "ShipWell Logistics Ltd. · Questions? Reply to this email.",
+      footerHtml:
+        'ShipWell Logistics Ltd. &middot; Questions? Email <a href="mailto:support@mail.shipwell.cc" style="color:#94A3B8;text-decoration:underline;">support@mail.shipwell.cc</a>.',
     }),
     text: `Hold released for ${code}. Estimated delivery: ${params.etaLabel}\nTrack: ${trackUrl}`,
   };
@@ -594,9 +595,9 @@ export function buildSupportReplyEmail(params: {
       ctaLabel: "View in dashboard",
       ctaUrl: threadUrl,
       fallbackUrl: threadUrl,
-      footerHtml: `Ticket ${escapeHtml(params.ticketCode)} · Reply directly to support@info.shipwell.cc`,
+      footerHtml: `Ticket ${escapeHtml(params.ticketCode)} · Reply directly to <a href="mailto:support@mail.shipwell.cc" style="color:#94A3B8;text-decoration:underline;">support@mail.shipwell.cc</a>`,
     }),
-    text: `Hello ${first},\n\n${params.replyBody}\n\n---\nTicket ${params.ticketCode}\nView conversation: ${threadUrl}`,
+    text: `Hello ${first},\n\n${params.replyBody}\n\n---\nTicket ${params.ticketCode} · Support: support@mail.shipwell.cc\nView conversation: ${threadUrl}`,
   };
 }
 

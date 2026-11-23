@@ -155,10 +155,10 @@ export default function AdminSettingsPage() {
 
   // Resend fields
   const [resendFrom, setResendFrom] = useState(
-    "ShipWell <notifications@info.shipwell.cc>"
+    "ShipWell <notifications@mail.shipwell.cc>"
   );
-  const [resendReplyTo, setResendReplyTo] = useState("support@info.shipwell.cc");
-  const [resendInbox, setResendInbox] = useState("support@info.shipwell.cc");
+  const [resendReplyTo, setResendReplyTo] = useState("support@mail.shipwell.cc");
+  const [resendInbox, setResendInbox] = useState("support@mail.shipwell.cc");
   const [resendKeyInput, setResendKeyInput] = useState("");
   const [resendInboundInput, setResendInboundInput] = useState("");
   const [testEmailTarget, setTestEmailTarget] = useState(() => user?.email || "");
@@ -204,9 +204,9 @@ export default function AdminSettingsPage() {
     setDefaultCurrency(s.bachs.defaultCurrency || "USD");
     setExpiryMins(String(s.bachs.checkoutExpiryMinutes || 60));
 
-    setResendFrom(s.resend.from || "ShipWell <notifications@info.shipwell.cc>");
-    setResendReplyTo(s.resend.replyTo || "support@info.shipwell.cc");
-    setResendInbox(s.resend.supportInbox || "support@info.shipwell.cc");
+    setResendFrom(s.resend.from || "ShipWell <notifications@mail.shipwell.cc>");
+    setResendReplyTo(s.resend.replyTo || "support@mail.shipwell.cc");
+    setResendInbox(s.resend.supportInbox || "support@mail.shipwell.cc");
 
     setStripeEnabled(Boolean(s.stripe.enabled));
     setStripePublic(s.stripe.publicKey || "");
@@ -857,8 +857,8 @@ export default function AdminSettingsPage() {
       ) : tab === "resend" ? (
         <div className="ad-card">
           <div className="ad-ch">
-            <b>Resend Outbound &amp; Inbound Email (info.shipwell.cc)</b>
-            <small>Notifications &amp; Support replies</small>
+            <b>Domain: mail.shipwell.cc (sending and receiving)</b>
+            <small>Resend Outbound &amp; Inbound Email</small>
           </div>
           <form
             className="ad-cb ad-form"
@@ -911,7 +911,7 @@ export default function AdminSettingsPage() {
               id="res-api"
               label="Resend API key"
               placeholder="re_..."
-              hint="Verify domain info.shipwell.cc inside Resend first"
+              hint="Domain mail.shipwell.cc verified in Resend for sending and receiving"
               mask={settings?.resend.secrets.apiKey}
               value={resendKeyInput}
               onChange={setResendKeyInput}
@@ -919,9 +919,9 @@ export default function AdminSettingsPage() {
 
             <SecretInputField
               id="res-inb"
-              label="Resend Inbound webhook signing secret (optional)"
+              label="Resend Inbound webhook signing secret (whsec_...)"
               placeholder="whsec_..."
-              hint="Point Resend Inbound webhook to https://shipwell.cc/api/inbound-email"
+              hint="Point Resend Inbound webhook to your Cloud Function inboundEmail URL (or /api/inbound-email)"
               mask={settings?.resend.secrets.inboundWebhookSecret}
               value={resendInboundInput}
               onChange={setResendInboundInput}
@@ -1184,8 +1184,7 @@ export default function AdminSettingsPage() {
                 onChange={(e) => setEnableBachsBooking(e.target.checked)}
               />
               <span>
-                Allow Card &amp; Bank Transfer (Bachs Checkout) on Ship booking
-                checkout
+                Allow Pay now (Bachs Checkout) on Ship booking checkout
               </span>
             </label>
 
@@ -1196,7 +1195,7 @@ export default function AdminSettingsPage() {
                 onChange={(e) => setEnablePayOnPickup(e.target.checked)}
               />
               <span>
-                Allow Pay on pickup during Ship booking checkout
+                Allow Pay on delivery during Ship booking checkout
               </span>
             </label>
 

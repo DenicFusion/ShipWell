@@ -986,37 +986,68 @@ export async function getCheckoutOptions() {
   const apiKey = getActiveBachsApiKey(env, secrets);
   const productId = getActiveBachsProductId(env, publicSettings.bachs);
   return {
+    ok: true,
     bachsEnabled: publicSettings.routing.enableBachsBooking !== false,
     bachsConfigured: Boolean(apiKey && productId),
+    bachsProductConfigured: Boolean(productId),
     payOnPickupEnabled: publicSettings.routing.enablePayOnPickup !== false,
     environment: env,
     currency: publicSettings.bachs.defaultCurrency || "USD",
   };
 }
 
+export interface CreateBookingPartyInput {
+  name?: string;
+  email?: string;
+  phone?: string;
+  address?: string;
+  city?: string;
+  postal?: string;
+  country?: string;
+}
+
 export interface CreateBookingInput {
+  code?: string;
   idempotencyKey?: string;
-  senderName: string;
-  senderEmail: string;
-  senderPhone: string;
-  senderAddress: string;
-  senderCity: string;
+  embedded?: boolean;
+  sender?: CreateBookingPartyInput;
+  receiver?: CreateBookingPartyInput;
+  senderName?: string;
+  senderEmail?: string;
+  senderPhone?: string;
+  senderAddress?: string;
+  senderCity?: string;
   senderPostal?: string;
-  senderCountry: string;
-  receiverName: string;
-  receiverEmail: string;
-  receiverPhone: string;
-  receiverAddress: string;
-  receiverCity: string;
+  senderCountry?: string;
+  receiverName?: string;
+  receiverEmail?: string;
+  receiverPhone?: string;
+  receiverAddress?: string;
+  receiverCity?: string;
   receiverPostal?: string;
-  receiverCountry: string;
-  service: ServiceTier;
-  weightKg: number;
-  packageType: string;
-  contents: string;
-  declaredValue: number;
-  photos: string[];
-  paymentChannel: BookingPaymentChannel;
+  receiverCountry?: string;
+  service?: ServiceTier;
+  weightKg?: number;
+  lengthCm?: number;
+  widthCm?: number;
+  heightCm?: number;
+  packageType?: string;
+  contents?: string;
+  declaredValue?: number;
+  photos?: string[];
+  paymentMethod?: string;
+  paymentChannel?: BookingPaymentChannel;
+}
+
+function isAcceptedPhotoUrl(val: unknown): val is string {
+  if (typeof val !== "string") return false;
+  const s = val.trim();
+  if (!s) return false;
+  if (/^https?:\/\//i.test(s)) return s.length <= 2048;
+  if (/^data:image\/(jpeg|jpg|png|webp);base64,/i.test(s)) {
+    return s.length <= 345000;
+  }
+  return false;
 }
 
 export async function createServerBooking(params: {
@@ -1025,14 +1056,19 @@ export async function createServerBooking(params: {
   origin: string;
 }): Promise<{
   ok: boolean;
+  awaitingPayment: boolean;
   code: string;
+  trackingCode: string;
   bookingId: string;
   total: number;
+  totalUsd: number;
   currency: string;
-  paymentMethod: "bachs" | "pay_on_pickup";
+  paymentMethod: BookingRecord["paymentMethod"];
+  paymentChannel: BookingPaymentChannel;
   paymentStatus: BookingRecord["paymentStatus"];
   checkoutUrl?: string | null;
   checkoutId?: string | null;
+  shipment?: ShipmentRecord;
 }> {
   const { actor, body, origin } = params;
   let db: Firestore;
@@ -1047,87 +1083,176 @@ export async function createServerBooking(params: {
     throw err;
   }
 
-  const rawIdem = String(body.idempotencyKey || "").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64);
-  const bookingId = rawIdem.length >= 8 ? rawIdem : `bk_${crypto.randomBytes(8).toString("hex")}`;
+  const rawIdem = String(body.idempotencyKey || "")
+    .replace(/[^a-zA-Z0-9_-]/g, "")
+    .slice(0, 64);
+  const bookingId =
+    rawIdem.length >= 8 ? rawIdem : `bk_${crypto.randomBytes(8).toString("hex")}`;
   const bookingRef = db.collection("bookings").doc(bookingId);
 
+  let existingBookingSnap;
+  try {
+    existingBookingSnap = await bookingRef.get();
+  } catch (err) {
+    if (isAdminIamError(err)) {
+      throw new AdminSdkUnavailableError(
+        "Creating bookings requires Firebase Admin SDK access on your Blaze-plan project."
+      );
+    }
+    throw err;
+  }
+
   // Return existing booking cleanly on duplicate request / double-click
-  const existingBookingSnap = await bookingRef.get();
   if (existingBookingSnap.exists) {
     const existing = existingBookingSnap.data() as BookingRecord;
     if (existing.uid !== actor.uid && !actor.isAdmin) {
       throw Object.assign(new Error("Booking reference mismatch."), { status: 403 });
     }
+    const existingShipSnap = await db
+      .collection("shipments")
+      .doc(existing.code)
+      .get()
+      .catch(() => null);
+    const existingShipment =
+      existingShipSnap && existingShipSnap.exists
+        ? (existingShipSnap.data() as ShipmentRecord)
+        : undefined;
+    const isPayLater = existing.paymentStatus === "pay_on_pickup";
     return {
       ok: true,
+      awaitingPayment: !isPayLater && existing.paymentStatus === "awaiting_payment",
       code: existing.code,
+      trackingCode: existing.code,
       bookingId: existing.id,
       total: existing.total,
+      totalUsd: existing.total,
       currency: existing.currency,
       paymentMethod: existing.paymentMethod,
+      paymentChannel: existing.paymentChannel,
       paymentStatus: existing.paymentStatus,
       checkoutUrl: existing.checkoutUrl || null,
       checkoutId: existing.checkoutId || null,
+      ...(isPayLater && existingShipment ? { shipment: existingShipment } : {}),
     };
   }
 
-  const senderName = String(body.senderName || "").trim();
-  const senderEmail = normalizeEmail(body.senderEmail || actor.email);
-  const senderAddress = String(body.senderAddress || "").trim();
-  const senderCity = String(body.senderCity || "").trim();
-  const senderCountry = String(body.senderCountry || "").trim();
+  const sIn = body.sender || {};
+  const rIn = body.receiver || {};
 
-  const receiverName = String(body.receiverName || "").trim();
-  const receiverEmail = normalizeEmail(body.receiverEmail || "");
-  const receiverAddress = String(body.receiverAddress || "").trim();
-  const receiverCity = String(body.receiverCity || "").trim();
-  const receiverCountry = String(body.receiverCountry || "").trim();
+  const senderName = String(sIn.name ?? body.senderName ?? "").trim();
+  const senderEmail = normalizeEmail(sIn.email ?? body.senderEmail ?? actor.email);
+  const senderPhoneRaw = String(sIn.phone ?? body.senderPhone ?? "").trim();
+  const senderAddress = String(sIn.address ?? body.senderAddress ?? "").trim();
+  const senderCity = String(sIn.city ?? body.senderCity ?? "").trim();
+  const senderPostal = String(sIn.postal ?? body.senderPostal ?? "").trim();
+  const senderCountry = String(sIn.country ?? body.senderCountry ?? "").trim();
 
-  if (!senderName || !senderEmail.includes("@") || !senderAddress || !senderCity || !COUNTRIES.includes(senderCountry)) {
-    throw Object.assign(new Error("Please complete all required sender details."), { status: 400 });
+  const receiverName = String(rIn.name ?? body.receiverName ?? "").trim();
+  const receiverEmail = normalizeEmail(rIn.email ?? body.receiverEmail ?? "");
+  const receiverPhoneRaw = String(rIn.phone ?? body.receiverPhone ?? "").trim();
+  const receiverAddress = String(rIn.address ?? body.receiverAddress ?? "").trim();
+  const receiverCity = String(rIn.city ?? body.receiverCity ?? "").trim();
+  const receiverPostal = String(rIn.postal ?? body.receiverPostal ?? "").trim();
+  const receiverCountry = String(rIn.country ?? body.receiverCountry ?? "").trim();
+
+  if (
+    !senderName ||
+    !senderEmail.includes("@") ||
+    !senderAddress ||
+    !senderCity ||
+    !COUNTRIES.includes(senderCountry)
+  ) {
+    throw Object.assign(new Error("Please complete all required sender details."), {
+      status: 400,
+    });
   }
-  if (!receiverName || !receiverEmail.includes("@") || !receiverAddress || !receiverCity || !COUNTRIES.includes(receiverCountry)) {
-    throw Object.assign(new Error("Please complete all required receiver details."), { status: 400 });
+  if (
+    !receiverName ||
+    !receiverEmail.includes("@") ||
+    !receiverAddress ||
+    !receiverCity ||
+    !COUNTRIES.includes(receiverCountry)
+  ) {
+    throw Object.assign(new Error("Please complete all required receiver details."), {
+      status: 400,
+    });
   }
 
-  const parsedSenderPhone = parsePhoneNumberFromString(String(body.senderPhone || "").trim());
+  const parsedSenderPhone = parsePhoneNumberFromString(senderPhoneRaw);
   if (!parsedSenderPhone || !parsedSenderPhone.isValid()) {
-    throw Object.assign(new Error("Enter a valid sender phone number with country code."), { status: 400 });
+    throw Object.assign(
+      new Error("Enter a valid sender phone number with country code."),
+      { status: 400 }
+    );
   }
-  const parsedReceiverPhone = parsePhoneNumberFromString(String(body.receiverPhone || "").trim());
+  const parsedReceiverPhone = parsePhoneNumberFromString(receiverPhoneRaw);
   if (!parsedReceiverPhone || !parsedReceiverPhone.isValid()) {
-    throw Object.assign(new Error("Enter a valid receiver phone number with country code."), { status: 400 });
+    throw Object.assign(
+      new Error("Enter a valid receiver phone number with country code."),
+      { status: 400 }
+    );
   }
 
   const contents = String(body.contents || "").trim().slice(0, 240);
   const packageType = String(body.packageType || "Parcel").trim().slice(0, 60);
-  const weightKg = Number(body.weightKg);
+  const actualKg = Number(body.weightKg);
+  const volKg =
+    ((Number(body.lengthCm) || 0) *
+      (Number(body.widthCm) || 0) *
+      (Number(body.heightCm) || 0)) /
+    5000;
+  const weightKg = Math.max(actualKg || 0, volKg || 0);
   const declaredValue = Math.max(0, Number(body.declaredValue) || 0);
   const service: ServiceTier =
-    body.service === "economy" || body.service === "express" || body.service === "standard"
+    body.service === "economy" ||
+    body.service === "express" ||
+    body.service === "standard"
       ? body.service
       : "standard";
 
-  if (!contents || !Number.isFinite(weightKg) || weightKg < 0.1 || weightKg > 50000) {
-    throw Object.assign(new Error("Enter valid parcel contents and weight (0.1–50,000 kg)."), { status: 400 });
+  if (!contents || !Number.isFinite(actualKg) || actualKg < 0.1 || weightKg > 50000) {
+    throw Object.assign(
+      new Error("Enter valid parcel contents and weight (0.1–50,000 kg)."),
+      { status: 400 }
+    );
   }
 
   const photos = Array.isArray(body.photos)
-    ? body.photos.filter((u): u is string => typeof u === "string" && /^https?:\/\//i.test(u)).slice(0, 4)
+    ? body.photos.filter(isAcceptedPhotoUrl).slice(0, 4)
     : [];
   if (photos.length === 0) {
-    throw Object.assign(new Error("At least 1 uploaded item photo is required."), { status: 400 });
+    throw Object.assign(new Error("At least 1 uploaded item photo is required."), {
+      status: 400,
+    });
   }
 
-  const rawMethod = String(body.paymentMethod || body.paymentChannel || "").trim().toLowerCase();
+  const rawMethod = String(body.paymentMethod || body.paymentChannel || "")
+    .trim()
+    .toLowerCase();
   const isPayOnDelivery =
     rawMethod.includes("delivery") ||
     rawMethod.includes("pickup") ||
     rawMethod.includes("later");
-  const isPayOnPickup = isPayOnDelivery;
 
-  const paymentMethodLabel = isPayOnDelivery ? "Pay on delivery" : "Pay now";
-  const channel: BookingPaymentChannel = isPayOnDelivery ? "pay_on_delivery" : "pay_now";
+  const { publicSettings, secrets } = await loadSettingsBundle();
+
+  if (isPayOnDelivery && publicSettings.routing.enablePayOnPickup === false) {
+    throw Object.assign(
+      new Error("Pay on delivery is currently disabled in store settings."),
+      { status: 400 }
+    );
+  }
+  if (!isPayOnDelivery && publicSettings.routing.enableBachsBooking === false) {
+    throw Object.assign(
+      new Error("Pay now via Bachs is currently disabled. Please select Pay on delivery."),
+      { status: 400 }
+    );
+  }
+
+  const paymentMethodLabel: BookingRecord["paymentMethod"] = isPayOnDelivery
+    ? "Pay on delivery"
+    : "Pay now";
+  const channel: BookingPaymentChannel = isPayOnDelivery ? "pay_on_pickup" : "pay_now";
 
   // Strictly calculate price on the server
   const quote = calculateShippingPricing(
@@ -1141,12 +1266,66 @@ export async function createServerBooking(params: {
   const env = publicSettings.bachs.environment;
   const now = Date.now();
   const eta = addBusinessDays(now, quote.days[1]).getTime();
-  const code = generateTrackingCode();
-  const reference = `booking_${bookingId}`;
 
-  const checkoutId: string | null = null;
-  const checkoutUrl: string | null = null;
-  const checkoutExpiresAt: number | null = null;
+  let code = generateTrackingCode();
+  const candidateCode = String(body.code || "").trim().toUpperCase();
+  if (isValidTrackingCode(candidateCode)) {
+    try {
+      const existingShip = await db.collection("shipments").doc(candidateCode).get();
+      if (!existingShip.exists) {
+        code = candidateCode;
+      }
+    } catch {
+      // fall back to fresh generated code
+    }
+  }
+
+  const reference = `booking_${bookingId}`;
+  const baseOrigin = origin.replace(/\/+$/, "");
+
+  let checkoutId: string | null = null;
+  let checkoutUrl: string | null = null;
+  let checkoutExpiresAt: number | null = null;
+
+  if (!isPayOnDelivery) {
+    const apiKey = getActiveBachsApiKey(env, secrets);
+    const productId = getActiveBachsProductId(env, publicSettings.bachs);
+    if (!apiKey || !productId) {
+      throw Object.assign(
+        new Error(
+          actor.isAdmin
+            ? `Bachs is not configured: save your ${env} secret key and custom-amount product ID in Admin → Settings → Bachs.`
+            : "Online checkout is temporarily unavailable (Bachs is not configured). Please select Pay on delivery or try again shortly."
+        ),
+        { status: 400 }
+      );
+    }
+
+    const cancelPath = body.embedded ? "/dashboard/ship?cancelled=1" : "/ship?cancelled=1";
+    const session = await createBachsCheckoutSession({
+      apiKey,
+      env,
+      productId,
+      amount: quote.total,
+      customerEmail: senderEmail,
+      customerName: senderName,
+      returnUrl: `${baseOrigin}/dashboard/track/${encodeURIComponent(code)}?paid=1&booking=1`,
+      cancelUrl: `${baseOrigin}${cancelPath}`,
+      reference,
+      metadata: {
+        kind: "booking",
+        bookingId,
+        trackingCode: code,
+        uid: actor.uid,
+        channel,
+      },
+      expiresInMinutes: publicSettings.bachs.checkoutExpiryMinutes || 60,
+      idempotencyKey: `bk_${bookingId}`,
+    });
+    checkoutId = session.checkoutId;
+    checkoutUrl = session.checkoutUrl;
+    checkoutExpiresAt = session.expiresAt;
+  }
 
   const bookingDoc: BookingRecord = {
     id: bookingId,
@@ -1161,8 +1340,8 @@ export async function createServerBooking(params: {
     currency,
     paymentMethod: paymentMethodLabel,
     paymentChannel: channel,
-    paymentStatus: isPayOnDelivery ? "pay_on_delivery" : "paid",
-    bookingStatus: "confirmed",
+    paymentStatus: isPayOnDelivery ? "pay_on_pickup" : "awaiting_payment",
+    bookingStatus: isPayOnDelivery ? "confirmed" : "awaiting_payment",
     environment: env,
     checkoutId,
     checkoutUrl,
@@ -1183,7 +1362,7 @@ export async function createServerBooking(params: {
       phone: parsedSenderPhone.formatInternational(),
       address: senderAddress,
       city: senderCity,
-      postal: String(body.senderPostal || "").trim(),
+      postal: senderPostal,
       country: senderCountry,
     },
     receiver: {
@@ -1192,7 +1371,7 @@ export async function createServerBooking(params: {
       phone: parsedReceiverPhone.formatInternational(),
       address: receiverAddress,
       city: receiverCity,
-      postal: String(body.receiverPostal || "").trim(),
+      postal: receiverPostal,
       country: receiverCountry,
     },
     service,
@@ -1201,24 +1380,21 @@ export async function createServerBooking(params: {
     contents,
     declaredValue,
     priceTotal: quote.total,
-    paymentMethod:
-      channel === "pay_on_pickup"
-        ? "Pay on pickup"
-        : channel === "bank_transfer"
-          ? "Bank transfer (Bachs)"
-          : "Card (Bachs)",
+    paymentMethod: isPayOnDelivery
+      ? "Booked, payment due at pickup"
+      : "Pay now (Bachs)",
     bookingId,
-    paymentStatus: isPayOnPickup ? "pay_on_pickup" : "awaiting_payment",
+    paymentStatus: isPayOnDelivery ? "pay_on_pickup" : "awaiting_payment",
     paymentReference: reference,
     checkoutExpiresAt,
-    bookingStatus: isPayOnPickup ? "confirmed" : "awaiting_payment",
+    bookingStatus: isPayOnDelivery ? "confirmed" : "awaiting_payment",
     status: "Booked",
     eta,
     photos,
     hold: null,
     nextStop: {
-      label: isPayOnPickup
-        ? "Awaiting item review & pickup dispatch"
+      label: isPayOnDelivery
+        ? "Booked, payment due at pickup"
         : "Awaiting booking payment confirmation",
       loc: `${senderCity} Origin`,
       eta: now + 86400000,
@@ -1229,11 +1405,11 @@ export async function createServerBooking(params: {
     },
   };
 
-  const eventLabel = isPayOnPickup
-    ? "Booked (pay on pickup)"
+  const eventLabel = isPayOnDelivery
+    ? "Booked, payment due at pickup"
     : "Booking started — awaiting payment";
-  const eventNote = isPayOnPickup
-    ? `Parcel ${code} booked with Pay on pickup ($${quote.total.toFixed(2)} due at collection).`
+  const eventNote = isPayOnDelivery
+    ? `Parcel ${code} booked with payment due at pickup (${formatMoney(quote.total)}).`
     : `Booking checkout created for ${formatMoney(quote.total)} via Bachs.`;
 
   const batch = db.batch();
@@ -1278,27 +1454,44 @@ export async function createServerBooking(params: {
     createdBy: senderName || actor.email,
     createdAt: FieldValue.serverTimestamp(),
   });
-  await batch.commit();
 
-  if (isPayOnPickup) {
+  try {
+    await batch.commit();
+  } catch (err) {
+    if (isAdminIamError(err)) {
+      throw new AdminSdkUnavailableError(
+        "Creating bookings requires Firebase Admin SDK access on your Blaze-plan project."
+      );
+    }
+    throw err;
+  }
+
+  if (isPayOnDelivery) {
     await dispatchBookingConfirmationEmails({
       db,
       shipment: shipmentDoc,
-      baseUrl: origin,
+      baseUrl: baseOrigin,
       actorUid: actor.uid,
+    }).catch((err) => {
+      console.warn("[Booking] Confirmation email dispatch error:", err);
     });
   }
 
   return {
     ok: true,
+    awaitingPayment: !isPayOnDelivery,
     code,
+    trackingCode: code,
     bookingId,
     total: quote.total,
+    totalUsd: quote.total,
     currency,
-    paymentMethod,
+    paymentMethod: paymentMethodLabel,
+    paymentChannel: channel,
     paymentStatus: bookingDoc.paymentStatus,
     checkoutUrl,
     checkoutId,
+    ...(isPayOnDelivery ? { shipment: shipmentDoc } : {}),
   };
 }
 

@@ -154,8 +154,15 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
 export async function reserveTrackingCode(): Promise<string> {
   let code = generateTrackingCode();
   for (let i = 0; i < 4; i++) {
-    const existingTeaser = await getDoc(doc(db, "trackingTeasers", code));
-    if (!existingTeaser.exists()) return code;
+    try {
+      const existingTeaser = await Promise.race([
+        getDoc(doc(db, "trackingTeasers", code)),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 3500)),
+      ]);
+      if (!existingTeaser || !existingTeaser.exists()) return code;
+    } catch {
+      return code;
+    }
     code = generateTrackingCode();
   }
   return code;

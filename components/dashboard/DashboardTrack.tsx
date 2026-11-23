@@ -311,7 +311,7 @@ function FullTrackedContent({
     const ps = shipment.paymentStatus;
     if (!ps) return null;
     if (ps === "paid") return { tone: "g", label: "Booking paid" };
-    if (ps === "pay_on_pickup") return { tone: "b", label: "Pay on pickup" };
+    if (ps === "pay_on_pickup") return { tone: "b", label: "Booked, payment due at pickup" };
     if (ps === "refunded") return { tone: "n", label: "Booking refunded" };
     return { tone: "a", label: "Awaiting payment" };
   }, [shipment.paymentStatus]);
@@ -362,14 +362,14 @@ function FullTrackedContent({
               {shipment.paymentStatus === "paid"
                 ? "Payment confirmed — shipment booked"
                 : shipment.paymentStatus === "pay_on_pickup"
-                  ? "Booking confirmed — pay at pickup"
+                  ? "Booked, payment due at pickup"
                   : "Confirming your payment…"}
             </b>
             <small>
               {shipment.paymentStatus === "paid"
                 ? "Your payment has been verified and the recipient has been notified."
                 : shipment.paymentStatus === "pay_on_pickup"
-                  ? "Courier collection is booked. Payment is collected at pickup."
+                  ? "Courier collection is booked. Payment is collected at pickup / delivery."
                   : "Waiting for live webhook confirmation from Bachs. This updates automatically."}
             </small>
           </div>

@@ -357,7 +357,7 @@ export default function AdminMessagesPage() {
                   className="field"
                   value={replyText}
                   onChange={(e) => setReplyText(e.target.value)}
-                  placeholder={`Reply to ${activeThread.userEmail} (emailed via support@info.shipwell.cc)...`}
+                  placeholder={`Reply to ${activeThread.userEmail} (emailed via support@mail.shipwell.cc)...`}
                   rows={2}
                 />
                 <button
@@ -382,7 +382,7 @@ export default function AdminMessagesPage() {
               <h3>SELECT A CONVERSATION</h3>
               <p>
                 Every message submitted through the Contact modal, Dashboard
-                Support, or emailed to <code>support@info.shipwell.cc</code>{" "}
+                Support, or emailed to <code>support@mail.shipwell.cc</code>{" "}
                 threads here live.
               </p>
             </div>
