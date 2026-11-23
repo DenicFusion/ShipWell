@@ -559,7 +559,7 @@ async function settleLinkedBookingAndShipment(params: {
       return;
     }
 
-    const bookingStatusMap: Record<typeof targetStatus, BookingRecord["bookingStatus"]> = {
+    const bookingStatusMap: Record<string, BookingRecord["bookingStatus"]> = {
       paid: "confirmed",
       pending_review: "awaiting_payment",
       rejected: "awaiting_payment",

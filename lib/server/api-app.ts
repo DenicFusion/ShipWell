@@ -1293,7 +1293,7 @@ export function createApiApp(): express.Express {
       const eventKey = String(
         svixId ||
           payload.id ||
-          inner.email_id ||
+          (inner as Record<string, any>).email_id ||
           crypto.createHash("sha256").update(rawText).digest("hex").slice(0, 32)
       ).replace(/[^a-zA-Z0-9_-]/g, "_");
 

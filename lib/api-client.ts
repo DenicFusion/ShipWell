@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import { StepError } from "@/lib/error-logger";
 
 const FUNCTIONS_BASE =

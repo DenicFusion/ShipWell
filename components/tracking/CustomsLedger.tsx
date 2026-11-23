@@ -38,6 +38,7 @@ const GATEWAY_LABEL: Record<GatewayId, string> = {
   bachs: "Bachs",
   stripe: "Stripe",
   paystack: "Paystack",
+  manual: "Manual / Wire",
 };
 
 export function CustomsLedger({
