@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useSearchParams } from "react-router-dom";
 import { Loader2 } from "lucide-react";
+import { adminPath } from "@/lib/host";
 import { AdminShell } from "@/components/admin/AdminShell";
 import {
   checkAccountExists,
@@ -119,7 +120,7 @@ function ShipmentsListContent() {
                 s.paymentStatus === "paid"
                   ? "Paid"
                   : s.paymentStatus === "pay_on_pickup"
-                    ? "Pay on pickup"
+                    ? "Pay on delivery"
                     : s.paymentStatus === "refunded"
                       ? "Refunded"
                       : s.paymentStatus === "awaiting_payment"
@@ -128,7 +129,7 @@ function ShipmentsListContent() {
               return (
                 <Link
                   key={s.code}
-                  to={`/admin/shipment/${s.code}`}
+                  to={adminPath(`shipment/${s.code}`)}
                   className="ad-row"
                 >
                   <div className="c1">

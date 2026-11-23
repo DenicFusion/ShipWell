@@ -41,7 +41,7 @@ export const CHARGE_TYPES: ChargeType[] = [
   "Other charge",
 ];
 
-export type GatewayId = "bachs" | "stripe" | "paystack";
+export type GatewayId = "bachs" | "stripe" | "paystack" | "manual";
 
 export interface CustomsPaymentEvent {
   type: string;
@@ -178,8 +178,11 @@ export interface TrackingTeaser {
 
 export type BookingPaymentStatus =
   | "awaiting_payment"
+  | "pending_review"
   | "paid"
   | "pay_on_pickup"
+  | "rejected"
+  | "info_requested"
   | "failed"
   | "expired"
   | "refunded";
@@ -190,7 +193,140 @@ export type BookingStatus =
   | "expired"
   | "cancelled";
 
-export type BookingPaymentChannel = "pay_now" | "pay_on_delivery" | "card" | "bank_transfer" | "pay_on_pickup";
+export type BookingPaymentChannel =
+  | "pay_now"
+  | "pay_on_delivery"
+  | "card"
+  | "bank_transfer"
+  | "crypto"
+  | "mobile_money"
+  | "cash"
+  | "other"
+  | "pay_on_pickup"
+  | "manual";
+
+export type PaymentMethodType =
+  | "automatic"
+  | "bank_transfer"
+  | "crypto"
+  | "mobile_money"
+  | "cash"
+  | "other";
+
+export interface PaymentMethodDetailRow {
+  label: string;
+  value: string;
+  copyable?: boolean;
+}
+
+export interface PaymentMethodFee {
+  mode: "none" | "fixed" | "percent";
+  kind: "fee" | "discount";
+  amount: number;
+}
+
+export interface PaymentMethodRules {
+  minAmount: number;
+  maxAmount: number;
+  allowedCountries: string[];
+  appliesTo: "shipping" | "customs" | "both";
+  audience: "everyone" | "business";
+}
+
+export interface PaymentMethodProofSettings {
+  required: boolean;
+  fields: {
+    screenshot: boolean;
+    txId: boolean;
+    senderName: boolean;
+    paidAt: boolean;
+  };
+  approval: "manual" | "auto";
+}
+
+export interface PaymentMethodRecord {
+  id: string;
+  name: string;
+  subtitle: string;
+  type: PaymentMethodType;
+  gateway?: GatewayId | null;
+  enabled: boolean;
+  order: number;
+  currency: string;
+  exchangeRate: number;
+  details: PaymentMethodDetailRow[];
+  instructions: string;
+  iconUrl?: string;
+  qrUrl?: string;
+  fee: PaymentMethodFee;
+  rules: PaymentMethodRules;
+  proof: PaymentMethodProofSettings;
+  windowMinutes: number;
+  createdAtMs?: number;
+  updatedAtMs?: number;
+}
+
+export type ManualPaymentStatus =
+  | "awaiting_payment"
+  | "pending_review"
+  | "paid"
+  | "rejected"
+  | "info_requested"
+  | "expired"
+  | "refunded";
+
+export interface ManualPaymentProof {
+  screenshotUrl?: string;
+  screenshotHash?: string;
+  screenshotName?: string;
+  txId?: string;
+  senderName?: string;
+  paidAt?: string;
+  note?: string;
+  submittedAt: number;
+}
+
+export interface ManualPaymentAuditEntry {
+  action: string;
+  actor: string;
+  note?: string;
+  at: number;
+}
+
+export interface ManualPaymentRecord {
+  id: string;
+  reference: string;
+  kind: "booking" | "customs";
+  trackingCode: string;
+  bookingId?: string | null;
+  alertId?: string | null;
+  uid: string;
+  userEmail: string;
+  userName?: string;
+  methodId: string;
+  methodName: string;
+  methodType: PaymentMethodType;
+  baseAmount: number;
+  feeAmount: number;
+  totalUsd: number;
+  currency: string;
+  convertedAmount: number;
+  exchangeRate: number;
+  detailsSnapshot: PaymentMethodDetailRow[];
+  instructionsSnapshot: string;
+  qrUrlSnapshot?: string;
+  proofConfig?: PaymentMethodProofSettings;
+  status: ManualPaymentStatus;
+  expiresAt: number;
+  proof?: ManualPaymentProof | null;
+  reviewNote?: string | null;
+  duplicateWarning?: string | null;
+  audit: ManualPaymentAuditEntry[];
+  createdAtMs: number;
+  updatedAtMs: number;
+  paidAtMs?: number | null;
+  refundedAtMs?: number | null;
+}
 
 export interface BookingRecord {
   id: string;
@@ -202,8 +338,12 @@ export interface BookingRecord {
   weightKg: number;
   declaredValue: number;
   total: number;
+  feeAmount?: number;
   currency: string;
-  paymentMethod: "Pay now" | "Pay on delivery" | "bachs" | "pay_on_pickup";
+  convertedAmount?: number;
+  convertedCurrency?: string;
+  paymentMethod: string;
+  paymentMethodId?: string;
   paymentChannel: BookingPaymentChannel;
   paymentStatus: BookingPaymentStatus;
   bookingStatus: BookingStatus;
@@ -213,6 +353,7 @@ export interface BookingRecord {
   paymentId?: string | null;
   paymentReference?: string | null;
   checkoutExpiresAt?: number | null;
+  paymentWindowExpiresAt?: number | null;
   paidAt?: number | null;
   refundedAt?: number | null;
   refundId?: string | null;
@@ -237,6 +378,13 @@ export interface ShipmentRecord {
   declaredValue: number;
   priceTotal: number;
   paymentMethod: string;
+  paymentMethodId?: string | null;
+  paymentMethodName?: string | null;
+  paymentChannel?: string | null;
+  feeAmount?: number | null;
+  convertedAmount?: number | null;
+  convertedCurrency?: string | null;
+  paymentWindowExpiresAt?: number | null;
   bookingId?: string;
   paymentStatus?: BookingPaymentStatus;
   paymentReference?: string | null;
@@ -256,6 +404,66 @@ export interface ShipmentRecord {
   events?: TrackingEvent[];
   alerts?: ShipmentAlert[];
   invites?: ShipmentInviteRecord[];
+}
+
+export interface DraftWizardData {
+  sName: string;
+  sEmail: string;
+  sPhone: string;
+  sAddr: string;
+  sCity: string;
+  sPost: string;
+  sCountry: string;
+  rName: string;
+  rEmail: string;
+  rPhone: string;
+  rAddr: string;
+  rCity: string;
+  rPost: string;
+  rCountry: string;
+  weight: string;
+  pkgType: string;
+  val: string;
+  contents: string;
+  service: ServiceTier;
+  paymentMethodId?: string;
+  photos?: Array<{
+    url: string;
+    storagePath?: string;
+    name?: string;
+  }>;
+}
+
+export interface DraftShipmentRecord {
+  id: string;
+  uid: string;
+  step: number;
+  data: DraftWizardData;
+  reminderSent?: boolean;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface DraftSummaryRecord {
+  draftId: string;
+  uid: string;
+  email?: string;
+  step: number;
+  originCountry?: string;
+  destCountry?: string;
+  reminderSent?: boolean;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface ErrorLogRecord {
+  id: string;
+  uid?: string | null;
+  step: string;
+  code: string;
+  message: string;
+  route?: string;
+  ts: number;
 }
 
 export interface NotificationPrefs {
@@ -350,6 +558,12 @@ export interface AdminPaymentSettingsPublic {
     from: string;
     replyTo: string;
     supportInbox: string;
+    fromSecurity?: string;
+    fromTracking?: string;
+    fromBilling?: string;
+    fromPayments?: string;
+    fromNotifications?: string;
+    fromSupport?: string;
     secrets: {
       apiKey: SecretMask;
       inboundWebhookSecret: SecretMask;

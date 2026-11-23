@@ -154,8 +154,15 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
 export async function reserveTrackingCode(): Promise<string> {
   let code = generateTrackingCode();
   for (let i = 0; i < 4; i++) {
-    const existingTeaser = await getDoc(doc(db, "trackingTeasers", code));
-    if (!existingTeaser.exists()) return code;
+    try {
+      const existingTeaser = await Promise.race([
+        getDoc(doc(db, "trackingTeasers", code)),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 3500)),
+      ]);
+      if (!existingTeaser || !existingTeaser.exists()) return code;
+    } catch {
+      return code;
+    }
     code = generateTrackingCode();
   }
   return code;
@@ -448,6 +455,20 @@ export async function fetchFullShipmentBundle(
     handleFirestoreError(err, OperationType.GET, `shipments/${code}`);
     return null;
   }
+}
+
+export async function fetchFullShipmentBundleWithRetry(
+  code: string,
+  maxAttempts = 3
+): Promise<ShipmentRecord | null> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const bundle = await fetchFullShipmentBundle(code);
+    if (bundle) return bundle;
+    if (attempt < maxAttempts) {
+      await new Promise((r) => setTimeout(r, 450 * attempt));
+    }
+  }
+  return null;
 }
 
 export async function fetchCustomerShipments(params: {

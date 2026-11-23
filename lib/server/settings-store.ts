@@ -18,9 +18,89 @@ import {
   type VerifiedServerUser,
 } from "./firebase-admin.ts";
 
-export const DEFAULT_EMAIL_FROM = "ShipWell <notifications@info.shipwell.cc>";
-export const DEFAULT_EMAIL_REPLY_TO = "support@info.shipwell.cc";
-export const DEFAULT_SUPPORT_INBOX = "support@info.shipwell.cc";
+export const DEFAULT_EMAIL_FROM = "ShipWell <notifications@mail.shipwell.cc>";
+export const DEFAULT_EMAIL_REPLY_TO = "support@mail.shipwell.cc";
+export const DEFAULT_SUPPORT_INBOX = "support@mail.shipwell.cc";
+export const DEFAULT_FROM_SECURITY = "ShipWell Security <noreply@mail.shipwell.cc>";
+export const DEFAULT_FROM_TRACKING = "ShipWell Tracking <tracking@mail.shipwell.cc>";
+export const DEFAULT_FROM_BILLING = "ShipWell Billing <billing@mail.shipwell.cc>";
+export const DEFAULT_FROM_PAYMENTS = "ShipWell Payments <payments@mail.shipwell.cc>";
+export const DEFAULT_FROM_NOTIFICATIONS = "ShipWell <notifications@mail.shipwell.cc>";
+export const DEFAULT_FROM_SUPPORT = "ShipWell Support <support@mail.shipwell.cc>";
+
+export type EmailSenderCategory =
+  | "security"
+  | "tracking"
+  | "billing"
+  | "payments"
+  | "notifications"
+  | "support";
+
+function upgradeLegacyEmailDomain(val: unknown): string {
+  return String(val || "").replace(/@info\.shipwell\.cc\b/gi, "@mail.shipwell.cc");
+}
+
+export function resolveEmailSender(
+  publicSettings: AdminPaymentSettingsPublic | undefined,
+  category: EmailSenderCategory
+): { from: string; replyTo?: string } {
+  const r = publicSettings?.resend;
+  const supportInbox = upgradeLegacyEmailDomain(
+    r?.supportInbox || process.env.SUPPORT_INBOX || DEFAULT_SUPPORT_INBOX
+  );
+  if (category === "security") {
+    return {
+      from: upgradeLegacyEmailDomain(
+        r?.fromSecurity || process.env.FROM_SECURITY || DEFAULT_FROM_SECURITY
+      ),
+      replyTo: undefined,
+    };
+  }
+  if (category === "tracking") {
+    return {
+      from: upgradeLegacyEmailDomain(
+        r?.fromTracking || process.env.FROM_TRACKING || DEFAULT_FROM_TRACKING
+      ),
+      replyTo: supportInbox,
+    };
+  }
+  if (category === "billing") {
+    return {
+      from: upgradeLegacyEmailDomain(
+        r?.fromBilling || process.env.FROM_BILLING || DEFAULT_FROM_BILLING
+      ),
+      replyTo: supportInbox,
+    };
+  }
+  if (category === "payments") {
+    return {
+      from: upgradeLegacyEmailDomain(
+        r?.fromPayments || process.env.FROM_PAYMENTS || DEFAULT_FROM_PAYMENTS
+      ),
+      replyTo: supportInbox,
+    };
+  }
+  if (category === "support") {
+    return {
+      from: upgradeLegacyEmailDomain(
+        r?.fromSupport || process.env.FROM_SUPPORT || DEFAULT_FROM_SUPPORT
+      ),
+      replyTo: supportInbox,
+    };
+  }
+  return {
+    from: upgradeLegacyEmailDomain(
+      r?.fromNotifications ||
+        r?.from ||
+        process.env.FROM_NOTIFICATIONS ||
+        process.env.EMAIL_FROM ||
+        DEFAULT_FROM_NOTIFICATIONS
+    ),
+    replyTo: upgradeLegacyEmailDomain(
+      r?.replyTo || process.env.EMAIL_REPLY_TO || supportInbox
+    ),
+  };
+}
 
 export interface ResolvedSecrets {
   bachsSandboxKey: string;
@@ -88,14 +168,24 @@ export function defaultPublicSettings(): AdminPaymentSettingsPublic {
       },
     },
     resend: {
-      from: process.env.EMAIL_FROM || DEFAULT_EMAIL_FROM,
-      replyTo: process.env.EMAIL_REPLY_TO || DEFAULT_EMAIL_REPLY_TO,
-      supportInbox: process.env.SUPPORT_INBOX || DEFAULT_SUPPORT_INBOX,
+      from: upgradeLegacyEmailDomain(process.env.EMAIL_FROM || DEFAULT_EMAIL_FROM),
+      replyTo: upgradeLegacyEmailDomain(process.env.EMAIL_REPLY_TO || DEFAULT_EMAIL_REPLY_TO),
+      supportInbox: upgradeLegacyEmailDomain(process.env.SUPPORT_INBOX || DEFAULT_SUPPORT_INBOX),
+      fromSecurity: upgradeLegacyEmailDomain(process.env.FROM_SECURITY || DEFAULT_FROM_SECURITY),
+      fromTracking: upgradeLegacyEmailDomain(process.env.FROM_TRACKING || DEFAULT_FROM_TRACKING),
+      fromBilling: upgradeLegacyEmailDomain(process.env.FROM_BILLING || DEFAULT_FROM_BILLING),
+      fromPayments: upgradeLegacyEmailDomain(process.env.FROM_PAYMENTS || DEFAULT_FROM_PAYMENTS),
+      fromNotifications: upgradeLegacyEmailDomain(
+        process.env.FROM_NOTIFICATIONS || process.env.EMAIL_FROM || DEFAULT_FROM_NOTIFICATIONS
+      ),
+      fromSupport: upgradeLegacyEmailDomain(process.env.FROM_SUPPORT || DEFAULT_FROM_SUPPORT),
       secrets: {
         apiKey: process.env.RESEND_API_KEY
           ? buildSecretMask(process.env.RESEND_API_KEY, "env")
           : emptyMask(),
-        inboundWebhookSecret: emptyMask(),
+        inboundWebhookSecret: process.env.RESEND_INBOUND_SECRET
+          ? buildSecretMask(process.env.RESEND_INBOUND_SECRET, "env")
+          : emptyMask(),
       },
     },
     stripe: {
@@ -135,7 +225,7 @@ function defaultSecrets(): ResolvedSecrets {
     bachsLiveWebhook: "",
     bachsPreviousWebhook: "",
     resendApiKey: process.env.RESEND_API_KEY || "",
-    resendInboundSecret: "",
+    resendInboundSecret: process.env.RESEND_INBOUND_SECRET || "",
     stripeSecretKey: "",
     stripeWebhookSecret: "",
     paystackSecretKey: "",
@@ -180,6 +270,31 @@ export async function loadSettingsBundle(): Promise<{
         basePublic.resend = {
           ...basePublic.resend,
           ...data.resend,
+          from: upgradeLegacyEmailDomain(data.resend.from || basePublic.resend.from),
+          replyTo: upgradeLegacyEmailDomain(data.resend.replyTo || basePublic.resend.replyTo),
+          supportInbox: upgradeLegacyEmailDomain(
+            data.resend.supportInbox || basePublic.resend.supportInbox
+          ),
+          fromSecurity: upgradeLegacyEmailDomain(
+            data.resend.fromSecurity || basePublic.resend.fromSecurity
+          ),
+          fromTracking: upgradeLegacyEmailDomain(
+            data.resend.fromTracking || basePublic.resend.fromTracking
+          ),
+          fromBilling: upgradeLegacyEmailDomain(
+            data.resend.fromBilling || basePublic.resend.fromBilling
+          ),
+          fromPayments: upgradeLegacyEmailDomain(
+            data.resend.fromPayments || basePublic.resend.fromPayments
+          ),
+          fromNotifications: upgradeLegacyEmailDomain(
+            data.resend.fromNotifications ||
+              data.resend.from ||
+              basePublic.resend.fromNotifications
+          ),
+          fromSupport: upgradeLegacyEmailDomain(
+            data.resend.fromSupport || basePublic.resend.fromSupport
+          ),
           secrets: {
             ...basePublic.resend.secrets,
             ...(data.resend.secrets || {}),
@@ -237,7 +352,10 @@ export async function loadSettingsBundle(): Promise<{
         decryptOrEmpty(enc.resendApiKey),
         baseSecrets.resendApiKey
       );
-      baseSecrets.resendInboundSecret = decryptOrEmpty(enc.resendInboundSecret);
+      baseSecrets.resendInboundSecret = maybe(
+        decryptOrEmpty(enc.resendInboundSecret),
+        baseSecrets.resendInboundSecret
+      );
       baseSecrets.stripeSecretKey = decryptOrEmpty(enc.stripeSecretKey);
       baseSecrets.stripeWebhookSecret = decryptOrEmpty(enc.stripeWebhookSecret);
       baseSecrets.paystackSecretKey = decryptOrEmpty(enc.paystackSecretKey);
@@ -277,6 +395,12 @@ export interface SaveSettingsPayload {
     from?: string;
     replyTo?: string;
     supportInbox?: string;
+    fromSecurity?: string;
+    fromTracking?: string;
+    fromBilling?: string;
+    fromPayments?: string;
+    fromNotifications?: string;
+    fromSupport?: string;
     apiKey?: string;
     inboundWebhookSecret?: string;
   };
@@ -495,6 +619,34 @@ export async function saveAdminSettings(
     ) {
       current.resend.supportInbox = patch.resend.supportInbox.trim();
       changedFields.push("resend.supportInbox");
+    }
+    if (typeof patch.resend.fromSecurity === "string" && patch.resend.fromSecurity.trim()) {
+      current.resend.fromSecurity = patch.resend.fromSecurity.trim();
+      changedFields.push("resend.fromSecurity");
+    }
+    if (typeof patch.resend.fromTracking === "string" && patch.resend.fromTracking.trim()) {
+      current.resend.fromTracking = patch.resend.fromTracking.trim();
+      changedFields.push("resend.fromTracking");
+    }
+    if (typeof patch.resend.fromBilling === "string" && patch.resend.fromBilling.trim()) {
+      current.resend.fromBilling = patch.resend.fromBilling.trim();
+      changedFields.push("resend.fromBilling");
+    }
+    if (typeof patch.resend.fromPayments === "string" && patch.resend.fromPayments.trim()) {
+      current.resend.fromPayments = patch.resend.fromPayments.trim();
+      changedFields.push("resend.fromPayments");
+    }
+    if (
+      typeof patch.resend.fromNotifications === "string" &&
+      patch.resend.fromNotifications.trim()
+    ) {
+      current.resend.fromNotifications = patch.resend.fromNotifications.trim();
+      current.resend.from = patch.resend.fromNotifications.trim();
+      changedFields.push("resend.fromNotifications");
+    }
+    if (typeof patch.resend.fromSupport === "string" && patch.resend.fromSupport.trim()) {
+      current.resend.fromSupport = patch.resend.fromSupport.trim();
+      changedFields.push("resend.fromSupport");
     }
   }
 

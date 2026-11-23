@@ -16,12 +16,20 @@ import {
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { auth, db } from "@/lib/firebase";
+import { apiFetch } from "@/lib/api-client";
 import { openBachsOverlay } from "@/lib/bachs-overlay";
+import {
+  DEFAULT_PAYMENT_METHODS,
+  filterEligiblePaymentMethods,
+} from "@/lib/payment-methods";
 import { formatDateTime } from "@/lib/quote-engine";
+import { ManualPaymentPanel } from "@/components/payments/ManualPaymentPanel";
 import {
   formatUsd,
   type AdminPaymentSettingsPublic,
   type GatewayId,
+  type ManualPaymentRecord,
+  type PaymentMethodRecord,
   type ShipmentAlert,
   type ShipmentRecord,
 } from "@/types/tracking";
@@ -30,6 +38,7 @@ const GATEWAY_LABEL: Record<GatewayId, string> = {
   bachs: "Bachs",
   stripe: "Stripe",
   paystack: "Paystack",
+  manual: "Manual / Wire",
 };
 
 export function CustomsLedger({
@@ -48,6 +57,10 @@ export function CustomsLedger({
   const [confirmingAlertId, setConfirmingAlertId] = useState<string | null>(null);
   const [checkoutError, setCheckoutError] = useState<string>("");
   const [receiptAlert, setReceiptAlert] = useState<ShipmentAlert | null>(null);
+  const [allMethods, setAllMethods] = useState<PaymentMethodRecord[]>([]);
+  const [customsPayments, setCustomsPayments] = useState<
+    Record<string, ManualPaymentRecord>
+  >({});
   const [gatewayConfig, setGatewayConfig] = useState<{
     primary: GatewayId;
     offerChoice: boolean;
@@ -59,6 +72,21 @@ export function CustomsLedger({
   });
 
   useEffect(() => {
+    apiFetch<{ ok: boolean; methods: PaymentMethodRecord[] }>(
+      "/api/payment-methods?appliesTo=customs",
+      { step: "customs_load_methods" }
+    )
+      .then((res) => {
+        if (Array.isArray(res.methods) && res.methods.length > 0) {
+          setAllMethods(res.methods);
+        } else {
+          setAllMethods(DEFAULT_PAYMENT_METHODS);
+        }
+      })
+      .catch(() => {
+        setAllMethods(DEFAULT_PAYMENT_METHODS);
+      });
+
     if (!auth.currentUser) return;
     getDoc(doc(db, "adminSettings", "payments"))
       .then((snap) => {
@@ -77,7 +105,30 @@ export function CustomsLedger({
         });
       })
       .catch(() => undefined);
-  }, []);
+
+    auth.currentUser
+      .getIdToken()
+      .then((token) =>
+        apiFetch<{ ok: boolean; payments: ManualPaymentRecord[] }>(
+          `/api/payments/my?code=${encodeURIComponent(shipment.code)}`,
+          {
+            headers: { Authorization: `Bearer ${token}` },
+            step: "customs_load_payments",
+          }
+        )
+      )
+      .then((res) => {
+        if (!Array.isArray(res.payments)) return;
+        const map: Record<string, ManualPaymentRecord> = {};
+        for (const p of res.payments) {
+          if (p.kind === "customs" && p.alertId && !map[p.alertId]) {
+            map[p.alertId] = p;
+          }
+        }
+        setCustomsPayments(map);
+      })
+      .catch(() => undefined);
+  }, [shipment.code]);
 
   const dutyAlerts = useMemo(() => {
     return (shipment.alerts || [])
@@ -110,16 +161,24 @@ export function CustomsLedger({
 
   if (dutyAlerts.length === 0) return null;
 
-  const startCheckout = async (al: ShipmentAlert, gateway?: GatewayId) => {
+  const startMethodCheckout = async (
+    al: ShipmentAlert,
+    method: PaymentMethodRecord
+  ) => {
     setCheckoutError("");
-    const activeGateway = gateway || gatewayConfig.primary || "bachs";
-    setPayingKey(`${al.id}_${activeGateway}`);
+    setPayingKey(`${al.id}_${method.id}`);
     try {
       const token = await auth.currentUser?.getIdToken().catch(() => null);
       if (!token) {
         throw new Error("Please sign in to pay customs charges.");
       }
-      const res = await fetch("/api/customs/create-checkout", {
+      const data = await apiFetch<{
+        checkoutUrl?: string | null;
+        checkoutId?: string;
+        provider?: string;
+        manualPayment?: ManualPaymentRecord | null;
+        error?: string;
+      }>("/api/customs/create-checkout", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -128,16 +187,87 @@ export function CustomsLedger({
         body: JSON.stringify({
           code: shipment.code,
           alertId: al.id,
-          gateway: activeGateway,
+          paymentMethodId: method.id,
+          gateway: method.gateway || undefined,
         }),
+        step: "customs_create_checkout",
       });
-      const data = await res.json();
-      if (!res.ok || !data.checkoutUrl) {
+
+      if (data.provider === "manual" && data.manualPayment) {
+        setCustomsPayments((prev) => ({
+          ...prev,
+          [al.id]: data.manualPayment!,
+        }));
+        setPayingKey(null);
+        toast.success(`Created payment reference ${data.manualPayment.reference}`);
+        return;
+      }
+
+      if (!data.checkoutUrl) {
         throw new Error(
           data.error || "Unable to start hosted checkout session."
         );
       }
-      if (activeGateway === "bachs") {
+
+      const activeGw = (method.gateway || data.provider || "bachs") as GatewayId;
+      if (activeGw === "bachs") {
+        await openBachsOverlay(data.checkoutUrl, (eventType) => {
+          if (eventType === "checkout.completed") {
+            setConfirmingAlertId(al.id);
+            setPayingKey(null);
+            toast.success("Payment received — waiting for webhook confirmation");
+          } else if (
+            eventType === "checkout.failed" ||
+            eventType === "checkout.error"
+          ) {
+            setPayingKey(null);
+            setCheckoutError("Payment could not be completed. Please try again.");
+          } else if (eventType === "checkout.closed") {
+            setPayingKey(null);
+          }
+        });
+      } else {
+        window.location.assign(data.checkoutUrl);
+      }
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : "Checkout creation failed. Please try again.";
+      setCheckoutError(msg);
+      toast.error(msg);
+      setPayingKey(null);
+    }
+  };
+
+  const startGatewayCheckout = async (al: ShipmentAlert, gateway: GatewayId) => {
+    setCheckoutError("");
+    setPayingKey(`${al.id}_${gateway}`);
+    try {
+      const token = await auth.currentUser?.getIdToken().catch(() => null);
+      if (!token) {
+        throw new Error("Please sign in to pay customs charges.");
+      }
+      const data = await apiFetch<{
+        checkoutUrl?: string;
+        error?: string;
+      }>("/api/customs/create-checkout", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          code: shipment.code,
+          alertId: al.id,
+          gateway,
+        }),
+        step: "customs_gateway_checkout",
+      });
+      if (!data.checkoutUrl) {
+        throw new Error(data.error || "Unable to start hosted checkout session.");
+      }
+      if (gateway === "bachs") {
         await openBachsOverlay(data.checkoutUrl, (eventType) => {
           if (eventType === "checkout.completed") {
             setConfirmingAlertId(al.id);
@@ -241,8 +371,8 @@ h1{font-size:20px;margin:0 0 6px}small{color:#64748b}
                 {openDutyCount === 0
                   ? "All customs charges on this parcel are settled."
                   : shipment.hold
-                    ? "Your charge status updates live as soon as the webhook confirms, or if another payment is still pending."
-                    : "Waiting for webhook confirmation from Bachs."}
+                    ? "Your charge status updates live as soon as confirmed, or if another payment is still pending."
+                    : "Waiting for confirmation from gateway."}
               </small>
             </div>
           </div>
@@ -285,14 +415,13 @@ h1{font-size:20px;margin:0 0 6px}small{color:#64748b}
 
         <div className="cl">
           {dutyAlerts.map((al) => {
-            const payStatus = al.payment?.status || (al.status === "resolved" ? "paid" : "unpaid");
+            const payStatus =
+              al.payment?.status || (al.status === "resolved" ? "paid" : "unpaid");
             const isPaid = payStatus === "paid" || al.status === "resolved";
             const isRefunded = payStatus === "refunded";
             const isUnderpaid = payStatus === "underpaid";
             const canPay =
-              !isPaid &&
-              !isRefunded &&
-              (isAdmin || viewerRole === al.to);
+              !isPaid && !isRefunded && (isAdmin || viewerRole === al.to);
             const currency = al.currency || al.payment?.currency || "USD";
             const createdLabel = al.createdAtMs
               ? formatDateTime(al.createdAtMs)
@@ -302,86 +431,133 @@ h1{font-size:20px;margin:0 0 6px}small{color:#64748b}
                 ? Math.max(0, Number(al.amount || 0) - Number(al.payment.amountPaid))
                 : 0;
 
-            const buttonsToShow: GatewayId[] = gatewayConfig.offerChoice
-              ? gatewayConfig.enabledGateways
-              : [gatewayConfig.primary];
+            const existingManualPay = customsPayments[al.id];
+            const eligibleCustomMethods = filterEligiblePaymentMethods({
+              methods: allMethods,
+              appliesTo: "customs",
+              amountUsd: Number(al.amount || 0),
+              country:
+                al.to === "sender"
+                  ? shipment.sender.country
+                  : shipment.receiver.country,
+            }).filter((m) => m.type !== "cash");
+
+            const extraGateways: GatewayId[] = gatewayConfig.offerChoice
+              ? gatewayConfig.enabledGateways.filter((gw) => gw !== "bachs")
+              : [];
 
             return (
-              <div className="cl-r" key={al.id}>
-                <span className={`cl-d ${isPaid ? "p" : "o"}`} />
-                <div className="cl-m">
-                  <b>{al.chargeType || al.title}</b>
-                  <small>
-                    {al.message}
-                    {createdLabel ? ` · ${createdLabel}` : ""}
-                  </small>
-                  {isUnderpaid && underpaidMissing > 0 && (
-                    <small style={{ color: "var(--rose-t)", fontWeight: 600 }}>
-                      Underpaid by {formatUsd(underpaidMissing, currency)} — please pay the balance
+              <div key={al.id} style={{ display: "grid", gap: 10 }}>
+                <div className="cl-r">
+                  <span className={`cl-d ${isPaid ? "p" : "o"}`} />
+                  <div className="cl-m">
+                    <b>{al.chargeType || al.title}</b>
+                    <small>
+                      {al.message}
+                      {createdLabel ? ` · ${createdLabel}` : ""}
                     </small>
+                    {isUnderpaid && underpaidMissing > 0 && (
+                      <small style={{ color: "var(--rose-t)", fontWeight: 600 }}>
+                        Underpaid by {formatUsd(underpaidMissing, currency)} — please pay the balance
+                      </small>
+                    )}
+                    {al.payment?.lastError && !isPaid && (
+                      <small style={{ color: "var(--amber)" }}>
+                        {al.payment.lastError}
+                      </small>
+                    )}
+                  </div>
+
+                  <strong>{formatUsd(al.amount, currency)}</strong>
+
+                  {isRefunded ? (
+                    <span className="chip n">Refunded</span>
+                  ) : isPaid ? (
+                    <span className="chip g">Paid</span>
+                  ) : existingManualPay?.status === "pending_review" ? (
+                    <span className="chip b">Proof under review</span>
+                  ) : isUnderpaid ? (
+                    <span className="chip r">Underpaid</span>
+                  ) : payStatus === "pending" ? (
+                    <span className="chip b">Pending</span>
+                  ) : (
+                    <span className="chip a">Unpaid</span>
                   )}
-                  {al.payment?.lastError && !isPaid && (
-                    <small style={{ color: "var(--amber)" }}>
-                      {al.payment.lastError}
-                    </small>
-                  )}
+
+                  <div className="cl-acts">
+                    {canPay &&
+                      eligibleCustomMethods.map((m, idx) => {
+                        const busy = payingKey === `${al.id}_${m.id}`;
+                        return (
+                          <button
+                            key={m.id}
+                            type="button"
+                            disabled={payingKey !== null}
+                            className={`sw-btn ${
+                              idx === 0 && !existingManualPay
+                                ? "sw-btn-em"
+                                : "sw-btn-ghost"
+                            }`}
+                            style={{ padding: "8px 14px", fontSize: 12.5 }}
+                            onClick={() => startMethodCheckout(al, m)}
+                          >
+                            {busy ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <CreditCard className="w-3.5 h-3.5" />
+                            )}
+                            {m.type === "automatic"
+                              ? m.name
+                              : `Pay via ${m.name}`}
+                          </button>
+                        );
+                      })}
+
+                    {canPay &&
+                      extraGateways.map((gw) => {
+                        const busy = payingKey === `${al.id}_${gw}`;
+                        return (
+                          <button
+                            key={gw}
+                            type="button"
+                            disabled={payingKey !== null}
+                            className="sw-btn sw-btn-ghost"
+                            style={{ padding: "8px 14px", fontSize: 12.5 }}
+                            onClick={() => startGatewayCheckout(al, gw)}
+                          >
+                            {busy ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <CreditCard className="w-3.5 h-3.5" />
+                            )}
+                            Pay with {GATEWAY_LABEL[gw]}
+                          </button>
+                        );
+                      })}
+
+                    {isPaid && (
+                      <button
+                        type="button"
+                        className="sw-btn sw-btn-ghost"
+                        style={{ padding: "7px 12px", fontSize: 12 }}
+                        onClick={() => setReceiptAlert(al)}
+                      >
+                        <FileText className="w-3.5 h-3.5" />
+                        Receipt
+                      </button>
+                    )}
+                  </div>
                 </div>
 
-                <strong>{formatUsd(al.amount, currency)}</strong>
-
-                {isRefunded ? (
-                  <span className="chip n">Refunded</span>
-                ) : isPaid ? (
-                  <span className="chip g">Paid</span>
-                ) : isUnderpaid ? (
-                  <span className="chip r">Underpaid</span>
-                ) : payStatus === "pending" ? (
-                  <span className="chip b">Pending</span>
-                ) : (
-                  <span className="chip a">Unpaid</span>
+                {existingManualPay && !isPaid && (
+                  <ManualPaymentPanel
+                    compact
+                    payment={existingManualPay}
+                    onUpdated={(next) =>
+                      setCustomsPayments((prev) => ({ ...prev, [al.id]: next }))
+                    }
+                  />
                 )}
-
-                <div className="cl-acts">
-                  {canPay &&
-                    buttonsToShow.map((gw) => {
-                      const busy = payingKey === `${al.id}_${gw}`;
-                      return (
-                        <button
-                          key={gw}
-                          type="button"
-                          disabled={payingKey !== null}
-                          className={`sw-btn ${
-                            gw === gatewayConfig.primary
-                              ? "sw-btn-em"
-                              : "sw-btn-ghost"
-                          }`}
-                          style={{ padding: "8px 14px", fontSize: 12.5 }}
-                          onClick={() => startCheckout(al, gw)}
-                        >
-                          {busy ? (
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          ) : (
-                            <CreditCard className="w-3.5 h-3.5" />
-                          )}
-                          {gw === "bachs"
-                            ? "Pay with Bachs"
-                            : `Pay with ${GATEWAY_LABEL[gw]}`}
-                        </button>
-                      );
-                    })}
-
-                  {isPaid && (
-                    <button
-                      type="button"
-                      className="sw-btn sw-btn-ghost"
-                      style={{ padding: "7px 12px", fontSize: 12 }}
-                      onClick={() => setReceiptAlert(al)}
-                    >
-                      <FileText className="w-3.5 h-3.5" />
-                      Receipt
-                    </button>
-                  )}
-                </div>
               </div>
             );
           })}

@@ -4,6 +4,7 @@ import { collection, onSnapshot, query, where } from "firebase/firestore";
 import {
   ArrowUpRight,
   Bell,
+  CreditCard,
   LayoutDashboard,
   Loader2,
   LogOut,
@@ -14,6 +15,7 @@ import {
   Users,
 } from "lucide-react";
 import { db } from "@/lib/firebase";
+import { adminPath, getPublicOrigin } from "@/lib/host";
 import { ShipwellLogo } from "@/components/ShipwellLogo";
 import { ThemeSwitch } from "@/components/ThemeSwitch";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
@@ -37,10 +39,11 @@ export function AdminShell({
   const navigate = useNavigate();
   const { user, profile, authReady, isAdmin, signOutUser } = useShipWell();
   const [rawUnreadMessagesCount, setRawUnreadMessagesCount] = useState(0);
+  const [rawPendingPaymentsCount, setRawPendingPaymentsCount] = useState(0);
 
   useEffect(() => {
     if (authReady && (!user || !isAdmin)) {
-      navigate("/admin/login", { replace: true });
+      navigate(adminPath("login"), { replace: true });
     }
   }, [authReady, user, isAdmin, navigate]);
 
@@ -48,15 +51,24 @@ export function AdminShell({
     if (!authReady || !user || !isAdmin) {
       return;
     }
-    const unsub = onSnapshot(
+    const unsubMsg = onSnapshot(
       query(collection(db, "supportThreads"), where("unreadAdmin", "==", true)),
       (snap) => setRawUnreadMessagesCount(snap.size),
       () => undefined
     );
-    return () => unsub();
+    const unsubPay = onSnapshot(
+      query(collection(db, "payments"), where("status", "==", "pending_review")),
+      (snap) => setRawPendingPaymentsCount(snap.size),
+      () => undefined
+    );
+    return () => {
+      unsubMsg();
+      unsubPay();
+    };
   }, [authReady, user, isAdmin]);
 
   const unreadMessagesCount = authReady && user && isAdmin ? rawUnreadMessagesCount : 0;
+  const pendingPaymentsCount = authReady && user && isAdmin ? rawPendingPaymentsCount : 0;
 
   if (!authReady || !user || !isAdmin) {
     return (
@@ -71,59 +83,88 @@ export function AdminShell({
 
   const displayName = profile?.name || user.displayName || "Operations Admin";
   const initials = getInitials(displayName);
+  const rootHref = adminPath("");
+  const shipmentsHref = adminPath("shipments");
+  const alertsHref = adminPath("alerts");
+  const paymentsHref = adminPath("payments");
+  const messagesHref = adminPath("messages");
+  const mailHref = adminPath("mail");
+  const customersHref = adminPath("customers");
+  const settingsHref = adminPath("settings");
+  const publicOrigin = getPublicOrigin();
 
   const navItems = [
     {
-      href: "/admin",
+      href: rootHref,
       label: "Overview",
       icon: LayoutDashboard,
-      active: pathname === "/admin",
+      active: pathname === "/" || pathname === "/admin",
       badge: 0,
     },
     {
-      href: "/admin/shipments",
+      href: shipmentsHref,
       label: "Shipments",
       icon: Package,
       active:
         pathname.startsWith("/admin/shipments") ||
-        pathname.startsWith("/admin/shipment/"),
+        pathname.startsWith("/admin/shipment/") ||
+        pathname.startsWith("/shipments") ||
+        pathname.startsWith("/shipment/"),
       badge: awaitingReviewCount,
     },
     {
-      href: "/admin/alerts",
+      href: paymentsHref,
+      label: "Payments",
+      icon: CreditCard,
+      active:
+        pathname.startsWith("/admin/payments") ||
+        pathname.startsWith("/payments"),
+      badge: pendingPaymentsCount,
+    },
+    {
+      href: alertsHref,
       label: "Receiver actions",
       icon: Bell,
-      active: pathname.startsWith("/admin/alerts"),
+      active:
+        pathname.startsWith("/admin/alerts") ||
+        pathname.startsWith("/alerts"),
       badge: openAlertsCount,
     },
     {
-      href: "/admin/messages",
+      href: messagesHref,
       label: "Messages",
       icon: MessageSquare,
       active:
         pathname.startsWith("/admin/messages") ||
-        pathname.startsWith("/admin/thread/"),
+        pathname.startsWith("/admin/thread/") ||
+        pathname.startsWith("/messages") ||
+        pathname.startsWith("/thread/"),
       badge: unreadMessagesCount,
     },
     {
-      href: "/admin/mail",
+      href: mailHref,
       label: "Email log",
       icon: Mail,
-      active: pathname.startsWith("/admin/mail"),
+      active:
+        pathname.startsWith("/admin/mail") || pathname.startsWith("/mail"),
       badge: 0,
     },
     {
-      href: "/admin/customers",
+      href: customersHref,
       label: "Customers",
       icon: Users,
-      active: pathname.startsWith("/admin/customers"),
+      active:
+        pathname.startsWith("/admin/customers") ||
+        pathname.startsWith("/customers"),
       badge: 0,
     },
     {
-      href: "/admin/settings",
+      href: settingsHref,
       label: "Settings",
       icon: Settings,
-      active: pathname.startsWith("/admin/settings"),
+      active:
+        pathname.startsWith("/admin/settings") ||
+        pathname.startsWith("/settings"),
       badge: 0,
     },
   ];
@@ -131,13 +172,13 @@ export function AdminShell({
   const handleSignOut = async () => {
     await signOutUser();
     toast.success("Signed out of operations");
-    navigate("/admin/login", { replace: true });
+    navigate(adminPath("login"), { replace: true });
   };
 
   return (
     <div className="ad">
       <aside className="ad-side">
-        <Link to="/admin" className="ad-brand">
+        <Link to={rootHref} className="ad-brand">
           <ShipwellLogo subtitle="Operations" subtitleAmber />
         </Link>
 
@@ -182,10 +223,10 @@ export function AdminShell({
               <small>{user.email}</small>
             </div>
           </div>
-          <Link to="/" className="sw-btn sw-btn-ghost sw-btn-block">
+          <a href={publicOrigin} className="sw-btn sw-btn-ghost sw-btn-block">
             <ArrowUpRight className="w-4 h-4" />
             View website
-          </Link>
+          </a>
           <button
             type="button"
             onClick={handleSignOut}
@@ -202,10 +243,10 @@ export function AdminShell({
           <h2>{title}</h2>
           <div className="r">
             {topAction}
-            <Link to="/" className="sw-btn sw-btn-ghost hide-s">
+            <a href={publicOrigin} className="sw-btn sw-btn-ghost hide-s">
               <ArrowUpRight className="w-4 h-4" />
               Website
-            </Link>
+            </a>
           </div>
         </div>
 

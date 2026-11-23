@@ -296,7 +296,7 @@ export function DashboardSupport({
           ) : threads.length === 0 ? (
             <div className="sp-none">
               No conversations yet. Start a message or email{" "}
-              <b className="mono">support@info.shipwell.cc</b>.
+              <b className="mono">support@mail.shipwell.cc</b>.
             </div>
           ) : (
             threads.map((th) => {
@@ -353,14 +353,14 @@ export function DashboardSupport({
           </div>
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <span className="mono" style={{ fontSize: 12.5 }}>
-              support@info.shipwell.cc
+              support@mail.shipwell.cc
             </span>
             <button
               type="button"
               className="sp-cp"
               style={{ marginTop: 0 }}
               onClick={() => {
-                navigator.clipboard.writeText("support@info.shipwell.cc");
+                navigator.clipboard.writeText("support@mail.shipwell.cc");
                 toast.success("Support email copied");
               }}
             >
@@ -561,14 +561,14 @@ export function DashboardSupport({
             <div className="sp-ch">
               <div>
                 <small>Direct support email</small>
-                <b className="mono">support@info.shipwell.cc</b>
+                <b className="mono">support@mail.shipwell.cc</b>
                 <br />
                 <button
                   type="button"
                   className="sp-cp"
                   onClick={() => {
-                    navigator.clipboard.writeText("support@info.shipwell.cc");
-                    toast.success("Copied support@info.shipwell.cc");
+                    navigator.clipboard.writeText("support@mail.shipwell.cc");
+                    toast.success("Copied support@mail.shipwell.cc");
                   }}
                 >
                   <Copy className="w-3 h-3" />

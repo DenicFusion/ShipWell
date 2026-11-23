@@ -4,8 +4,6 @@ import React, { useEffect, useState } from "react";
 import {
   createUserWithEmailAndPassword,
   GoogleAuthProvider,
-  sendEmailVerification,
-  sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signInWithPopup,
   signOut,
@@ -15,6 +13,8 @@ import {
 import { Mail, Lock, X, Loader2 } from "lucide-react";
 import { auth } from "@/lib/firebase";
 import { syncUserProfileDoc } from "@/lib/firestore-shipments";
+import { apiFetch } from "@/lib/api-client";
+import { migrateGuestDraftToFirestore } from "@/lib/drafts";
 import { normalizeEmail } from "@/types/tracking";
 import toast from "react-hot-toast";
 
@@ -108,6 +108,7 @@ export function AuthModal({
         email: signedEmail,
         phone: options.prefillPhone || "",
       });
+      await migrateGuestDraftToFirestore(cred.user.uid, signedEmail);
       toast.success(`Signed in as ${cred.user.displayName || signedEmail}`);
       onAuthenticated(cred.user, false);
     } catch (err) {
@@ -130,7 +131,12 @@ export function AuthModal({
     if (tab === "forgot") {
       setBusy(true);
       try {
-        await sendPasswordResetEmail(auth, cleanEmail);
+        await apiFetch("/api/auth/send-password-reset", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: cleanEmail }),
+          step: "send_password_reset",
+        });
         setResetSentTo(cleanEmail);
       } catch (err) {
         setError(mapAuthError(err));
@@ -157,13 +163,28 @@ export function AuthModal({
           password
         );
         await updateProfile(cred.user, { displayName: name.trim() });
-        await sendEmailVerification(cred.user).catch(() => null);
         await syncUserProfileDoc({
           uid: cred.user.uid,
           name: name.trim(),
           email: cleanEmail,
           phone: options.prefillPhone || "",
         });
+        await migrateGuestDraftToFirestore(cred.user.uid, cleanEmail);
+        // Branded verification email via Resend (non-blocking)
+        cred.user
+          .getIdToken()
+          .then((idToken) =>
+            apiFetch("/api/auth/send-verification", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${idToken}`,
+              },
+              body: JSON.stringify({ name: name.trim() }),
+              step: "send_verification",
+            })
+          )
+          .catch(() => null);
         toast.success(`Welcome to ShipWell, ${name.trim().split(/\s+/)[0]}!`);
         onAuthenticated(cred.user, true);
       } catch (err) {
@@ -187,6 +208,7 @@ export function AuthModal({
         name: cred.user.displayName || "ShipWell Customer",
         email: cleanEmail,
       });
+      await migrateGuestDraftToFirestore(cred.user.uid, cleanEmail);
       toast.success("Signed in");
       onAuthenticated(cred.user, false);
     } catch (err) {

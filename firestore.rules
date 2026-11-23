@@ -167,7 +167,9 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'code', 'senderId', 'senderEmail', 'receiverEmail', 'sender', 'receiver',
           'service', 'weightKg', 'packageType', 'contents', 'declaredValue',
-          'priceTotal', 'paymentMethod', 'bookingId', 'paymentStatus',
+          'priceTotal', 'paymentMethod', 'paymentMethodId', 'paymentMethodName',
+          'paymentChannel', 'feeAmount', 'convertedAmount', 'convertedCurrency',
+          'paymentWindowExpiresAt', 'bookingId', 'paymentStatus',
           'paymentReference', 'paymentId', 'checkoutExpiresAt', 'bookingStatus',
           'status', 'eta', 'photos', 'hold', 'nextStop', 'review',
           'deliveredAt', 'createdAt', 'updatedAt'
@@ -185,9 +187,16 @@ service cloud.firestore {
         && data.contents is string && data.contents.size() > 0 && data.contents.size() <= 240
         && data.declaredValue is number && data.declaredValue >= 0
         && data.priceTotal is number && data.priceTotal >= 0
-        && data.paymentMethod is string && data.paymentMethod.size() > 0 && data.paymentMethod.size() <= 40
+        && data.paymentMethod is string && data.paymentMethod.size() > 0 && data.paymentMethod.size() <= 80
+        && (!data.keys().hasAny(['paymentMethodId']) || data.paymentMethodId == null || (data.paymentMethodId is string && data.paymentMethodId.size() <= 80))
+        && (!data.keys().hasAny(['paymentMethodName']) || data.paymentMethodName == null || (data.paymentMethodName is string && data.paymentMethodName.size() <= 80))
+        && (!data.keys().hasAny(['paymentChannel']) || data.paymentChannel == null || (data.paymentChannel is string && data.paymentChannel.size() <= 40))
+        && (!data.keys().hasAny(['feeAmount']) || data.feeAmount == null || data.feeAmount is number)
+        && (!data.keys().hasAny(['convertedAmount']) || data.convertedAmount == null || data.convertedAmount is number)
+        && (!data.keys().hasAny(['convertedCurrency']) || data.convertedCurrency == null || (data.convertedCurrency is string && data.convertedCurrency.size() <= 12))
+        && (!data.keys().hasAny(['paymentWindowExpiresAt']) || data.paymentWindowExpiresAt == null || data.paymentWindowExpiresAt is number)
         && (!data.keys().hasAny(['bookingId']) || data.bookingId == null || (data.bookingId is string && data.bookingId.size() <= 128))
-        && (!data.keys().hasAny(['paymentStatus']) || data.paymentStatus in ['awaiting_payment', 'paid', 'pay_on_pickup', 'failed', 'expired', 'refunded'])
+        && (!data.keys().hasAny(['paymentStatus']) || data.paymentStatus in ['awaiting_payment', 'pending_review', 'paid', 'pay_on_pickup', 'rejected', 'info_requested', 'failed', 'expired', 'refunded'])
         && (!data.keys().hasAny(['paymentReference']) || data.paymentReference == null || (data.paymentReference is string && data.paymentReference.size() <= 160))
         && (!data.keys().hasAny(['paymentId']) || data.paymentId == null || (data.paymentId is string && data.paymentId.size() <= 160))
         && (!data.keys().hasAny(['checkoutExpiresAt']) || data.checkoutExpiresAt == null || data.checkoutExpiresAt is number)
@@ -533,6 +542,86 @@ service cloud.firestore {
     match /bookings/{bookingId} {
       allow get: if isValidId(bookingId) && isSignedIn() && (isAdmin() || existing().uid == request.auth.uid);
       allow list: if isSignedIn() && (isAdmin() || existing().uid == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+
+    function isValidErrorLog(data) {
+      return data.keys().hasAll(['step', 'code', 'message', 'ts', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'step', 'code', 'message', 'route', 'ts', 'createdAt'])
+        && (!data.keys().hasAny(['uid']) || data.uid == null || (data.uid is string && data.uid.size() <= 128))
+        && data.step is string && data.step.size() > 0 && data.step.size() <= 80
+        && data.code is string && data.code.size() > 0 && data.code.size() <= 80
+        && data.message is string && data.message.size() > 0 && data.message.size() <= 600
+        && (!data.keys().hasAny(['route']) || (data.route is string && data.route.size() <= 200))
+        && data.ts is number
+        && data.createdAt == request.time;
+    }
+
+    function isValidDraftItem(data, uid, draftId) {
+      return data.keys().hasAll(['id', 'uid', 'step', 'data', 'updatedAtMs'])
+        && data.keys().hasOnly(['id', 'uid', 'step', 'data', 'reminderSent', 'createdAtMs', 'updatedAtMs'])
+        && data.id == draftId
+        && data.uid == uid
+        && data.step is number && data.step >= 1 && data.step <= 4
+        && data.data is map
+        && (!data.keys().hasAny(['reminderSent']) || data.reminderSent is bool)
+        && (!data.keys().hasAny(['createdAtMs']) || data.createdAtMs is number)
+        && data.updatedAtMs is number;
+    }
+
+    function isValidDraftSummary(data) {
+      return data.keys().hasAll(['draftId', 'uid', 'step', 'createdAtMs', 'updatedAtMs'])
+        && data.keys().hasOnly(['draftId', 'uid', 'email', 'step', 'originCountry', 'destCountry', 'reminderSent', 'createdAtMs', 'updatedAtMs'])
+        && data.draftId is string && data.draftId.size() > 0 && data.draftId.size() <= 128
+        && data.uid is string && data.uid.size() > 0 && data.uid.size() <= 128
+        && (!data.keys().hasAny(['email']) || (data.email is string && data.email.size() <= 160))
+        && data.step is number && data.step >= 1 && data.step <= 4
+        && (!data.keys().hasAny(['originCountry']) || (data.originCountry is string && data.originCountry.size() <= 100))
+        && (!data.keys().hasAny(['destCountry']) || (data.destCountry is string && data.destCountry.size() <= 100))
+        && (!data.keys().hasAny(['reminderSent']) || data.reminderSent is bool)
+        && data.createdAtMs is number
+        && data.updatedAtMs is number;
+    }
+
+    match /errorLogs/{logId} {
+      allow get, list: if isAdmin();
+      allow create: if isValidId(logId) && isValidErrorLog(incoming());
+      allow update, delete: if isAdmin();
+    }
+
+    match /drafts/{uid}/items/{draftId} {
+      allow get: if isSignedIn() && isValidId(uid) && isValidId(draftId) && (request.auth.uid == uid || isAdmin());
+      allow list: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+      allow create, update: if isSignedIn() && isValidId(uid) && isValidId(draftId) && request.auth.uid == uid && isValidDraftItem(incoming(), uid, draftId);
+      allow delete: if isSignedIn() && isValidId(uid) && isValidId(draftId) && (request.auth.uid == uid || isAdmin());
+    }
+
+    match /draftSummaries/{summaryId} {
+      allow get: if isValidId(summaryId) && isSignedIn() && (isAdmin() || existing().uid == request.auth.uid);
+      allow list: if isSignedIn() && (isAdmin() || existing().uid == request.auth.uid);
+      allow create, update: if isSignedIn() && isValidId(summaryId) && isValidDraftSummary(incoming()) && incoming().uid == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(summaryId) && (isAdmin() || existing().uid == request.auth.uid);
+    }
+
+    match /paymentMethods/{methodId} {
+      allow get: if isValidId(methodId) && (isAdmin() || existing().enabled == true);
+      allow list: if isAdmin() || existing().enabled == true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /payments/{paymentId} {
+      allow get: if isValidId(paymentId) && isSignedIn() && (isAdmin() || existing().uid == request.auth.uid);
+      allow list: if isSignedIn() && (isAdmin() || existing().uid == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+
+    match /mail/{logId} {
+      allow get, list: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /adminLoginAttempts/{attemptId} {
+      allow get, list: if isAdmin();
       allow create, update, delete: if false;
     }
   }

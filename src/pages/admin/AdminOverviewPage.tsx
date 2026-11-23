@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { collection, getDocs, limit, query } from "firebase/firestore";
 import {
   AlertCircle,
   AlertTriangle,
@@ -7,12 +8,15 @@ import {
   Loader2,
   Package,
 } from "lucide-react";
+import { db } from "@/lib/firebase";
+import { adminPath } from "@/lib/host";
 import { AdminShell } from "@/components/admin/AdminShell";
 import { fetchAllShipmentsForAdmin } from "@/lib/firestore-shipments";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
 import {
   formatTimeAgo,
   STAGES,
+  type DraftSummaryRecord,
   type ShipmentRecord,
   type TrackingEvent,
 } from "@/types/tracking";
@@ -20,12 +24,22 @@ import {
 export default function AdminOverviewPage() {
   const { isAdmin } = useShipWell();
   const [shipments, setShipments] = useState<ShipmentRecord[]>([]);
+  const [drafts, setDrafts] = useState<DraftSummaryRecord[]>([]);
   const [loading, setLoading] = useState(true);
+  const [snapshotNow] = useState(() => Date.now());
 
   useEffect(() => {
     if (!isAdmin) return;
-    fetchAllShipmentsForAdmin()
-      .then(setShipments)
+    Promise.all([
+      fetchAllShipmentsForAdmin(),
+      getDocs(query(collection(db, "draftSummaries"), limit(200)))
+        .then((snap) => snap.docs.map((d) => d.data() as DraftSummaryRecord))
+        .catch(() => [] as DraftSummaryRecord[]),
+    ])
+      .then(([sList, dList]) => {
+        setShipments(sList);
+        setDrafts(dList);
+      })
       .finally(() => setLoading(false));
   }, [isAdmin]);
 
@@ -42,6 +56,10 @@ export default function AdminOverviewPage() {
       .filter((a) => a.status === "open")
       .map((alert) => ({ shipment: s, alert }))
   );
+
+  const dayAgo = snapshotNow - 24 * 60 * 60 * 1000;
+  const draftsToday = drafts.filter((d) => Number(d.updatedAtMs || d.createdAtMs || 0) >= dayAgo).length;
+  const abandonedDrafts = drafts.filter((d) => Number(d.updatedAtMs || d.createdAtMs || 0) < dayAgo).length;
 
   const stageCounts = STAGES.map((stage) => ({
     stage,
@@ -71,33 +89,41 @@ export default function AdminOverviewPage() {
       ) : (
         <>
           <div className="ad-kpis">
-            <Link to="/admin/shipments" className="ad-kpi">
+            <Link to={adminPath("shipments")} className="ad-kpi">
               <small>Total shipments</small>
               <b>{shipments.length}</b>
             </Link>
-            <Link to="/admin/shipments?status=transit" className="ad-kpi b">
+            <Link to={`${adminPath("shipments")}?status=transit`} className="ad-kpi b">
               <small>In transit</small>
               <b>{inTransit.length}</b>
             </Link>
-            <Link to="/admin/shipments?status=review" className="ad-kpi a">
+            <Link to={`${adminPath("shipments")}?status=review`} className="ad-kpi a">
               <small>Awaiting review</small>
               <b>{awaitingReview.length}</b>
             </Link>
-            <Link to="/admin/shipments?status=hold" className="ad-kpi r">
+            <Link to={`${adminPath("shipments")}?status=hold`} className="ad-kpi r">
               <small>Delayed / held</small>
               <b>{held.length}</b>
             </Link>
-            <Link to="/admin/alerts" className="ad-kpi b">
+            <Link to={adminPath("alerts")} className="ad-kpi b">
               <small>Open actions</small>
               <b>{openAlerts.length}</b>
             </Link>
             <Link
-              to="/admin/shipments?status=delivered"
+              to={`${adminPath("shipments")}?status=delivered`}
               className="ad-kpi g"
             >
               <small>Delivered</small>
               <b>{delivered.length}</b>
             </Link>
+            <div className="ad-kpi">
+              <small>Drafts today</small>
+              <b>{draftsToday}</b>
+            </div>
+            <div className="ad-kpi a">
+              <small>Abandoned drafts (&gt;24h)</small>
+              <b>{abandonedDrafts}</b>
+            </div>
           </div>
 
           <div className="ad-grid">
@@ -112,7 +138,7 @@ export default function AdminOverviewPage() {
                 {awaitingReview.map((s) => (
                   <Link
                     key={`rev_${s.code}`}
-                    to={`/admin/shipment/${s.code}`}
+                    to={adminPath(`shipment/${s.code}`)}
                     className="ad-qi"
                   >
                     <div className="qd a">
@@ -131,7 +157,7 @@ export default function AdminOverviewPage() {
                 {held.map((s) => (
                   <Link
                     key={`hold_${s.code}`}
-                    to={`/admin/shipment/${s.code}`}
+                    to={adminPath(`shipment/${s.code}`)}
                     className="ad-qi"
                   >
                     <div className="qd r">
@@ -150,7 +176,7 @@ export default function AdminOverviewPage() {
                 {openAlerts.map(({ shipment, alert }) => (
                   <Link
                     key={`al_${shipment.code}_${alert.id}`}
-                    to={`/admin/shipment/${shipment.code}`}
+                    to={adminPath(`shipment/${shipment.code}`)}
                     className="ad-qi"
                   >
                     <div className="qd b">
