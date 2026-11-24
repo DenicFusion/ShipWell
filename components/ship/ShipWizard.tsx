@@ -118,6 +118,23 @@ function focusField(fieldId: string) {
   }, 60);
 }
 
+/** Resolve with `fallback` if `p` is slow or fails, so background steps can never freeze the booking screen. */
+function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise<T>((resolve) => {
+    const timer = window.setTimeout(() => resolve(fallback), ms);
+    p.then(
+      (v) => {
+        window.clearTimeout(timer);
+        resolve(v);
+      },
+      () => {
+        window.clearTimeout(timer);
+        resolve(fallback);
+      }
+    );
+  });
+}
+
 export function ShipWizard({
   embedded = false,
   draftIdParam,
@@ -443,8 +460,9 @@ export function ShipWizard({
         createdAtMs: draftCreatedAtMs,
       });
       setDraftSaveLabel("Draft saved");
-    } catch {
-      // non-fatal
+    } catch (err) {
+      console.warn("[ShipWizard] Draft autosave failed:", err);
+      setDraftSaveLabel("Draft not saved");
     }
   }, [
     completed,
@@ -725,8 +743,10 @@ export function ShipWizard({
       cleanupBookingListeners();
       let liveShipment = fallbackShipment || null;
       if (!liveShipment) {
-        liveShipment = await fetchFullShipmentBundleWithRetry(trackingCode, 3).catch(
-          () => null
+        liveShipment = await withDeadline(
+          fetchFullShipmentBundleWithRetry(trackingCode, 2),
+          6000,
+          null
         );
       } else {
         // Refresh in background without blocking the success screen
@@ -772,20 +792,23 @@ export function ShipWizard({
         };
       }
 
-      const recHasAccount = await checkAccountExists(
-        liveShipment.receiverEmail
-      ).catch(() => false);
+      const recHasAccount = await withDeadline(
+        checkAccountExists(liveShipment.receiverEmail),
+        3000,
+        false
+      );
       const effectiveUid = uidOverride || user?.uid || liveShipment.senderId;
-      if (effectiveUid) {
-        await cleanupDraftAfterBooking(effectiveUid);
-      }
-      await refreshOpenAlerts().catch(() => undefined);
       setConfirmingPayment(null);
       setCompleted({
         shipment: liveShipment,
         receiverHasAccount: recHasAccount,
         paymentStatusLabel,
       });
+      // Housekeeping runs in the background; it can never block the success screen
+      if (effectiveUid) {
+        void withDeadline(cleanupDraftAfterBooking(effectiveUid), 5000, undefined);
+      }
+      void withDeadline(refreshOpenAlerts(), 5000, undefined);
       window.scrollTo({ top: 0, behavior: "smooth" });
       toast.success(`Shipment ${liveShipment.code} booked!`);
     },
@@ -1025,8 +1048,8 @@ export function ShipWizard({
 
       // 1. Manual payment method (Bank transfer / Crypto / Mobile money / Other)
       if (data.payment) {
-        await cleanupDraftAfterBooking(uid);
-        await refreshOpenAlerts().catch(() => undefined);
+        await withDeadline(cleanupDraftAfterBooking(uid), 4000, undefined);
+        await withDeadline(refreshOpenAlerts(), 3000, undefined);
         setManualPaymentState({
           shipment:
             data.shipment ||
@@ -1113,7 +1136,7 @@ export function ShipWizard({
 
       if (selectedMethod.gateway === "stripe" || selectedMethod.gateway === "paystack") {
         // Delete draft now so they can resume via Dashboard > Sent if they return without completing
-        await cleanupDraftAfterBooking(uid);
+        await withDeadline(cleanupDraftAfterBooking(uid), 4000, undefined);
         window.location.assign(checkoutUrl);
         return;
       }

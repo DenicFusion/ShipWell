@@ -1718,12 +1718,16 @@ export async function createServerBooking(params: {
 
   if (isCash) {
     try {
-      await dispatchBookingConfirmationEmails({
-        db,
-        shipment: shipmentDoc,
-        baseUrl: baseOrigin,
-        actorUid: actor.uid,
-      });
+      // Emails must never hold up the booking response: wait at most 6 seconds for them.
+      await Promise.race([
+        dispatchBookingConfirmationEmails({
+          db,
+          shipment: shipmentDoc,
+          baseUrl: baseOrigin,
+          actorUid: actor.uid,
+        }),
+        new Promise<void>((resolve) => setTimeout(resolve, 6000)),
+      ]);
     } catch (emailErr) {
       console.warn("[Booking] Confirmation email dispatch error (non-blocking):", emailErr);
       logServerError({

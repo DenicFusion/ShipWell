@@ -65,6 +65,22 @@ import {
   type ServiceTier,
 } from "../../types/tracking.ts";
 
+/**
+ * Firebase returns action links on its own firebaseapp.com handler. Re-point them to our own
+ * https://shipwell.cc/auth/action page so customers never see a firebaseapp.com link.
+ */
+function toBrandedActionUrl(firebaseLink: string, origin: string): string {
+  try {
+    const u = new URL(firebaseLink);
+    const oobCode = u.searchParams.get("oobCode");
+    const mode = u.searchParams.get("mode");
+    if (!oobCode || !mode) return firebaseLink;
+    return `${origin.replace(/\/+$/, "")}/auth/action?mode=${encodeURIComponent(mode)}&oobCode=${encodeURIComponent(oobCode)}&lang=en`;
+  } catch {
+    return firebaseLink;
+  }
+}
+
 function getOrigin(req: express.Request): string {
   const forwardedProto = req.headers["x-forwarded-proto"];
   const proto =
@@ -289,10 +305,13 @@ export function createApiApp(): express.Express {
       const origin = getOrigin(req);
       let verifyUrl = `${origin}/auth/action?mode=verifyEmail`;
       try {
-        verifyUrl = await getAdminAuth().generateEmailVerificationLink(actor.email, {
-          url: `${origin}/auth/action`,
-          handleCodeInApp: false,
-        });
+        verifyUrl = toBrandedActionUrl(
+          await getAdminAuth().generateEmailVerificationLink(actor.email, {
+            url: `${origin}/auth/action`,
+            handleCodeInApp: false,
+          }),
+          origin
+        );
       } catch (err) {
         if (isAdminIamError(err)) {
           throw new AdminSdkUnavailableError(
@@ -349,10 +368,13 @@ export function createApiApp(): express.Express {
       try {
         const userRecord = await getAdminAuth().getUserByEmail(cleanEmail);
         displayName = userRecord.displayName || displayName;
-        resetUrl = await getAdminAuth().generatePasswordResetLink(cleanEmail, {
-          url: `${origin}/auth/action`,
-          handleCodeInApp: false,
-        });
+        resetUrl = toBrandedActionUrl(
+          await getAdminAuth().generatePasswordResetLink(cleanEmail, {
+            url: `${origin}/auth/action`,
+            handleCodeInApp: false,
+          }),
+          origin
+        );
       } catch (err) {
         if (isAdminIamError(err)) {
           throw new AdminSdkUnavailableError(

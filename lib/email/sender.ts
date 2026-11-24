@@ -204,6 +204,7 @@ export async function dispatchTransactionalEmail(
             "Content-Type": "application/json",
           },
           body: JSON.stringify(resendBody),
+          signal: AbortSignal.timeout(8000),
         });
         if (res.ok) {
           const json = (await res.json()) as { id?: string };
