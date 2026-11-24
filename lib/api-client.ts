@@ -33,19 +33,24 @@ export async function apiFetch<T = Record<string, unknown>>(
 
   const url = resolveApiUrl(path);
   let res: Response;
+  let rawText = "";
   try {
     res = await fetch(url, {
       ...rest,
       headers,
       signal: controller.signal,
     });
+    // Keep the timer running while the body is read, so a half-open response can never hang forever
+    rawText = await res.text();
   } catch (err) {
-    globalThis.clearTimeout(timer);
-    if (err instanceof DOMException && err.name === "AbortError") {
+    if (
+      (err instanceof DOMException && err.name === "AbortError") ||
+      controller.signal.aborted
+    ) {
       throw new StepError(
         step,
         "TIMEOUT",
-        "Request timed out after 30 seconds. Please check your connection and try again."
+        "Request timed out. Please check your connection and try again."
       );
     }
     throw new StepError(
@@ -58,7 +63,6 @@ export async function apiFetch<T = Record<string, unknown>>(
   }
 
   const contentType = res.headers.get("content-type") || "";
-  const rawText = await res.text().catch(() => "");
 
   if (
     contentType.includes("text/html") ||
