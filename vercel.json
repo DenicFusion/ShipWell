@@ -60,5 +60,10 @@
         }
       ]
     }
-  ]
+  ],
+  "functions": {
+    "api/index.ts": {
+      "includeFiles": "{lib/**,types/**,firebase-applet-config.json}"
+    }
+  }
 }
