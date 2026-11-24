@@ -1,4 +1,4 @@
-import { getApp, getApps, initializeApp, type App } from "firebase-admin/app";
+import { cert, getApp, getApps, initializeApp, type App } from "firebase-admin/app";
 import { getAuth, type Auth } from "firebase-admin/auth";
 import { getFirestore, type Firestore } from "firebase-admin/firestore";
 import firebaseConfigLocal from "../../firebase-applet-config.json" with { type: "json" };
@@ -20,9 +20,43 @@ export interface VerifiedServerUser {
   authTime: number;
 }
 
+/**
+ * Vercel has no Google default credentials, so the Admin SDK needs a service account.
+ * Set FIREBASE_SERVICE_ACCOUNT_JSON (the whole service-account JSON, or the same JSON base64-encoded)
+ * in Vercel > Settings > Environment Variables.
+ */
+function loadServiceAccount(): Record<string, unknown> | null {
+  const raw = (
+    process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
+    process.env.FIREBASE_SERVICE_ACCOUNT ||
+    ""
+  ).trim();
+  if (!raw) return null;
+  try {
+    const text = raw.startsWith("{")
+      ? raw
+      : Buffer.from(raw, "base64").toString("utf8");
+    const sa = JSON.parse(text) as Record<string, unknown>;
+    if (typeof sa.private_key === "string") {
+      sa.private_key = sa.private_key.replace(/\\n/g, "\n");
+    }
+    return sa;
+  } catch {
+    console.error("[firebase-admin] FIREBASE_SERVICE_ACCOUNT_JSON is set but is not valid JSON.");
+    return null;
+  }
+}
+
 export function getFirebaseAdminApp(): App {
   if (getApps().length > 0) {
     return getApp();
+  }
+  const serviceAccount = loadServiceAccount();
+  if (serviceAccount) {
+    return initializeApp({
+      credential: cert(serviceAccount as Parameters<typeof cert>[0]),
+      projectId: firebaseConfigLocal.projectId,
+    });
   }
   return initializeApp({
     projectId: firebaseConfigLocal.projectId,
