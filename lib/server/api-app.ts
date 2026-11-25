@@ -1311,11 +1311,17 @@ export function createApiApp(): express.Express {
         html?: string;
       };
 
+      if (payload.type && payload.type !== "email.received") {
+        res.status(200).json({ ok: true, ignored: true });
+        return;
+      }
+
       const inner = payload.data && typeof payload.data === "object" ? payload.data : payload;
+      const emailIdRaw = String((inner as Record<string, unknown>).email_id || "").trim();
       const eventKey = String(
         svixId ||
           payload.id ||
-          (inner as Record<string, any>).email_id ||
+          emailIdRaw ||
           crypto.createHash("sha256").update(rawText).digest("hex").slice(0, 32)
       ).replace(/[^a-zA-Z0-9_-]/g, "_");
 
@@ -1357,14 +1363,24 @@ export function createApiApp(): express.Express {
         return;
       }
 
-      // Enforce per-address routing: ONLY mail addressed to supportInbox opens supportThreads.
+      // Enforce per-address routing: ONLY mail addressed to support opens supportThreads.
       // Replies to unmonitored addresses (noreply@, tracking@, billing@, payments@, notifications@) are ignored cleanly
       // with at most 1 auto-redirect notice per sender per 24 hours.
       const recipients = extractRecipientList(inner.to ?? payload.to);
       const supportAddr = normalizeEmail(
         publicSettings.resend.supportInbox || "support@mail.shipwell.cc"
       );
-      if (recipients.length > 0 && !recipients.includes(supportAddr)) {
+      const allowedSupportAddresses = new Set([
+        supportAddr,
+        "support@mail.shipwell.cc",
+        "support@shipwell.cc",
+      ]);
+      const isAllowedSupportRecipient =
+        recipients.length === 0 ||
+        recipients.some(
+          (addr) => allowedSupportAddresses.has(addr) || addr.endsWith(".resend.app")
+        );
+      if (!isAllowedSupportRecipient) {
         const attemptedAddress = recipients[0];
         await db.collection("webhookLogs").add({
           provider: "resend-inbound",
@@ -1399,8 +1415,30 @@ export function createApiApp(): express.Express {
       const subject = sanitizeHeaderText(
         String(inner.subject || payload.subject || "(No subject)")
       );
-      const rawTextBody = String(inner.text || payload.text || "").trim();
-      const rawHtml = String(inner.html || payload.html || "").trim();
+      let rawTextBody = String(inner.text || payload.text || "").trim();
+      let rawHtml = String(inner.html || payload.html || "").trim();
+
+      // Resend's email.received webhook omits text/html and provides email_id; fetch full body from Resend Receiving API.
+      const resendKey = secrets.resendApiKey || process.env.RESEND_API_KEY || "";
+      if (!rawTextBody && !rawHtml && resendKey && /^[a-zA-Z0-9_-]{4,128}$/.test(emailIdRaw)) {
+        try {
+          const emailRes = await fetch(
+            `https://api.resend.com/emails/receiving/${encodeURIComponent(emailIdRaw)}`,
+            {
+              headers: { Authorization: `Bearer ${resendKey}` },
+              signal: AbortSignal.timeout(6000),
+            }
+          );
+          if (emailRes.ok) {
+            const fullEmail = (await emailRes.json()) as { text?: unknown; html?: unknown };
+            rawTextBody = String(fullEmail.text || "").trim();
+            rawHtml = String(fullEmail.html || "").trim();
+          }
+        } catch {
+          // Non-fatal: fall back to metadata preview
+        }
+      }
+
       const cleanBody = (rawTextBody || stripHtmlTags(rawHtml) || "(Empty message)").slice(
         0,
         4000
