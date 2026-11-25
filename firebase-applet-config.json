@@ -1,10 +1,10 @@
 {
-  "projectId": "core-trail-jpnh2",
-  "appId": "1:440286101116:web:eb264408d4ecbf661253f9",
-  "apiKey": "AIzaSyBCUA-YO6XO3mr4LuJwa4jBkNdkX278--c",
-  "authDomain": "core-trail-jpnh2.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-56c9f8af-7eb4-4275-b584-ef4350d62d1e",
-  "storageBucket": "core-trail-jpnh2.firebasestorage.app",
-  "messagingSenderId": "440286101116",
+  "projectId": "shipwell-prod",
+  "appId": "1:277888162591:web:4112f1f0a2f0301033ae2a",
+  "apiKey": "AIzaSyCbjvHMlLzIRodlePRd8BmXg0-r1obu0Ew",
+  "authDomain": "shipwell-prod.firebaseapp.com",
+  "firestoreDatabaseId": "(default)",
+  "storageBucket": "shipwell-prod.firebasestorage.app",
+  "messagingSenderId": "277888162591",
   "measurementId": ""
 }
