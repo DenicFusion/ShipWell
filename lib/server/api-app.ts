@@ -133,8 +133,15 @@ function stripHtmlTags(html: string): string {
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n")
+    .replace(/<\/(p|div|li|tr)>/gi, "\n")
     .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/[ \t]{2,}/g, " ")
     .replace(/\s+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -1430,9 +1437,25 @@ export function createApiApp(): express.Express {
             }
           );
           if (emailRes.ok) {
-            const fullEmail = (await emailRes.json()) as { text?: unknown; html?: unknown };
-            rawTextBody = String(fullEmail.text || "").trim();
-            rawHtml = String(fullEmail.html || "").trim();
+            const fullEmail = (await emailRes.json()) as {
+              text?: unknown;
+              html?: unknown;
+              data?: { text?: unknown; html?: unknown };
+            };
+            rawTextBody = String(fullEmail.text ?? fullEmail.data?.text ?? "").trim();
+            rawHtml = String(fullEmail.html ?? fullEmail.data?.html ?? "").trim();
+          } else {
+            await db.collection("webhookLogs").add({
+              provider: "resend-inbound",
+              eventType: "receiving_fetch_failed",
+              reference: emailIdRaw,
+              result: `http_${emailRes.status}`,
+              detail:
+                emailRes.status === 401 || emailRes.status === 403
+                  ? "Resend API key lacks permission to read received emails (requires Full access)."
+                  : `Resend Receiving API returned HTTP ${emailRes.status}.`,
+              ts: Date.now(),
+            }).catch(() => null);
           }
         } catch {
           // Non-fatal: fall back to metadata preview
