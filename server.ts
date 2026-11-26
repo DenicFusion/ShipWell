@@ -1,15 +1,37 @@
 import fs from "node:fs";
+import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { createApiApp } from "./lib/server/api-app.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = Number(process.env.PORT || 3000);
+
+function readCliArg(name: string): string | undefined {
+  const args = process.argv.slice(2);
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === `--${name}` && args[i + 1]) {
+      return args[i + 1];
+    }
+    if (arg.startsWith(`--${name}=`)) {
+      return arg.slice(name.length + 3);
+    }
+  }
+  return undefined;
+}
+
+const cliPort = Number(readCliArg("port"));
+const PORT =
+  Number.isFinite(cliPort) && cliPort > 0
+    ? cliPort
+    : Number(process.env.PORT || 3000);
+const HOST = readCliArg("host") || process.env.HOST || "0.0.0.0";
 const isProduction = process.env.NODE_ENV === "production";
 
 async function startServer() {
   const app = createApiApp();
+  const httpServer = http.createServer(app);
 
   // ── STATIC / VITE SPA ──
   if (isProduction) {
@@ -23,7 +45,7 @@ async function startServer() {
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        hmr: process.env.DISABLE_HMR === "true" ? false : true,
+        hmr: process.env.DISABLE_HMR === "true" ? false : { server: httpServer },
       },
       appType: "custom",
     });
@@ -43,9 +65,12 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  httpServer.listen(PORT, HOST, () => {
     console.log(`ShipWell server listening on http://localhost:${PORT}`);
   });
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error("Failed to start ShipWell server:", err);
+  process.exit(1);
+});
