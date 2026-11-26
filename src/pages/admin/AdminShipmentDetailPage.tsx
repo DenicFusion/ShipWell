@@ -115,6 +115,19 @@ const ALERT_TEMPLATES: Record<
   },
 };
 
+function getAllowedStages(s: ShipmentRecord): ShipmentStage[] {
+  if (s.status === "Delivered") return [];
+  const hasCustoms =
+    s.status === "Customs" ||
+    (s.alerts || []).some((a) => a.kind === "duty" || Boolean(a.chargeType)) ||
+    (s.events || []).some((e) => e.stage === "Customs");
+  const seq = STAGES.filter((st) => st !== "Customs" || hasCustoms);
+  const idx = seq.indexOf(s.status);
+  return [seq[idx], seq[idx + 1]].filter(
+    (st): st is ShipmentStage => Boolean(st) && st !== "Booked"
+  );
+}
+
 export default function AdminShipmentDetailPage() {
   const { code = "" } = useParams<{ code: string }>();
   const cleanCode = decodeURIComponent(code || "").toUpperCase();
@@ -173,7 +186,7 @@ export default function AdminShipmentDetailPage() {
       const s = await fetchFullShipmentBundle(cleanCode);
       setShipment(s);
       if (s) {
-        setCpStage(s.status);
+        setCpStage(getAllowedStages(s)[0] || s.status);
         setCpTime(new Date().toISOString().slice(0, 16));
         setNsLabel(s.nextStop?.label || "");
         setNsLoc(s.nextStop?.loc || "");
@@ -579,6 +592,10 @@ export default function AdminShipmentDetailPage() {
                   setCpNote("");
                   toast.success("Checkpoint added & pushed live");
                   await loadDetail();
+                } catch (err) {
+                  toast.error(
+                    err instanceof Error ? err.message : "Could not add checkpoint."
+                  );
                 } finally {
                   setBusyAction("");
                 }
@@ -597,9 +614,9 @@ export default function AdminShipmentDetailPage() {
                       setCpStage(e.target.value as ShipmentStage)
                     }
                   >
-                    {STAGES.map((st) => (
+                    {getAllowedStages(shipment).map((st) => (
                       <option key={st} value={st}>
-                        {st}
+                        {st === shipment.status ? `${st} (current)` : `Move to ${st}`}
                       </option>
                     ))}
                   </select>
@@ -704,6 +721,10 @@ export default function AdminShipmentDetailPage() {
                   });
                   toast.success("Next stop & ETA saved");
                   await loadDetail();
+                } catch (err) {
+                  toast.error(
+                    err instanceof Error ? err.message : "Could not save next stop."
+                  );
                 } finally {
                   setBusyAction("");
                 }

@@ -626,7 +626,7 @@ function FullTrackedContent({
                 </div>
                 <div className="c">
                   <div className="h">
-                    <b>Next: {shipment.nextStop.label}</b>
+                    <b>Up next: {shipment.nextStop.label}</b>
                     {shipment.nextStop.eta && (
                       <time>
                         ETA {formatDateTime(shipment.nextStop.eta)}
@@ -655,7 +655,7 @@ function FullTrackedContent({
                       <b>{ev.label}</b>
                       <time>{formatDateTime(ev.ts)}</time>
                     </div>
-                    {ev.loc && <small>{ev.loc}</small>}
+                    <small>{[ev.stage, ev.loc].filter(Boolean).join(" · ")}</small>
                     {ev.note && <div className="nt">{ev.note}</div>}
                   </div>
                 </div>

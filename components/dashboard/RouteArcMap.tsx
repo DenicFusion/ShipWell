@@ -135,7 +135,7 @@ export function StageStepper({
   const hasCustoms =
     status === "Customs" ||
     Boolean(events?.some((e) => e.stage === "Customs")) ||
-    Boolean(alerts?.some((a) => a.kind === "customs" || a.chargeType));
+    Boolean(alerts?.some((a) => a.kind === "duty" || a.kind === "customs" || Boolean(a.chargeType)));
   const steps = STAGES.filter((st) => st !== "Customs" || hasCustoms);
   const activeIdx = steps.indexOf(status);
   const fin = status === "Delivered";

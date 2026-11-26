@@ -21,6 +21,7 @@ import { checkRateLimit, dispatchTransactionalEmail } from "../email/sender.ts";
 import { COUNTRIES, calculateShippingPricing } from "../quote-engine.ts";
 import {
   adminBookingAction,
+  adminShipmentUpdate,
   createBachsTestCheckout,
   createCustomsCheckout,
   createServerBooking,
@@ -1002,6 +1003,42 @@ export function createApiApp(): express.Express {
       res.json(result);
     } catch (err) {
       handleServerError(res, err, "Booking update failed.", "admin_booking_action");
+    }
+  });
+
+  app.post("/api/admin/shipment-update", async (req, res) => {
+    try {
+      const actor = await verifyFirebaseAdminAuth(req.headers);
+      if (!actor?.isAdmin) {
+        res.status(actor ? 403 : 401).json({ error: "Admin authorization required." });
+        return;
+      }
+      const body = (req.body || {}) as {
+        code?: string;
+        action?: "add_checkpoint" | "add_customs_charge" | "save_next_stop";
+        data?: Record<string, unknown>;
+      };
+      if (
+        body.action !== "add_checkpoint" &&
+        body.action !== "add_customs_charge" &&
+        body.action !== "save_next_stop"
+      ) {
+        res.status(400).json({ error: "Unknown action." });
+        return;
+      }
+      const result = await adminShipmentUpdate({
+        actor,
+        code: String(body.code || ""),
+        action: body.action,
+        data: body.data || {},
+      });
+      res.json(result);
+    } catch (err) {
+      if (err instanceof Error && /^(Enter|Customs|From|This parcel|Shipment not found|Valid)/.test(err.message)) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      handleServerError(res, err, "Shipment update failed.", "admin_shipment_update");
     }
   });
 

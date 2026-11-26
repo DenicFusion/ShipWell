@@ -1634,7 +1634,7 @@ export async function createServerBooking(params: {
     hold: null,
     nextStop: {
       label: isCash
-        ? "Booked, payment due at pickup"
+        ? "Courier pickup from sender (pay on pickup)"
         : isManual
           ? `Awaiting ${chosenMethod.name} payment`
           : "Awaiting booking payment confirmation",
@@ -2006,7 +2006,7 @@ export async function handleBachsWebhook(
           bookingStatus: "confirmed",
           paymentId: paymentId || reference,
           paymentReference: reference || booking.paymentReference || null,
-          "nextStop.label": "Awaiting item review & pickup dispatch",
+          "nextStop.label": "Courier pickup from sender",
           updatedAt: FieldValue.serverTimestamp(),
         });
         batch.update(teaserRef, {
@@ -2805,4 +2805,165 @@ export async function adminBookingAction(params: {
   });
   await batch.commit();
   return { ok: true, status: "refunded", refundId };
+}
+
+// ── Admin shipment movement (server-side, not blocked by Firestore rules) ──
+const MOVE_STAGES = [
+  "Booked",
+  "Picked Up",
+  "In Transit",
+  "At Hub",
+  "Customs",
+  "Out for Delivery",
+  "Delivered",
+] as const;
+
+async function shipmentHasCustoms(
+  db: ReturnType<typeof getAdminDb>,
+  code: string,
+  status: string
+): Promise<boolean> {
+  if (status === "Customs") return true;
+  const shipRef = db.collection("shipments").doc(code);
+  const [alerts, events] = await Promise.all([
+    shipRef.collection("alerts").get(),
+    shipRef.collection("events").where("stage", "==", "Customs").limit(1).get(),
+  ]);
+  return (
+    !events.empty ||
+    alerts.docs.some((d) => {
+      const a = d.data();
+      return a.kind === "duty" || a.kind === "customs" || Boolean(a.chargeType);
+    })
+  );
+}
+
+export async function adminShipmentUpdate(params: {
+  actor: VerifiedServerUser;
+  code: string;
+  action: "add_checkpoint" | "add_customs_charge" | "save_next_stop";
+  data: Record<string, any>;
+}): Promise<{ ok: boolean; alertId?: string; allowedStages?: string[] }> {
+  const code = String(params.code || "").trim().toUpperCase();
+  if (!isValidTrackingCode(code)) throw new Error("Valid tracking code is required.");
+  const db = getAdminDb();
+  const shipRef = db.collection("shipments").doc(code);
+  const teaserRef = db.collection("trackingTeasers").doc(code);
+  const snap = await shipRef.get();
+  if (!snap.exists) throw new Error("Shipment not found.");
+  const shipment = snap.data() as ShipmentRecord;
+  const status = String(shipment.status);
+  const d = params.data || {};
+  const now = Date.now();
+  const actor = params.actor;
+
+  const audit = (action: string, detail: string) =>
+    db.collection("auditLogs").doc().set({
+      actorUid: actor.uid,
+      actorEmail: actor.email,
+      action,
+      code,
+      detail: detail.slice(0, 400),
+      createdAt: FieldValue.serverTimestamp(),
+    });
+
+  if (params.action === "save_next_stop") {
+    const label = String(d.label || "").trim().slice(0, 160);
+    const loc = String(d.loc || "").trim().slice(0, 160);
+    const nextEta = Number.isFinite(Number(d.nextEta)) && d.nextEta ? Number(d.nextEta) : null;
+    const deliveryEta = Number(d.deliveryEta) || shipment.eta;
+    await shipRef.update({
+      nextStop: label ? { label, loc, eta: nextEta } : null,
+      eta: deliveryEta,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    await teaserRef.set({ eta: deliveryEta, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    await audit("update_next_stop", label ? `Next: ${label}` : "Updated delivery ETA");
+    return { ok: true };
+  }
+
+  if (params.action === "add_checkpoint") {
+    const stage = String(d.stage || "");
+    const label = String(d.label || "").trim().slice(0, 160);
+    const loc = String(d.loc || "").trim().slice(0, 160);
+    const note = String(d.note || "").trim().slice(0, 500);
+    const ts = Number(d.ts) || now;
+    if (!label) throw new Error("Enter a checkpoint headline.");
+    if (status === "Delivered") throw new Error("This parcel is already delivered.");
+    // Strict one-way movement: current stage or the very next one. Customs only exists if a customs charge was pushed.
+    const withCustoms = await shipmentHasCustoms(db, code, status);
+    const seq = MOVE_STAGES.filter((s) => s !== "Customs" || withCustoms);
+    const idx = seq.indexOf(status as (typeof MOVE_STAGES)[number]);
+    const allowed = [seq[idx], seq[idx + 1]].filter(
+      (s): s is (typeof MOVE_STAGES)[number] => Boolean(s) && s !== "Booked"
+    );
+    if (!allowed.includes(stage as (typeof MOVE_STAGES)[number])) {
+      throw new Error(
+        `From "${status}" you can only record: ${allowed.join(" or ") || "nothing"}. Stages cannot go back or be skipped.`
+      );
+    }
+    const batch = db.batch();
+    batch.set(shipRef.collection("events").doc(), {
+      stage, label, loc, note, kind: "scan", ts,
+      createdBy: actor.uid,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    batch.update(shipRef, {
+      status: stage,
+      nextStop: null,
+      ...(stage === "Delivered" ? { deliveredAt: ts, hold: null } : {}),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    batch.set(teaserRef, {
+      status: stage,
+      ...(stage === "Delivered" ? { deliveredAt: ts, holdType: null } : {}),
+      latestEvent: { label, loc, ts },
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    await batch.commit();
+    await audit("add_checkpoint", `${stage}: ${label} (${loc})`);
+    return { ok: true };
+  }
+
+  // add_customs_charge
+  const amount = Number(Number(d.amount).toFixed(2));
+  if (!Number.isFinite(amount) || amount <= 0) throw new Error("Enter an amount greater than 0.");
+  if (!["In Transit", "At Hub", "Customs", "Out for Delivery"].includes(status)) {
+    throw new Error("Customs charges can only be added once the parcel is In Transit or later.");
+  }
+  const chargeType = String(d.chargeType || "Import duty").slice(0, 80);
+  const currency = String(d.currency || "USD").trim().toUpperCase().slice(0, 8) || "USD";
+  const to = d.to === "sender" ? "sender" : "receiver";
+  const hold = Boolean(d.holdShipment);
+  const note = String(d.note || "").trim().slice(0, 400) || `${chargeType} assessed by customs clearance`;
+  const alertId = `chg_${now.toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  const nextStage = status === "In Transit" || status === "At Hub" ? "Customs" : status;
+  const evLabel = `${chargeType} added ($${amount.toFixed(2)})`;
+  const evLoc = `${shipment.receiver?.city || ""}, ${shipment.receiver?.country || ""}`;
+  const batch = db.batch();
+  batch.set(shipRef.collection("alerts").doc(alertId), {
+    to, kind: "duty", chargeType, currency, holdShipment: hold,
+    title: `${chargeType} ($${amount.toFixed(2)})`,
+    message: note, amount, status: "open",
+    payment: { provider: "bachs", environment: "sandbox", status: "unpaid", currency, events: [] },
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  batch.set(shipRef.collection("events").doc(), {
+    stage: nextStage, label: evLabel, loc: evLoc, note, kind: "action", ts: now,
+    createdBy: actor.uid, createdAt: FieldValue.serverTimestamp(),
+  });
+  batch.update(shipRef, {
+    status: nextStage,
+    ...(hold ? { hold: { type: "On Hold", reason: `${chargeType} due ($${amount.toFixed(2)} ${currency})`, at: now, alertId } } : {}),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  batch.set(teaserRef, {
+    status: nextStage,
+    ...(hold ? { holdType: "On Hold" } : {}),
+    latestEvent: { label: evLabel, loc: evLoc, ts: now },
+    updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
+  await batch.commit();
+  await audit("add_customs_charge", `${chargeType} $${amount.toFixed(2)} ${currency}${hold ? " (held)" : ""}`);
+  return { ok: true, alertId };
 }
