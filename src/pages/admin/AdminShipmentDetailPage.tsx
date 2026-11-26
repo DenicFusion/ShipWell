@@ -26,7 +26,6 @@ import { useShipWell } from "@/components/providers/ShipWellProvider";
 import {
   adminAddCheckpoint,
   adminAddCustomsCharge,
-  adminApproveShipmentItem,
   adminClearHold,
   adminFlagShipmentItem,
   adminResendReceiverInvite,
@@ -385,13 +384,29 @@ export default function AdminShipmentDetailPage() {
                   onClick={async () => {
                     setBusyAction("approve");
                     try {
-                      await adminApproveShipmentItem({
-                        shipment,
-                        actorUid: user.uid,
-                        actorEmail: adminEmail,
+                      const token = await auth.currentUser?.getIdToken(true);
+                      const res = await fetch("/api/admin/booking-action", {
+                        method: "POST",
+                        headers: {
+                          "Content-Type": "application/json",
+                          Authorization: `Bearer ${token}`,
+                        },
+                        body: JSON.stringify({
+                          code: shipment.code,
+                          action: "approve_item",
+                        }),
                       });
+                      const data = await res.json().catch(() => ({}));
+                      if (!res.ok) {
+                        throw new Error(data?.error || "Could not approve item.");
+                      }
                       toast.success("Item approved");
                       await loadDetail();
+                    } catch (err) {
+                      console.error("approve_item failed", err);
+                      toast.error(
+                        err instanceof Error ? err.message : "Could not approve item."
+                      );
                     } finally {
                       setBusyAction("");
                     }
@@ -1533,6 +1548,9 @@ export default function AdminShipmentDetailPage() {
                   setFlagModalOpen(false);
                   toast.success("Item flagged & sender notified");
                   await loadDetail();
+                } catch (err) {
+                  console.error("flag_item failed", err);
+                  toast.error("Could not flag the item. Check Firestore rules and try again.");
                 } finally {
                   setBusyAction("");
                 }

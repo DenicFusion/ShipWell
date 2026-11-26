@@ -2619,7 +2619,7 @@ export async function issueCustomsRefund(params: {
     stage: shipment.status,
     label: `Refund issued (${alert.chargeType || alert.title})`,
     loc: shipment.nextStop?.loc || "ShipWell Billing",
-    note: `Refund ${refundId} processed by ${params.actor.email}.`,
+    note: `Refund ${refundId} processed.`,
     kind: "info",
     ts: now,
     createdBy: params.actor.email,
@@ -2648,7 +2648,7 @@ export async function issueCustomsRefund(params: {
 export async function adminBookingAction(params: {
   actor: VerifiedServerUser;
   code: string;
-  action: "mark_pickup_paid" | "refund_booking";
+  action: "mark_pickup_paid" | "refund_booking" | "approve_item";
   reason?: string;
 }): Promise<{ ok: boolean; status: string; refundId?: string }> {
   const code = String(params.code || "").trim().toUpperCase();
@@ -2667,6 +2667,34 @@ export async function adminBookingAction(params: {
   const bookingRef = shipment.bookingId
     ? db.collection("bookings").doc(shipment.bookingId)
     : null;
+
+  if (params.action === "approve_item") {
+    const batch = db.batch();
+    batch.update(shipRef, {
+      review: { state: "approved", note: "", at: now, by: "ShipWell Operations" },
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    batch.set(shipRef.collection("events").doc(), {
+      stage: shipment.status,
+      label: "Item reviewed and approved",
+      loc: "",
+      note: "Contents match the booking",
+      kind: "review",
+      ts: now,
+      createdBy: params.actor.uid,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    batch.set(db.collection("auditLogs").doc(), {
+      actorUid: params.actor.uid,
+      actorEmail: params.actor.email,
+      action: "approve_item",
+      code,
+      detail: "Approved shipment contents and photos",
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    await batch.commit();
+    return { ok: true, status: "approved" };
+  }
 
   if (params.action === "mark_pickup_paid") {
     const batch = db.batch();
@@ -2690,7 +2718,7 @@ export async function adminBookingAction(params: {
       stage: shipment.status,
       label: `Pickup payment received (${formatMoney(shipment.priceTotal || 0)})`,
       loc: shipment.nextStop?.loc || shipment.sender?.city || "Collection Point",
-      note: `Cash/pickup payment confirmed by ${params.actor.email}.`,
+      note: "Cash/pickup payment confirmed.",
       kind: "info",
       ts: now,
       createdBy: params.actor.email,

@@ -979,7 +979,7 @@ export function createApiApp(): express.Express {
       }
       const body = (req.body || {}) as {
         code?: string;
-        action?: "mark_pickup_paid" | "refund_booking";
+        action?: "mark_pickup_paid" | "refund_booking" | "approve_item";
         reason?: string;
       };
       if (body.action === "refund_booking" && !requireRecentAuth(actor, 900)) {
@@ -990,7 +990,9 @@ export function createApiApp(): express.Express {
         return;
       }
       const action =
-        body.action === "refund_booking" ? "refund_booking" : "mark_pickup_paid";
+        body.action === "refund_booking" || body.action === "approve_item"
+          ? body.action
+          : "mark_pickup_paid";
       const result = await adminBookingAction({
         actor,
         code: String(body.code || ""),

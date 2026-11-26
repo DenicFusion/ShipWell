@@ -529,11 +529,15 @@ function FullTrackedContent({
             destCountry={shipment.receiver.country}
             status={shipment.status}
             isHeld={Boolean(shipment.hold)}
+            events={shipment.events}
+            alerts={shipment.alerts}
           />
 
           <StageStepper
             status={shipment.status}
             isHeld={Boolean(shipment.hold)}
+            events={shipment.events}
+            alerts={shipment.alerts}
           />
 
           <div className="dxt-role">
