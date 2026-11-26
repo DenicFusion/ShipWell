@@ -939,6 +939,24 @@ export async function adminFlagShipmentItem(params: {
   }
 }
 
+async function postShipmentUpdate(
+  code: string,
+  action: "add_checkpoint" | "add_customs_charge" | "save_next_stop",
+  data: Record<string, unknown>
+): Promise<{ ok: boolean; alertId?: string }> {
+  const headers = await getAuthHeaders();
+  const res = await fetch("/api/admin/shipment-update", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ code, action, data }),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(json?.error || "Update failed. Please try again.");
+  }
+  return json;
+}
+
 export async function adminAddCheckpoint(params: {
   shipment: ShipmentRecord;
   stage: ShipmentStage;
@@ -949,65 +967,31 @@ export async function adminAddCheckpoint(params: {
   actorUid: string;
   actorEmail: string;
 }): Promise<void> {
-  const { shipment, stage, label, loc, note, ts, actorUid, actorEmail } = params;
+  const { shipment, stage, label, loc, note, ts } = params;
   const code = shipment.code;
-  try {
-    const batch = writeBatch(db);
-    const evId = `ev_${Date.now().toString(36)}`;
-    batch.set(doc(db, "shipments", code, "events", evId), {
-      stage,
-      label: label.trim(),
-      loc: loc.trim(),
-      note: note.trim(),
-      kind: "scan",
-      ts,
-      createdBy: actorUid,
-      createdAt: serverTimestamp(),
-    });
-    batch.update(doc(db, "shipments", code), {
-      status: stage,
-      nextStop: null,
-      ...(stage === "Delivered" ? { deliveredAt: ts, hold: null } : {}),
-      updatedAt: serverTimestamp(),
-    });
-    batch.update(doc(db, "trackingTeasers", code), {
-      status: stage,
-      ...(stage === "Delivered" ? { deliveredAt: ts, holdType: null } : {}),
-      latestEvent: {
-        label: label.trim(),
-        loc: loc.trim(),
-        ts,
-      },
-      updatedAt: serverTimestamp(),
-    });
-    await batch.commit();
-    await logAdminAudit({
-      actorUid,
-      actorEmail,
-      action: "add_checkpoint",
+  await postShipmentUpdate(code, "add_checkpoint", {
+    stage,
+    label,
+    loc,
+    note,
+    ts,
+  });
+  const receiverHasAccount = await checkAccountExists(shipment.receiverEmail);
+  const headers = await getAuthHeaders();
+  await fetch("/api/shipments/notify", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
       code,
-      detail: `${stage}: ${label.trim()} (${loc.trim()})`,
-    });
-
-    const receiverHasAccount = await checkAccountExists(shipment.receiverEmail);
-    const headers = await getAuthHeaders();
-    await fetch("/api/shipments/notify", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        code,
-        toEmail: shipment.receiverEmail,
-        recipientName: shipment.receiver.name,
-        senderFullName: shipment.sender.name,
-        updateType: stage === "Delivered" ? "delivered" : "checkpoint",
-        headline: label.trim(),
-        details: `${loc.trim()}${note.trim() ? ` — ${note.trim()}` : ""}`,
-        hasAccount: receiverHasAccount,
-      }),
-    }).catch(() => null);
-  } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, `shipments/${code}`);
-  }
+      toEmail: shipment.receiverEmail,
+      recipientName: shipment.receiver.name,
+      senderFullName: shipment.sender.name,
+      updateType: stage === "Delivered" ? "delivered" : "checkpoint",
+      headline: label.trim(),
+      details: `${loc.trim()}${note.trim() ? ` — ${note.trim()}` : ""}`,
+      hasAccount: receiverHasAccount,
+    }),
+  }).catch(() => null);
 }
 
 export async function adminSaveNextStop(params: {
@@ -1019,34 +1003,13 @@ export async function adminSaveNextStop(params: {
   actorUid: string;
   actorEmail: string;
 }): Promise<void> {
-  const { shipment, label, loc, nextEta, deliveryEta, actorUid, actorEmail } =
-    params;
-  const code = shipment.code;
-  try {
-    const nextStop = label.trim()
-      ? { label: label.trim(), loc: loc.trim(), eta: nextEta }
-      : null;
-    const batch = writeBatch(db);
-    batch.update(doc(db, "shipments", code), {
-      nextStop,
-      eta: deliveryEta,
-      updatedAt: serverTimestamp(),
-    });
-    batch.update(doc(db, "trackingTeasers", code), {
-      eta: deliveryEta,
-      updatedAt: serverTimestamp(),
-    });
-    await batch.commit();
-    await logAdminAudit({
-      actorUid,
-      actorEmail,
-      action: "update_next_stop",
-      code,
-      detail: nextStop ? `Next: ${nextStop.label}` : "Updated delivery ETA",
-    });
-  } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, `shipments/${code}`);
-  }
+  const { shipment, label, loc, nextEta, deliveryEta } = params;
+  await postShipmentUpdate(shipment.code, "save_next_stop", {
+    label,
+    loc,
+    nextEta,
+    deliveryEta,
+  });
 }
 
 export async function adminSetHold(params: {
@@ -1293,8 +1256,6 @@ export async function adminAddCustomsCharge(params: {
     note = "",
     holdShipment,
     to = "receiver",
-    actorUid,
-    actorEmail,
   } = params;
 
   const cleanAmount = Number(Number(amount).toFixed(2));
@@ -1303,87 +1264,17 @@ export async function adminAddCustomsCharge(params: {
   }
 
   const code = shipment.code;
-  const nowTs = Date.now();
-  const alertId = `chg_${nowTs.toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-  const cleanCurrency = currency.trim().toUpperCase() || "USD";
-  const cleanNote =
-    note.trim() || `${chargeType} assessed by customs clearance`;
-
-  const customsIdx = STAGES.indexOf("Customs");
-  const currentIdx = STAGES.indexOf(shipment.status);
-  const nextStage: ShipmentStage =
-    currentIdx >= 0 && currentIdx < customsIdx ? "Customs" : shipment.status;
-
-  try {
-    const batch = writeBatch(db);
-    batch.set(doc(db, "shipments", code, "alerts", alertId), {
-      to,
-      kind: "duty",
-      chargeType,
-      currency: cleanCurrency,
-      holdShipment: Boolean(holdShipment),
-      title: `${chargeType} ($${cleanAmount.toFixed(2)})`,
-      message: cleanNote,
-      amount: cleanAmount,
-      status: "open",
-      payment: {
-        provider: "bachs",
-        environment: "sandbox",
-        status: "unpaid",
-        currency: cleanCurrency,
-        events: [],
-      },
-      createdAt: serverTimestamp(),
-    });
-
-    const evLabel = `${chargeType} added ($${cleanAmount.toFixed(2)})`;
-    batch.set(doc(db, "shipments", code, "events", `ev_${nowTs.toString(36)}`), {
-      stage: nextStage,
-      label: evLabel,
-      loc: `${shipment.receiver.city}, ${shipment.receiver.country}`,
-      note: cleanNote,
-      kind: "action",
-      ts: nowTs,
-      createdBy: actorUid,
-      createdAt: serverTimestamp(),
-    });
-
-    const shipPatch: Record<string, unknown> = {
-      status: nextStage,
-      updatedAt: serverTimestamp(),
-    };
-    const teaserPatch: Record<string, unknown> = {
-      status: nextStage,
-      latestEvent: {
-        label: evLabel,
-        loc: `${shipment.receiver.city}, ${shipment.receiver.country}`,
-        ts: nowTs,
-      },
-      updatedAt: serverTimestamp(),
-    };
-
-    if (holdShipment) {
-      shipPatch.hold = {
-        type: "On Hold",
-        reason: `${chargeType} due ($${cleanAmount.toFixed(2)} ${cleanCurrency})`,
-        at: nowTs,
-        alertId,
-      };
-      teaserPatch.holdType = "On Hold";
-    }
-
-    batch.update(doc(db, "shipments", code), shipPatch);
-    batch.update(doc(db, "trackingTeasers", code), teaserPatch);
-    await batch.commit();
-
-    await logAdminAudit({
-      actorUid,
-      actorEmail,
-      action: "add_customs_charge",
-      code,
-      detail: `${chargeType} $${cleanAmount.toFixed(2)} ${cleanCurrency}${holdShipment ? " (held)" : ""}`,
-    });
-
+  const cleanNote = note.trim() || `${chargeType} assessed by customs clearance`;
+  const result = await postShipmentUpdate(code, "add_customs_charge", {
+    chargeType,
+    amount: cleanAmount,
+    currency,
+    note: cleanNote,
+    holdShipment: Boolean(holdShipment),
+    to,
+  });
+  const alertId = result.alertId || "";
+  {
     const targetEmail =
       to === "sender" ? shipment.senderEmail : shipment.receiverEmail;
     const targetName =
@@ -1407,11 +1298,8 @@ export async function adminAddCustomsCharge(params: {
       }),
     }).catch(() => null);
 
-    return alertId;
-  } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, `shipments/${code}`);
-    return alertId;
   }
+  return alertId;
 }
 
 export async function adminUndoLastEvent(params: {

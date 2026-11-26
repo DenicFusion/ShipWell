@@ -1026,7 +1026,7 @@ export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
                 </div>
                 <div className="evc">
                   <div className="evt">
-                    <b>Next: {shipment.nextStop.label}</b>
+                    <b>Up next: {shipment.nextStop.label}</b>
                     {shipment.nextStop.eta && (
                       <time>Est. {formatDateTime(shipment.nextStop.eta)}</time>
                     )}
@@ -1070,7 +1070,7 @@ export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
                       <b>{ev.label}</b>
                       <time>{formatDateTime(ev.ts)}</time>
                     </div>
-                    {ev.loc && <small>{ev.loc}</small>}
+                    <small>{[ev.stage, ev.loc].filter(Boolean).join(" · ")}</small>
                     {ev.note && <small className="nt">{ev.note}</small>}
                   </div>
                 </div>
