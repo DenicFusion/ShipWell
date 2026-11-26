@@ -5,6 +5,27 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>ShipWell — The World's Goods. Delivered With Precision.</title>
     <meta name="theme-color" content="#07090F" />
+    <link rel="icon" href="/favicon.ico" sizes="48x48" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <script>
+      // Installable app (PWA) only on the admin host.
+      if (/^admin\./i.test(location.hostname)) {
+        var m = document.createElement("link");
+        m.rel = "manifest";
+        m.href = "/admin.webmanifest";
+        document.head.appendChild(m);
+        var cap = document.createElement("meta");
+        cap.name = "apple-mobile-web-app-capable";
+        cap.content = "yes";
+        document.head.appendChild(cap);
+        var t = document.createElement("meta");
+        t.name = "apple-mobile-web-app-title";
+        t.content = "SW Admin";
+        document.head.appendChild(t);
+      }
+    </script>
     <meta name="color-scheme" content="dark light" />
     <meta
       name="description"

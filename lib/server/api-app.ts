@@ -45,6 +45,7 @@ import {
   requireRecentAuth,
   verifyFirebaseAdminAuth,
 } from "./firebase-admin.ts";
+import { notifyAdmins, removeAdminPushToken, saveAdminPushToken } from "./admin-push.ts";
 import {
   adminPaymentAction,
   deleteOrDisablePaymentMethodAdmin,
@@ -272,6 +273,14 @@ export function createApiApp(): express.Express {
               typeof req.body === "string" ? req.body : JSON.stringify(req.body || {})
             );
         const result = await handleBachsWebhook(rawBody, req.headers, getOrigin(req));
+        if (result.ok && !result.duplicate && /paid|succeeded|completed|captured/i.test(result.eventType)) {
+          void notifyAdmins({
+            title: "Payment received",
+            body: `Bachs: ${result.eventType}`,
+            url: "/payments",
+            tag: `pay-${result.eventId}`,
+          });
+        }
         res.status(200).json(result);
       } catch (err) {
         const status =
@@ -835,6 +844,12 @@ export function createApiApp(): express.Express {
         body: (req.body || {}) as CreateBookingInput,
         origin: getOrigin(req),
       });
+      void notifyAdmins({
+        title: `New booking ${result.code}`,
+        body: `${result.shipment?.sender?.name || "A customer"} · ${result.shipment?.sender?.city || ""} to ${result.shipment?.receiver?.city || ""} · $${Number(result.totalUsd || 0).toFixed(2)}${result.awaitingPayment ? " (awaiting payment)" : ""}`,
+        url: `/shipment/${result.code}`,
+        tag: `booking-${result.code}`,
+      });
       res.json(result);
     } catch (err) {
       handleServerError(res, err, "Unable to complete booking.", "booking_server");
@@ -1098,6 +1113,40 @@ export function createApiApp(): express.Express {
     }
   });
 
+  // ── ADMIN PUSH NOTIFICATION TOKENS ──
+  app.post("/api/admin/push-token", async (req, res) => {
+    try {
+      const actor = await verifyFirebaseAdminAuth(req.headers);
+      if (!actor?.isAdmin) {
+        res.status(actor ? 403 : 401).json({ error: "Admin authorization required." });
+        return;
+      }
+      await saveAdminPushToken({
+        uid: actor.uid,
+        email: actor.email,
+        token: String((req.body || {}).token || ""),
+        userAgent: String(req.headers["user-agent"] || ""),
+      });
+      res.json({ ok: true });
+    } catch (err) {
+      handleServerError(res, err, "Could not save notification settings.", "admin_push_token");
+    }
+  });
+
+  app.delete("/api/admin/push-token", async (req, res) => {
+    try {
+      const actor = await verifyFirebaseAdminAuth(req.headers);
+      if (!actor?.isAdmin) {
+        res.status(actor ? 403 : 401).json({ error: "Admin authorization required." });
+        return;
+      }
+      await removeAdminPushToken(String((req.body || {}).token || ""));
+      res.json({ ok: true });
+    } catch (err) {
+      handleServerError(res, err, "Could not update notification settings.", "admin_push_token");
+    }
+  });
+
   // ── SUPPORT CONTACT & INBOX ROUTES ──
   app.post("/api/support/contact", async (req, res) => {
     try {
@@ -1193,6 +1242,12 @@ export function createApiApp(): express.Express {
         }
       );
 
+      void notifyAdmins({
+        title: `New message from ${name}`,
+        body: subject || message.slice(0, 120),
+        url: `/thread/${threadRef.id}`,
+        tag: `thread-${threadRef.id}`,
+      });
       res.json({
         ok: true,
         threadId: threadRef.id,
@@ -1329,6 +1384,14 @@ export function createApiApp(): express.Express {
         }
       }
 
+      if (!actor.isAdmin) {
+        void notifyAdmins({
+          title: `Reply from ${thread.userName || actor.email}`,
+          body: message.slice(0, 140),
+          url: `/thread/${threadId}`,
+          tag: `thread-${threadId}`,
+        });
+      }
       res.json({ ok: true });
     } catch (err) {
       handleServerError(res, err, "Unable to send reply.", "support_reply");
@@ -1632,6 +1695,13 @@ export function createApiApp(): express.Express {
         result: "processed",
         detail: `Inbound support email from ${fromEmail}`,
         ts: now,
+      });
+
+      void notifyAdmins({
+        title: `Email from ${fromName || fromEmail}`,
+        body: cleanBody.slice(0, 140),
+        url: `/thread/${targetThreadRef.id}`,
+        tag: `thread-${targetThreadRef.id}`,
       });
 
       await dispatchTransactionalEmail(
