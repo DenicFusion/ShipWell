@@ -18,6 +18,7 @@ import { db } from "@/lib/firebase";
 import { adminPath, getPublicOrigin } from "@/lib/host";
 import { ShipwellLogo } from "@/components/ShipwellLogo";
 import { ThemeSwitch } from "@/components/ThemeSwitch";
+import { AdminAppControls } from "@/components/admin/AdminAppControls";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
 import { getInitials } from "@/types/tracking";
 import toast from "react-hot-toast";
@@ -242,6 +243,7 @@ export function AdminShell({
         <div className="ad-top">
           <h2>{title}</h2>
           <div className="r">
+            <AdminAppControls />
             {topAction}
             <a href={publicOrigin} className="sw-btn sw-btn-ghost hide-s">
               <ArrowUpRight className="w-4 h-4" />
