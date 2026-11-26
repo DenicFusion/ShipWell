@@ -122,17 +122,35 @@ export function RouteArcMap({
 export function StageStepper({
   status,
   isHeld,
+  events,
+  alerts,
 }: {
   status: ShipmentStage;
   isHeld: boolean;
+  events?: Array<{ stage?: string | null }>;
+  alerts?: Array<{ kind?: string | null; chargeType?: string | null }>;
 }) {
-  const activeIdx = STAGES.indexOf(status);
+  // Customs is only shown when it truly applies: the parcel is in customs now,
+  // it has been through customs, or a customs charge/alert exists.
+  const hasCustoms =
+    status === "Customs" ||
+    Boolean(events?.some((e) => e.stage === "Customs")) ||
+    Boolean(
+      alerts?.some(
+        (a) => a.kind === "duty" || a.kind === "customs" || Boolean(a.chargeType)
+      )
+    );
+  const steps = STAGES.filter((st) => st !== "Customs" || hasCustoms);
+  const activeIdx = steps.indexOf(status);
   const fin = status === "Delivered";
   const held = isHeld && !fin;
 
   return (
-    <div className="dx-steps">
-      {STAGES.map((st, idx) => {
+    <div
+      className="dx-steps"
+      style={{ gridTemplateColumns: `repeat(${steps.length}, minmax(0, 1fr))` }}
+    >
+      {steps.map((st, idx) => {
         const isDone = idx < activeIdx || fin;
         const isNow = idx === activeIdx && !fin;
         const cls = isDone

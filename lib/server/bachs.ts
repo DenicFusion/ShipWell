@@ -3,16 +3,20 @@ import { FieldValue, type Firestore } from "firebase-admin/firestore";
 import { parsePhoneNumberFromString } from "libphonenumber-js";
 import {
   ADMIN_EMAIL,
+  computeAggregateReview,
   formatUsd,
   generateTrackingCode,
+  getParcels,
   isValidTrackingCode,
   normalizeEmail,
+  summarizeParcels,
   type BookingPaymentChannel,
   type BookingRecord,
   type CustomsPaymentEvent,
   type CustomsPaymentInfo,
   type GatewayId,
   type ManualPaymentRecord,
+  type Parcel,
   type PaymentMethodRecord,
   type ServiceTier,
   type ShipmentAlert,
@@ -23,7 +27,7 @@ import { calculateMethodAmounts, DEFAULT_PAYMENT_METHODS } from "../payment-meth
 import {
   COUNTRIES,
   addBusinessDays,
-  calculateShippingPricing,
+  calculateMultiParcelPricing,
   formatMoney,
 } from "../quote-engine.ts";
 import { dispatchTransactionalEmail } from "../email/sender.ts";
@@ -33,6 +37,7 @@ import {
   buildReceiverInviteEmail,
   buildReceiverOnItsWayEmail,
   buildSenderBookingEmail,
+  buildShipmentUpdateEmail,
 } from "../email/templates.ts";
 import { logServerError } from "./error-log.ts";
 import {
@@ -407,6 +412,7 @@ export async function dispatchBookingConfirmationEmails(params: {
   const originCity = shipment.sender?.city || "Origin";
   const originCountry = shipment.sender?.country || "";
   const destCity = shipment.receiver?.city || "Destination";
+  const emailParcels = getParcels(shipment);
 
   const hasAccount = await resolveReceiverHasAccount(db, receiverEmail);
   const receiverFirst = receiverFullName.split(/\s+/)[0] || "there";
@@ -446,6 +452,7 @@ export async function dispatchBookingConfirmationEmails(params: {
             originCountry,
             etaLabel,
             inviteToken: token,
+            parcels: emailParcels,
           })
         : buildReceiverInviteEmail({
             baseUrl,
@@ -458,6 +465,7 @@ export async function dispatchBookingConfirmationEmails(params: {
             originCountry,
             etaLabel,
             inviteToken: token,
+            parcels: emailParcels,
           });
 
       const res = await dispatchTransactionalEmail(receiverEmail, payload, {
@@ -514,6 +522,7 @@ export async function dispatchBookingConfirmationEmails(params: {
         routeLabel: `${originCity} → ${destCity}`,
         etaLabel,
         totalFormatted,
+        parcels: emailParcels,
       });
       await dispatchTransactionalEmail(senderEmail, payload, {
         template: "sender_booking",
@@ -1096,6 +1105,18 @@ export interface CreateBookingPartyInput {
   country?: string;
 }
 
+export interface CreateBookingParcelInput {
+  id?: string;
+  contents?: string;
+  packageType?: string;
+  weightKg?: number;
+  lengthCm?: number;
+  widthCm?: number;
+  heightCm?: number;
+  declaredValue?: number;
+  photos?: string[];
+}
+
 export interface CreateBookingInput {
   code?: string;
   idempotencyKey?: string;
@@ -1125,6 +1146,7 @@ export interface CreateBookingInput {
   contents?: string;
   declaredValue?: number;
   photos?: string[];
+  parcels?: CreateBookingParcelInput[];
   paymentMethodId?: string;
   paymentMethod?: string;
   paymentChannel?: BookingPaymentChannel;
@@ -1338,16 +1360,6 @@ export async function createServerBooking(params: {
     );
   }
 
-  const contents = String(body.contents || "").trim().slice(0, 240);
-  const packageType = String(body.packageType || "Parcel").trim().slice(0, 60);
-  const actualKg = Number(body.weightKg);
-  const volKg =
-    ((Number(body.lengthCm) || 0) *
-      (Number(body.widthCm) || 0) *
-      (Number(body.heightCm) || 0)) /
-    5000;
-  const weightKg = Math.max(actualKg || 0, volKg || 0);
-  const declaredValue = Math.max(0, Number(body.declaredValue) || 0);
   const service: ServiceTier =
     body.service === "economy" ||
     body.service === "express" ||
@@ -1355,20 +1367,113 @@ export async function createServerBooking(params: {
       ? body.service
       : "standard";
 
-  if (!contents || !Number.isFinite(actualKg) || actualKg < 0.1 || weightKg > 50000) {
+  const rawParcelsInput: CreateBookingParcelInput[] =
+    body.parcels !== undefined
+      ? Array.isArray(body.parcels)
+        ? body.parcels
+        : []
+      : [
+          {
+            id: "parcel_1",
+            contents: body.contents,
+            packageType: body.packageType,
+            weightKg: body.weightKg,
+            lengthCm: body.lengthCm,
+            widthCm: body.widthCm,
+            heightCm: body.heightCm,
+            declaredValue: body.declaredValue,
+            photos: body.photos,
+          },
+        ];
+
+  if (rawParcelsInput.length === 0 || rawParcelsInput.length > 10) {
     throw Object.assign(
-      new Error("Enter valid parcel contents and weight (0.1–50,000 kg)."),
+      new Error("Bookings must include between 1 and 10 parcels."),
       { status: 400 }
     );
   }
 
-  const photos = Array.isArray(body.photos)
-    ? body.photos.filter(isAcceptedPhotoUrl).slice(0, 4)
-    : [];
-  if (photos.length === 0) {
-    throw Object.assign(new Error("At least 1 uploaded item photo is required."), {
-      status: 400,
-    });
+  let totalPhotosCount = 0;
+  const parcels: Parcel[] = rawParcelsInput.map((raw, idx) => {
+    const label = rawParcelsInput.length > 1 ? `Parcel ${idx + 1}: ` : "";
+    const pContents = String(raw?.contents || "").trim().slice(0, 240);
+    const pType = String(raw?.packageType || "Parcel").trim().slice(0, 60) || "Parcel";
+    const pActualKg = Number(raw?.weightKg);
+    const lCm = Math.max(0, Number(raw?.lengthCm) || 0);
+    const wCm = Math.max(0, Number(raw?.widthCm) || 0);
+    const hCm = Math.max(0, Number(raw?.heightCm) || 0);
+    const volKg = (lCm * wCm * hCm) / 5000;
+    const pBillableKg = Math.round(Math.max(pActualKg || 0, volKg || 0) * 100) / 100;
+    const pDeclared = Number(raw?.declaredValue ?? 0);
+
+    if (
+      !pContents ||
+      !Number.isFinite(pActualKg) ||
+      pActualKg < 0.1 ||
+      !Number.isFinite(pBillableKg) ||
+      pBillableKg > 50000
+    ) {
+      throw Object.assign(
+        new Error(`${label}Enter valid parcel contents and weight (0.1–50,000 kg).`),
+        { status: 400 }
+      );
+    }
+    if (!Number.isFinite(pDeclared) || pDeclared < 0) {
+      throw Object.assign(
+        new Error(`${label}Declared value cannot be negative.`),
+        { status: 400 }
+      );
+    }
+
+    const pPhotos = Array.isArray(raw?.photos)
+      ? raw.photos.filter(isAcceptedPhotoUrl).slice(0, 4)
+      : [];
+    if (pPhotos.length === 0) {
+      throw Object.assign(
+        new Error(`${label}At least 1 uploaded item photo is required (1–4 per parcel).`),
+        { status: 400 }
+      );
+    }
+    totalPhotosCount += pPhotos.length;
+    if (totalPhotosCount > 20) {
+      throw Object.assign(
+        new Error("Maximum 20 photos allowed across all parcels in one booking."),
+        { status: 400 }
+      );
+    }
+
+    const cleanId =
+      String(raw?.id || `parcel_${idx + 1}`)
+        .replace(/[^a-zA-Z0-9_-]/g, "")
+        .slice(0, 40) || `parcel_${idx + 1}`;
+
+    return {
+      id: cleanId,
+      contents: pContents,
+      packageType: pType,
+      weightKg: pBillableKg,
+      actualKg: Math.round(pActualKg * 100) / 100,
+      ...(lCm > 0 ? { lengthCm: Math.round(lCm * 10) / 10 } : {}),
+      ...(wCm > 0 ? { widthCm: Math.round(wCm * 10) / 10 } : {}),
+      ...(hCm > 0 ? { heightCm: Math.round(hCm * 10) / 10 } : {}),
+      declaredValue: Math.round(pDeclared * 100) / 100,
+      photos: pPhotos,
+      review: { state: "pending", note: "" },
+    };
+  });
+
+  const summary = summarizeParcels(parcels);
+  const weightKg = summary.weightKg;
+  const declaredValue = summary.declaredValue;
+  const contents = summary.contents;
+  const packageType = summary.packageType;
+  const photos = summary.photos;
+
+  if (weightKg > 50000) {
+    throw Object.assign(
+      new Error("Total shipment billable weight cannot exceed 50,000 kg."),
+      { status: 400 }
+    );
   }
 
   const [{ publicSettings, secrets }, allMethods] = await Promise.all([
@@ -1429,12 +1534,16 @@ export async function createServerBooking(params: {
     );
   }
 
-  // Strictly calculate quote and method fee/discount + conversion on the server
-  const quote = calculateShippingPricing(
+  // Strictly calculate quote and method fee/discount + conversion on the server from validated parcels
+  const quote = calculateMultiParcelPricing(
     senderCountry,
     receiverCountry,
-    weightKg,
-    declaredValue,
+    parcels.map((p, idx) => ({
+      id: p.id,
+      label: p.contents || `Parcel ${idx + 1}`,
+      billableKg: p.weightKg,
+      declaredValue: p.declaredValue,
+    })),
     service
   );
 
@@ -1564,6 +1673,7 @@ export async function createServerBooking(params: {
     service,
     weightKg,
     declaredValue,
+    parcels,
     total: amounts.totalUsd,
     feeAmount: amounts.feeAmountUsd,
     currency: "USD",
@@ -1613,6 +1723,7 @@ export async function createServerBooking(params: {
     packageType,
     contents,
     declaredValue,
+    parcels,
     priceTotal: amounts.totalUsd,
     paymentMethod: isCash ? "Booked, payment due at pickup" : chosenMethod.name,
     paymentMethodId: chosenMethod.id,
@@ -1650,11 +1761,14 @@ export async function createServerBooking(params: {
   const eventLabel = isCash
     ? "Booked, payment due at pickup"
     : "Booking started — awaiting payment";
+  const multiPrefix = parcels.length > 1 ? `Booked ${parcels.length} parcels · ` : "";
   const eventNote = isCash
-    ? `Parcel ${code} booked with payment due at pickup (${formatMoney(amounts.totalUsd)}).`
+    ? parcels.length > 1
+      ? `Booked ${parcels.length} parcels (${code}) with payment due at pickup (${formatMoney(amounts.totalUsd)}).`
+      : `Parcel ${code} booked with payment due at pickup (${formatMoney(amounts.totalUsd)}).`
     : isManual
-      ? `Manual payment ${paymentReference} started via ${chosenMethod.name} (${amounts.convertedAmount.toFixed(2)} ${currency}).`
-      : `Booking checkout created for ${formatMoney(amounts.totalUsd)} via ${chosenMethod.name}.`;
+      ? `${multiPrefix}Manual payment ${paymentReference} started via ${chosenMethod.name} (${amounts.convertedAmount.toFixed(2)} ${currency}).`
+      : `${multiPrefix}Booking checkout created for ${formatMoney(amounts.totalUsd)} via ${chosenMethod.name}.`;
 
   const batch = db.batch();
   batch.set(bookingRef, {
@@ -2610,7 +2724,7 @@ export async function issueCustomsRefund(params: {
       {
         type: "refund.issued",
         at: now,
-        detail: `${refundId} by ${params.actor.email}`,
+        detail: `${refundId} processed`,
       },
     ],
   });
@@ -2619,10 +2733,10 @@ export async function issueCustomsRefund(params: {
     stage: shipment.status,
     label: `Refund issued (${alert.chargeType || alert.title})`,
     loc: shipment.nextStop?.loc || "ShipWell Billing",
-    note: `Refund ${refundId} processed by ${params.actor.email}.`,
+    note: `Refund ${refundId} processed.`,
     kind: "info",
     ts: now,
-    createdBy: params.actor.email,
+    createdBy: params.actor.uid,
     createdAt: FieldValue.serverTimestamp(),
   });
 
@@ -2648,25 +2762,251 @@ export async function issueCustomsRefund(params: {
 export async function adminBookingAction(params: {
   actor: VerifiedServerUser;
   code: string;
-  action: "mark_pickup_paid" | "refund_booking";
+  action: "mark_pickup_paid" | "refund_booking" | "approve_item" | "flag_item";
   reason?: string;
-}): Promise<{ ok: boolean; status: string; refundId?: string }> {
+  parcelId?: string;
+  approveAll?: boolean;
+  approve_all?: boolean;
+  baseUrl?: string;
+}): Promise<{
+  ok: boolean;
+  status: string;
+  refundId?: string;
+  review?: ShipmentRecord["review"];
+  parcels?: Parcel[];
+  alertId?: string;
+}> {
   const code = String(params.code || "").trim().toUpperCase();
   if (!isValidTrackingCode(code)) {
-    throw new Error("Valid tracking code is required.");
+    throw Object.assign(new Error("Valid tracking code is required."), { status: 400 });
   }
 
   const db = getAdminDb();
   const shipRef = db.collection("shipments").doc(code);
   const shipSnap = await shipRef.get();
   if (!shipSnap.exists) {
-    throw new Error("Shipment not found.");
+    throw Object.assign(new Error("Shipment not found."), { status: 404 });
   }
   const shipment = shipSnap.data() as ShipmentRecord;
   const now = Date.now();
   const bookingRef = shipment.bookingId
     ? db.collection("bookings").doc(shipment.bookingId)
     : null;
+
+  if (params.action === "approve_item") {
+    const currentParcels = getParcels(shipment);
+    const approveAll = Boolean(
+      params.approveAll || params.approve_all || !params.parcelId
+    );
+    let targetIdx = -1;
+    if (!approveAll) {
+      targetIdx = currentParcels.findIndex((p) => p.id === params.parcelId);
+      if (targetIdx < 0) {
+        throw Object.assign(new Error("Parcel not found on this shipment."), {
+          status: 404,
+        });
+      }
+    }
+
+    const updatedParcels: Parcel[] = currentParcels.map((p, idx) =>
+      approveAll || idx === targetIdx
+        ? {
+            ...p,
+            review: {
+              state: "approved",
+              note: "",
+              at: now,
+              by: "ShipWell Operations",
+            },
+          }
+        : p
+    );
+
+    const aggReview = computeAggregateReview(updatedParcels);
+    const eventLabel =
+      currentParcels.length > 1
+        ? approveAll
+          ? `All ${currentParcels.length} parcels approved`
+          : `Parcel ${targetIdx + 1} of ${currentParcels.length} approved`
+        : "Item reviewed and approved";
+    const eventNote =
+      currentParcels.length > 1 && !approveAll
+        ? `${updatedParcels[targetIdx]?.contents || `Parcel ${targetIdx + 1}`} — contents match the booking.`
+        : "Contents match the booking";
+
+    const batch = db.batch();
+    batch.update(shipRef, {
+      parcels: updatedParcels,
+      review: aggReview,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    batch.set(shipRef.collection("events").doc(), {
+      stage: shipment.status,
+      label: eventLabel,
+      loc: "",
+      note: eventNote,
+      kind: "review",
+      ts: now,
+      createdBy: params.actor.uid,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    batch.set(db.collection("auditLogs").doc(), {
+      actorUid: params.actor.uid,
+      actorEmail: params.actor.email,
+      action: "approve_item",
+      code,
+      detail: eventLabel,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    await batch.commit();
+    return {
+      ok: true,
+      status: aggReview.state,
+      review: aggReview,
+      parcels: updatedParcels,
+    };
+  }
+
+  if (params.action === "flag_item") {
+    const reason = String(params.reason || "").trim().slice(0, 500);
+    if (!reason) {
+      throw Object.assign(new Error("Please provide a reason for flagging."), {
+        status: 400,
+      });
+    }
+
+    const currentParcels = getParcels(shipment);
+    let targetIdx = params.parcelId
+      ? currentParcels.findIndex((p) => p.id === params.parcelId)
+      : 0;
+    if (params.parcelId && targetIdx < 0) {
+      throw Object.assign(new Error("Parcel not found on this shipment."), {
+        status: 404,
+      });
+    }
+    if (targetIdx < 0) targetIdx = 0;
+
+    const updatedParcels: Parcel[] = currentParcels.map((p, idx) =>
+      idx === targetIdx
+        ? {
+            ...p,
+            review: {
+              state: "flagged",
+              note: reason,
+              at: now,
+              by: "ShipWell Operations",
+            },
+          }
+        : p
+    );
+
+    const targetParcel = updatedParcels[targetIdx];
+    const parcelDescriptor =
+      currentParcels.length > 1
+        ? `Parcel ${targetIdx + 1} of ${currentParcels.length} (${targetParcel?.contents || "Parcel"})`
+        : targetParcel?.contents || "Parcel";
+
+    const aggReview = computeAggregateReview(updatedParcels, reason);
+    const alertRef = shipRef.collection("alerts").doc();
+    const eventLabel =
+      currentParcels.length > 1
+        ? `Parcel ${targetIdx + 1} of ${currentParcels.length} flagged during review`
+        : "Item flagged during review";
+    const alertTitle =
+      currentParcels.length > 1
+        ? `Issue with Parcel ${targetIdx + 1} (${targetParcel?.contents || "Parcel"})`
+        : "Parcel contents require attention";
+    const loc =
+      shipment.nextStop?.loc || shipment.sender?.city || "Origin Hub";
+
+    const batch = db.batch();
+    batch.update(shipRef, {
+      parcels: updatedParcels,
+      review: aggReview,
+      hold: {
+        type: "On Hold",
+        reason:
+          currentParcels.length > 1
+            ? `${parcelDescriptor}: ${reason}`
+            : reason,
+        at: now,
+        alertId: alertRef.id,
+      },
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    batch.update(db.collection("trackingTeasers").doc(code), {
+      holdType: "On Hold",
+      latestEvent: {
+        label: eventLabel,
+        loc,
+        ts: now,
+      },
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    batch.set(alertRef, {
+      to: "sender",
+      kind: "item",
+      holdShipment: true,
+      title: alertTitle,
+      message: `${parcelDescriptor}: ${reason}`,
+      amount: 0,
+      status: "open",
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    batch.set(shipRef.collection("events").doc(), {
+      stage: shipment.status,
+      label: eventLabel,
+      loc: "",
+      note:
+        currentParcels.length > 1 ? `${parcelDescriptor}: ${reason}` : reason,
+      kind: "action",
+      ts: now,
+      createdBy: params.actor.uid,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    batch.set(db.collection("auditLogs").doc(), {
+      actorUid: params.actor.uid,
+      actorEmail: params.actor.email,
+      action: "flag_item",
+      code,
+      detail: `${parcelDescriptor}: ${reason}`.slice(0, 400),
+      createdAt: FieldValue.serverTimestamp(),
+    });
+    await batch.commit();
+
+    // Non-blocking notification email to sender naming the flagged parcel
+    const senderEmail = normalizeEmail(shipment.senderEmail || shipment.sender?.email || "");
+    if (senderEmail.includes("@")) {
+      const hasAccount = await resolveReceiverHasAccount(db, senderEmail).catch(
+        () => true
+      );
+      const emailPayload = buildShipmentUpdateEmail({
+        baseUrl: params.baseUrl,
+        trackingCode: code,
+        recipientName: shipment.sender?.name || "Sender",
+        updateType: "action_required",
+        headline: alertTitle,
+        details: `${parcelDescriptor}: ${reason}`,
+        hasAccount,
+        parcels: updatedParcels,
+      });
+      await dispatchTransactionalEmail(senderEmail, emailPayload, {
+        template: "shipment_action_required",
+        category: "tracking",
+        prefKey: "action",
+        code,
+        createdBy: params.actor.uid,
+      }).catch(() => null);
+    }
+
+    return {
+      ok: true,
+      status: "flagged",
+      review: aggReview,
+      parcels: updatedParcels,
+      alertId: alertRef.id,
+    };
+  }
 
   if (params.action === "mark_pickup_paid") {
     const batch = db.batch();
@@ -2690,10 +3030,10 @@ export async function adminBookingAction(params: {
       stage: shipment.status,
       label: `Pickup payment received (${formatMoney(shipment.priceTotal || 0)})`,
       loc: shipment.nextStop?.loc || shipment.sender?.city || "Collection Point",
-      note: `Cash/pickup payment confirmed by ${params.actor.email}.`,
+      note: "Cash/pickup payment confirmed.",
       kind: "info",
       ts: now,
-      createdBy: params.actor.email,
+      createdBy: params.actor.uid,
       createdAt: FieldValue.serverTimestamp(),
     });
     batch.set(db.collection("auditLogs").doc(), {
@@ -2710,7 +3050,9 @@ export async function adminBookingAction(params: {
 
   // Refund booking
   if (shipment.paymentStatus !== "paid") {
-    throw new Error("Only paid bookings can be refunded.");
+    throw Object.assign(new Error("Only paid bookings can be refunded."), {
+      status: 400,
+    });
   }
 
   let refundId = `ref_${Date.now().toString(36)}`;
@@ -2761,10 +3103,10 @@ export async function adminBookingAction(params: {
     stage: shipment.status,
     label: "Booking refunded",
     loc: "ShipWell Billing",
-    note: `Booking refund ${refundId} issued by ${params.actor.email}.`,
+    note: `Booking refund ${refundId} issued.`,
     kind: "info",
     ts: now,
-    createdBy: params.actor.email,
+    createdBy: params.actor.uid,
     createdAt: FieldValue.serverTimestamp(),
   });
   batch.set(db.collection("auditLogs").doc(), {

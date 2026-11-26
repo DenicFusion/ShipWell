@@ -166,7 +166,7 @@ service cloud.firestore {
         ])
         && data.keys().hasOnly([
           'code', 'senderId', 'senderEmail', 'receiverEmail', 'sender', 'receiver',
-          'service', 'weightKg', 'packageType', 'contents', 'declaredValue',
+          'service', 'weightKg', 'packageType', 'contents', 'declaredValue', 'parcels',
           'priceTotal', 'paymentMethod', 'paymentMethodId', 'paymentMethodName',
           'paymentChannel', 'feeAmount', 'convertedAmount', 'convertedCurrency',
           'paymentWindowExpiresAt', 'bookingId', 'paymentStatus',
@@ -186,6 +186,7 @@ service cloud.firestore {
         && data.packageType is string && data.packageType.size() > 0 && data.packageType.size() <= 60
         && data.contents is string && data.contents.size() > 0 && data.contents.size() <= 240
         && data.declaredValue is number && data.declaredValue >= 0
+        && (!data.keys().hasAny(['parcels']) || (data.parcels is list && data.parcels.size() >= 1 && data.parcels.size() <= 10))
         && data.priceTotal is number && data.priceTotal >= 0
         && data.paymentMethod is string && data.paymentMethod.size() > 0 && data.paymentMethod.size() <= 80
         && (!data.keys().hasAny(['paymentMethodId']) || data.paymentMethodId == null || (data.paymentMethodId is string && data.paymentMethodId.size() <= 80))

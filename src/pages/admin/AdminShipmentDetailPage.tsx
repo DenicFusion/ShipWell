@@ -26,9 +26,7 @@ import { useShipWell } from "@/components/providers/ShipWellProvider";
 import {
   adminAddCheckpoint,
   adminAddCustomsCharge,
-  adminApproveShipmentItem,
   adminClearHold,
-  adminFlagShipmentItem,
   adminResendReceiverInvite,
   adminSaveNextStop,
   adminSendAlert,
@@ -47,11 +45,13 @@ import {
   CHARGE_TYPES,
   firestoreTimeToMs,
   formatUsd,
+  getParcels,
   getShipmentChip,
   STAGES,
   type AlertKind,
   type AlertTarget,
   type ChargeType,
+  type Parcel,
   type ShipmentAlert,
   type ShipmentRecord,
   type ShipmentStage,
@@ -129,6 +129,11 @@ export default function AdminShipmentDetailPage() {
   // Flag item custom React modal (NO window.prompt)
   const [flagModalOpen, setFlagModalOpen] = useState(false);
   const [flagReason, setFlagReason] = useState("");
+  const [flagParcelTarget, setFlagParcelTarget] = useState<{
+    id: string;
+    index: number;
+    contents: string;
+  } | null>(null);
 
   // Add checkpoint form
   const [cpStage, setCpStage] = useState<ShipmentStage>("In Transit");
@@ -287,7 +292,37 @@ export default function AdminShipmentDetailPage() {
   const openAlertsCount = (shipment.alerts || []).filter(
     (a) => a.status === "open"
   ).length;
+  const parcels: Parcel[] = getParcels(shipment);
+  const totalParcelPhotos = parcels.reduce((sum, p) => sum + p.photos.length, 0);
+  const allParcelsApproved = parcels.every((p) => p.review?.state === "approved");
   const adminEmail = user.email || "";
+
+  const runItemReviewAction = async (payload: {
+    action: "approve_item" | "flag_item";
+    parcelId?: string;
+    approveAll?: boolean;
+    reason?: string;
+  }) => {
+    const token = await auth.currentUser?.getIdToken(true);
+    if (!token) {
+      throw new Error("Admin session expired. Please sign in again.");
+    }
+    const res = await fetch("/api/admin/booking-action", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        code: shipment.code,
+        ...payload,
+      }),
+    });
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    if (!res.ok) {
+      throw new Error(data.error || "Item review update failed.");
+    }
+  };
 
   return (
     <AdminShell
@@ -322,11 +357,15 @@ export default function AdminShipmentDetailPage() {
       <div className="ad-split">
         {/* LEFT COLUMN */}
         <div>
-          {/* 1. REVIEW ITEM */}
+          {/* 1. REVIEW ITEM(S) */}
           <div className="ad-card">
-            <div className="ad-ch">
+            <div className="ad-ch" style={{ flexWrap: "wrap", gap: 8 }}>
               <div>
-                <b>1. Review item</b>
+                <b>
+                  {parcels.length > 1
+                    ? `1. Review items (${parcels.length})`
+                    : "1. Review item"}
+                </b>
                 <span
                   className={`mini ${
                     shipment.review.state === "approved"
@@ -339,84 +378,211 @@ export default function AdminShipmentDetailPage() {
                   {shipment.review.state}
                 </span>
               </div>
-              <small>{shipment.photos?.length || 0} photos</small>
+              <div className="flex items-center gap-2 flex-wrap">
+                <small>{totalParcelPhotos} photos</small>
+                {parcels.length > 1 && !allParcelsApproved && (
+                  <button
+                    type="button"
+                    disabled={busyAction !== ""}
+                    className="sw-btn sw-btn-em"
+                    style={{ padding: "6px 12px", fontSize: 12 }}
+                    onClick={async () => {
+                      setBusyAction("approve_all");
+                      try {
+                        await runItemReviewAction({
+                          action: "approve_item",
+                          approveAll: true,
+                        });
+                        toast.success(`All ${parcels.length} parcels approved`);
+                        await loadDetail();
+                      } catch (err) {
+                        toast.error(
+                          err instanceof Error
+                            ? err.message
+                            : "Could not approve all parcels."
+                        );
+                      } finally {
+                        setBusyAction("");
+                      }
+                    }}
+                  >
+                    {busyAction === "approve_all" ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Check className="w-3.5 h-3.5" />
+                    )}
+                    Approve all
+                  </button>
+                )}
+              </div>
             </div>
             <div className="ad-cb">
-              <div className="ad-kv">
-                <div>
-                  <small>Contents</small>
-                  <b>{shipment.contents}</b>
-                </div>
-                <div>
-                  <small>Package / Declared value</small>
-                  <b>
-                    {shipment.packageType} ·{" "}
-                    {formatMoney(shipment.declaredValue)}
-                  </b>
-                </div>
-              </div>
-
-              {shipment.photos && shipment.photos.length > 0 && (
-                <div className="gal">
-                  {shipment.photos.map((src, i) => (
-                    <button
-                      key={i}
-                      type="button"
-                      onClick={() => openPhotoZoom(src, `${shipment.contents} ${i + 1}`)}
-                    >
-                      <img src={src} alt={`Item ${i + 1}`} />
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {shipment.review.note && (
-                <div className="ad-cur a">
+              {shipment.review.note && parcels.length === 1 && (
+                <div className="ad-cur a" style={{ marginBottom: 12 }}>
                   <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
                   <span>{shipment.review.note}</span>
                 </div>
               )}
 
-              <div className="ad-rev">
-                <button
-                  type="button"
-                  disabled={busyAction !== ""}
-                  className="sw-btn sw-btn-em"
-                  onClick={async () => {
-                    setBusyAction("approve");
-                    try {
-                      await adminApproveShipmentItem({
-                        shipment,
-                        actorUid: user.uid,
-                        actorEmail: adminEmail,
-                      });
-                      toast.success("Item approved");
-                      await loadDetail();
-                    } finally {
-                      setBusyAction("");
-                    }
-                  }}
-                >
-                  {busyAction === "approve" ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Check className="w-4 h-4" />
-                  )}
-                  Approve item
-                </button>
+              <div className="flex flex-col gap-3">
+                {parcels.map((parcel, idx) => {
+                  const pState = parcel.review?.state || "pending";
+                  const approveKey = `approve:${parcel.id}`;
+                  return (
+                    <div
+                      key={parcel.id || idx}
+                      style={{
+                        border: "1px solid var(--border)",
+                        borderRadius: 14,
+                        padding: parcels.length > 1 ? 14 : 0,
+                        background: parcels.length > 1 ? "var(--card2)" : "transparent",
+                        ...(parcels.length === 1 ? { border: "none" } : {}),
+                      }}
+                    >
+                      {parcels.length > 1 && (
+                        <div
+                          className="flex items-center justify-between gap-2 flex-wrap"
+                          style={{ marginBottom: 10 }}
+                        >
+                          <div className="flex items-center gap-2 flex-wrap min-w-0">
+                            <b style={{ fontSize: 13.5 }}>
+                              Parcel {idx + 1} of {parcels.length}
+                            </b>
+                            <span
+                              className={`mini ${
+                                pState === "approved"
+                                  ? "g"
+                                  : pState === "flagged"
+                                    ? "r"
+                                    : "a"
+                              }`}
+                            >
+                              {pState}
+                            </span>
+                          </div>
+                          <small style={{ color: "var(--muted)" }}>
+                            {parcel.photos.length} photo
+                            {parcel.photos.length === 1 ? "" : "s"}
+                          </small>
+                        </div>
+                      )}
 
-                <button
-                  type="button"
-                  disabled={busyAction !== ""}
-                  className="sw-btn sw-btn-red"
-                  onClick={() => {
-                    setFlagReason("");
-                    setFlagModalOpen(true);
-                  }}
-                >
-                  <AlertTriangle className="w-4 h-4" />
-                  Flag an issue
-                </button>
+                      <div className="ad-kv">
+                        <div>
+                          <small>Contents</small>
+                          <b>{parcel.contents}</b>
+                        </div>
+                        <div>
+                          <small>Package / Weight / Value</small>
+                          <b>
+                            {parcel.packageType} · {parcel.weightKg.toFixed(1)} kg
+                            {parcel.actualKg && parcel.actualKg !== parcel.weightKg
+                              ? ` (actual ${parcel.actualKg.toFixed(1)} kg)`
+                              : ""}{" "}
+                            · {formatMoney(parcel.declaredValue)}
+                          </b>
+                        </div>
+                      </div>
+
+                      {parcel.lengthCm && parcel.widthCm && parcel.heightCm ? (
+                        <div
+                          style={{
+                            marginTop: 8,
+                            fontSize: 12,
+                            color: "var(--muted)",
+                          }}
+                        >
+                          Dimensions: {parcel.lengthCm} × {parcel.widthCm} ×{" "}
+                          {parcel.heightCm} cm
+                        </div>
+                      ) : null}
+
+                      {parcel.photos.length > 0 && (
+                        <div className="gal" style={{ marginTop: 12 }}>
+                          {parcel.photos.map((src, i) => (
+                            <button
+                              key={`${parcel.id}_photo_${i}`}
+                              type="button"
+                              onClick={() =>
+                                openPhotoZoom(src, `${parcel.contents} ${i + 1}`)
+                              }
+                            >
+                              <img src={src} alt={`${parcel.contents} ${i + 1}`} />
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      {parcel.review?.note && (parcels.length > 1 || !shipment.review.note) && (
+                        <div className="ad-cur a" style={{ marginTop: 12 }}>
+                          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                          <span>{parcel.review.note}</span>
+                        </div>
+                      )}
+
+                      <div className="ad-rev" style={{ marginTop: 12 }}>
+                        <button
+                          type="button"
+                          disabled={busyAction !== ""}
+                          className="sw-btn sw-btn-em"
+                          onClick={async () => {
+                            setBusyAction(approveKey);
+                            try {
+                              await runItemReviewAction({
+                                action: "approve_item",
+                                parcelId: parcel.id,
+                                approveAll: false,
+                              });
+                              toast.success(
+                                parcels.length > 1
+                                  ? `Parcel ${idx + 1} approved`
+                                  : "Item approved"
+                              );
+                              await loadDetail();
+                            } catch (err) {
+                              toast.error(
+                                err instanceof Error
+                                  ? err.message
+                                  : "Could not approve parcel."
+                              );
+                            } finally {
+                              setBusyAction("");
+                            }
+                          }}
+                        >
+                          {busyAction === approveKey ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Check className="w-4 h-4" />
+                          )}
+                          {pState === "approved"
+                            ? "Approved"
+                            : parcels.length > 1
+                              ? `Approve parcel ${idx + 1}`
+                              : "Approve item"}
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={busyAction !== ""}
+                          className="sw-btn sw-btn-red"
+                          onClick={() => {
+                            setFlagParcelTarget({
+                              id: parcel.id,
+                              index: idx + 1,
+                              contents: parcel.contents,
+                            });
+                            setFlagReason("");
+                            setFlagModalOpen(true);
+                          }}
+                        >
+                          <AlertTriangle className="w-4 h-4" />
+                          Flag an issue
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -1497,11 +1663,20 @@ export default function AdminShipmentDetailPage() {
       {/* CUSTOM REACT FLAG ITEM MODAL (ZERO window.prompt) */}
       {flagModalOpen && (
         <div className="md" role="dialog" aria-modal="true">
-          <div className="md-b" onClick={() => setFlagModalOpen(false)} />
+          <div
+            className="md-b"
+            onClick={() => {
+              setFlagModalOpen(false);
+              setFlagParcelTarget(null);
+            }}
+          />
           <div className="md-c">
             <button
               className="md-x"
-              onClick={() => setFlagModalOpen(false)}
+              onClick={() => {
+                setFlagModalOpen(false);
+                setFlagParcelTarget(null);
+              }}
               aria-label="Close"
             >
               <X className="w-4 h-4" />
@@ -1511,8 +1686,15 @@ export default function AdminShipmentDetailPage() {
             </div>
             <div className="au-t">FLAG AN ISSUE</div>
             <p className="au-r">
+              {parcels.length > 1 && flagParcelTarget ? (
+                <>
+                  Flagging <b>Parcel {flagParcelTarget.index}</b> (
+                  {flagParcelTarget.contents}).{" "}
+                </>
+              ) : null}
               Explain what is missing or needs attention. This creates a sender
-              action alert and puts {shipment.code} on hold automatically.
+              action alert, emails the sender, and puts {shipment.code} on hold
+              automatically.
             </p>
             <form
               className="au-f"
@@ -1524,15 +1706,21 @@ export default function AdminShipmentDetailPage() {
                 }
                 setBusyAction("flag");
                 try {
-                  await adminFlagShipmentItem({
-                    shipment,
-                    reason: flagReason,
-                    actorUid: user.uid,
-                    actorEmail: adminEmail,
+                  await runItemReviewAction({
+                    action: "flag_item",
+                    parcelId: flagParcelTarget?.id,
+                    reason: flagReason.trim(),
                   });
                   setFlagModalOpen(false);
+                  setFlagParcelTarget(null);
                   toast.success("Item flagged & sender notified");
                   await loadDetail();
+                } catch (err) {
+                  toast.error(
+                    err instanceof Error
+                      ? err.message
+                      : "Could not flag parcel."
+                  );
                 } finally {
                   setBusyAction("");
                 }

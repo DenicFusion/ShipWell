@@ -143,6 +143,108 @@ export function calculateShippingPricing(
   };
 }
 
+export interface ParcelPriceInput {
+  id?: string;
+  label?: string;
+  billableKg: number;
+  declaredValue: number;
+}
+
+export interface ParcelPriceLine {
+  id: string;
+  label: string;
+  billableKg: number;
+  declaredValue: number;
+  base: number;
+  fuel: number;
+  cover: number;
+  duty: number;
+  lineTotal: number;
+}
+
+export interface MultiParcelQuote extends ShippingQuote {
+  parcelLines: ParcelPriceLine[];
+  totalWeightKg: number;
+  totalDeclaredValue: number;
+}
+
+export function calculateMultiParcelPricing(
+  from: string,
+  to: string,
+  parcels: ParcelPriceInput[],
+  svc: ServiceTier
+): MultiParcelQuote {
+  const list =
+    Array.isArray(parcels) && parcels.length > 0
+      ? parcels
+      : [{ id: "parcel_1", label: "Parcel 1", billableKg: 1, declaredValue: 0 }];
+
+  const A = PLACES[from] ?? PLACES["United States"];
+  const B = PLACES[to] ?? PLACES["United Kingdom"];
+  const intl = from !== to;
+  const dist = intl ? distanceKm(A, B) : 120;
+  const perKg = 1.9 + dist / 3800;
+  const mult = SERVICES[svc].mult;
+
+  const parcelLines: ParcelPriceLine[] = list.map((p, idx) => {
+    const kg = Math.max(Number(p.billableKg) || 0.1, 0.1);
+    const val = Math.max(0, Number(p.declaredValue) || 0);
+    // Apply the $8 base/handling fee ONCE per booking (on the first parcel), not per extra parcel.
+    const handling = idx === 0 ? 8 : 0;
+    const base = r2((handling + kg * perKg) * mult);
+    const fuel = r2(base * 0.12);
+    const cover = r2(Math.max(2.5, val * 0.008));
+    const duty = intl ? r2(base * 0.08) : 0;
+    const lineTotal = r2(base + fuel + cover + duty);
+    return {
+      id: p.id || `parcel_${idx + 1}`,
+      label: p.label || `Parcel ${idx + 1}`,
+      billableKg: r2(kg),
+      declaredValue: r2(val),
+      base,
+      fuel,
+      cover,
+      duty,
+      lineTotal,
+    };
+  });
+
+  const base = r2(parcelLines.reduce((sum, l) => sum + l.base, 0));
+  const fuel = r2(parcelLines.reduce((sum, l) => sum + l.fuel, 0));
+  const cover = r2(parcelLines.reduce((sum, l) => sum + l.cover, 0));
+  const duty = r2(parcelLines.reduce((sum, l) => sum + l.duty, 0));
+  const total = r2(parcelLines.reduce((sum, l) => sum + l.lineTotal, 0));
+  const totalWeightKg = r2(
+    parcelLines.reduce((sum, l) => sum + l.billableKg, 0)
+  );
+  const totalDeclaredValue = r2(
+    parcelLines.reduce((sum, l) => sum + l.declaredValue, 0)
+  );
+
+  const singleRef = calculateShippingPricing(
+    from,
+    to,
+    parcelLines[0]?.billableKg || 1,
+    parcelLines[0]?.declaredValue || 0,
+    svc
+  );
+
+  return {
+    service: svc,
+    base,
+    fuel,
+    cover,
+    duty,
+    total,
+    days: singleRef.days,
+    dist: singleRef.dist,
+    intl: singleRef.intl,
+    parcelLines,
+    totalWeightKg,
+    totalDeclaredValue,
+  };
+}
+
 export function addBusinessDays(date: Date | number, count: number): Date {
   const d = new Date(date);
   let remaining = count;

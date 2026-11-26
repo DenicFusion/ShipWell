@@ -58,7 +58,7 @@ import {
 } from "@/lib/storage";
 import {
   addBusinessDays,
-  calculateShippingPricing,
+  calculateMultiParcelPricing,
   COUNTRIES,
   formatMoney,
   formatShortDay,
@@ -67,6 +67,7 @@ import {
   SERVICES,
 } from "@/lib/quote-engine";
 import {
+  formatParcelContentsSummary,
   formatTimeAgo,
   normalizeEmail,
   type BookingRecord,
@@ -88,6 +89,53 @@ interface WizardPhoto {
   uploadedUrl?: string;
   storagePath?: string;
   name?: string;
+}
+
+interface WizardParcel {
+  id: string;
+  expanded: boolean;
+  kg: string;
+  packageType: string;
+  l: string;
+  w: string;
+  h: string;
+  declaredValue: string;
+  contents: string;
+  photos: WizardPhoto[];
+  dragOver?: boolean;
+}
+
+const MAX_PARCELS = 10;
+const MAX_TOTAL_PHOTOS = 20;
+
+function computeParcelBillableKg(p: Pick<WizardParcel, "kg" | "l" | "w" | "h">): number {
+  const actual = Math.max(0.1, Number(p.kg) || 0.1);
+  const vol =
+    ((Math.max(0, Number(p.l) || 0) *
+      Math.max(0, Number(p.w) || 0) *
+      Math.max(0, Number(p.h) || 0)) /
+      5000) ||
+    0;
+  return Math.round(Math.max(actual, vol) * 100) / 100;
+}
+
+function makeDefaultParcel(
+  idx: number,
+  overrides: Partial<WizardParcel> = {}
+): WizardParcel {
+  return {
+    id: overrides.id || (idx === 0 ? "parcel_1" : `parcel_${idx + 1}_${Date.now().toString(36).slice(-4)}`),
+    expanded: overrides.expanded ?? true,
+    kg: overrides.kg ?? "1.5",
+    packageType: overrides.packageType ?? "Parcel",
+    l: overrides.l ?? "30",
+    w: overrides.w ?? "20",
+    h: overrides.h ?? "15",
+    declaredValue: overrides.declaredValue ?? "250",
+    contents: overrides.contents ?? "",
+    photos: overrides.photos ?? [],
+    dragOver: false,
+  };
 }
 
 function getMethodIcon(type: PaymentMethodType): React.ComponentType<{ className?: string }> {
@@ -238,24 +286,48 @@ export function ShipWizard({
   const [rPostal, setRPostal] = useState(gd?.rPost || "");
   const [rCountry, setRCountry] = useState(initRCountry);
 
-  // Step 2
-  const [pKg, setPKg] = useState(qKg || gd?.weight || "1.5");
-  const [pType, setPType] = useState(gd?.pkgType || "Parcel");
-  const [pL, setPL] = useState("30");
-  const [pW, setPW] = useState("20");
-  const [pH, setPH] = useState("15");
-  const [photos, setPhotos] = useState<WizardPhoto[]>(() =>
-    (gd?.photos || []).map((p, idx) => ({
-      id: `restored_${idx}`,
-      previewUrl: p.url,
-      uploadedUrl: p.url,
-      storagePath: p.storagePath,
-      name: p.name,
-    }))
-  );
-  const [pDesc, setPDesc] = useState(gd?.contents || "");
-  const [pVal, setPVal] = useState(qVal || gd?.val || "250");
-  const [dragOver, setDragOver] = useState(false);
+  // Step 2: 1..10 parcels
+  const [parcels, setParcels] = useState<WizardParcel[]>(() => {
+    if (Array.isArray(gd?.parcels) && gd.parcels.length > 0) {
+      return gd.parcels.slice(0, MAX_PARCELS).map((dp, idx) =>
+        makeDefaultParcel(idx, {
+          id: dp.id || `parcel_${idx + 1}`,
+          expanded: idx === 0,
+          kg: dp.weight || "1.5",
+          packageType: dp.pkgType || "Parcel",
+          l: dp.lengthCm || "30",
+          w: dp.widthCm || "20",
+          h: dp.heightCm || "15",
+          declaredValue: dp.val ?? "250",
+          contents: dp.contents || "",
+          photos: (dp.photos || []).map((p, pIdx) => ({
+            id: `restored_${idx}_${pIdx}`,
+            previewUrl: p.url,
+            uploadedUrl: p.url,
+            storagePath: p.storagePath,
+            name: p.name,
+          })),
+        })
+      );
+    }
+    return [
+      makeDefaultParcel(0, {
+        id: "parcel_1",
+        expanded: true,
+        kg: qKg || gd?.weight || "1.5",
+        packageType: gd?.pkgType || "Parcel",
+        declaredValue: qVal || gd?.val || "250",
+        contents: gd?.contents || "",
+        photos: (gd?.photos || []).map((p, idx) => ({
+          id: `restored_${idx}`,
+          previewUrl: p.url,
+          uploadedUrl: p.url,
+          storagePath: p.storagePath,
+          name: p.name,
+        })),
+      }),
+    ];
+  });
 
   // Step 3 & 4
   const [service, setService] = useState<ServiceTier>(
@@ -301,7 +373,7 @@ export function ShipWizard({
     paymentStatusLabel: string;
   } | null>(null);
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   const applyDraftRecord = useCallback((rec: DraftShipmentRecord) => {
     const d = rec.data;
@@ -321,23 +393,52 @@ export function ShipWizard({
     if (d.rCountry && PLACES[d.rCountry]) setRCountry(d.rCountry);
     setRCity(d.rCity || PLACES[d.rCountry]?.city || "");
     setRPostal(d.rPost || "");
-    setPKg(d.weight || "1.5");
-    setPType(d.pkgType || "Parcel");
-    setPDesc(d.contents || "");
-    setPVal(d.val || "250");
+    if (Array.isArray(d.parcels) && d.parcels.length > 0) {
+      setParcels(
+        d.parcels.slice(0, MAX_PARCELS).map((dp, idx) =>
+          makeDefaultParcel(idx, {
+            id: dp.id || `parcel_${idx + 1}`,
+            expanded: idx === 0,
+            kg: dp.weight || "1.5",
+            packageType: dp.pkgType || "Parcel",
+            l: dp.lengthCm || "30",
+            w: dp.widthCm || "20",
+            h: dp.heightCm || "15",
+            declaredValue: dp.val ?? "250",
+            contents: dp.contents || "",
+            photos: (dp.photos || []).map((p, pIdx) => ({
+              id: `draft_${idx}_${pIdx}_${Date.now()}`,
+              previewUrl: p.url,
+              uploadedUrl: p.url,
+              storagePath: p.storagePath,
+              name: p.name,
+            })),
+          })
+        )
+      );
+    } else {
+      setParcels([
+        makeDefaultParcel(0, {
+          id: "parcel_1",
+          expanded: true,
+          kg: d.weight || "1.5",
+          packageType: d.pkgType || "Parcel",
+          declaredValue: d.val || "250",
+          contents: d.contents || "",
+          photos: Array.isArray(d.photos)
+            ? d.photos.map((p, idx) => ({
+                id: `draft_${idx}_${Date.now()}`,
+                previewUrl: p.url,
+                uploadedUrl: p.url,
+                storagePath: p.storagePath,
+                name: p.name,
+              }))
+            : [],
+        }),
+      ]);
+    }
     if (d.service && SERVICES[d.service]) setService(d.service);
     if (d.paymentMethodId) setSelectedMethodId(d.paymentMethodId);
-    if (Array.isArray(d.photos) && d.photos.length > 0) {
-      setPhotos(
-        d.photos.map((p, idx) => ({
-          id: `draft_${idx}_${Date.now()}`,
-          previewUrl: p.url,
-          uploadedUrl: p.url,
-          storagePath: p.storagePath,
-          name: p.name,
-        }))
-      );
-    }
     setStep(Math.min(4, Math.max(1, Number(rec.step || 1))));
     setResumePromptDraft(null);
   }, []);
@@ -360,12 +461,13 @@ export function ShipWizard({
       // Offer resume banner if user didn't pass quote params and hasn't typed yet
       const newest = drafts[0];
       const hasQuery = Boolean(qFrom || qTo || qKg || qVal);
+      const hasAnyContents = parcels.some((p) => Boolean(p.contents.trim()));
       if (
         !hasQuery &&
         newest.id !== activeDraftId &&
         appliedDraftRef.current !== newest.id &&
         !rName.trim() &&
-        !pDesc.trim()
+        !hasAnyContents
       ) {
         setResumePromptDraft(newest);
       }
@@ -373,10 +475,42 @@ export function ShipWizard({
     return () => {
       active = false;
     };
-  }, [authReady, user, qDraft, qFrom, qTo, qKg, qVal, activeDraftId, rName, pDesc, applyDraftRecord]);
+  }, [authReady, user, qDraft, qFrom, qTo, qKg, qVal, activeDraftId, rName, parcels, applyDraftRecord]);
 
   // Build serializable draft snapshot
   const buildDraftData = useCallback((): DraftWizardData => {
+    const cleanParcels = parcels.slice(0, MAX_PARCELS).map((parcel) => ({
+      id: parcel.id,
+      weight: parcel.kg,
+      pkgType: parcel.packageType,
+      lengthCm: parcel.l,
+      widthCm: parcel.w,
+      heightCm: parcel.h,
+      val: parcel.declaredValue,
+      contents: parcel.contents,
+      photos: parcel.photos
+        .filter((p) => Boolean(p.uploadedUrl || p.fallbackDataUrl))
+        .map((p) => ({
+          url: p.uploadedUrl || p.fallbackDataUrl || "",
+          ...(p.storagePath ? { storagePath: p.storagePath } : {}),
+          ...(p.name ? { name: p.name } : {}),
+        }))
+        .filter((p) => p.url && !p.url.startsWith("blob:")),
+    }));
+
+    const totalWeight = parcels.reduce(
+      (sum, p) => sum + computeParcelBillableKg(p),
+      0
+    );
+    const totalVal = parcels.reduce(
+      (sum, p) => sum + Math.max(0, Number(p.declaredValue) || 0),
+      0
+    );
+    const aggPhotos = cleanParcels
+      .map((p) => p.photos[0])
+      .filter((p): p is NonNullable<typeof p> => Boolean(p))
+      .slice(0, 4);
+
     return {
       sName,
       sEmail,
@@ -392,20 +526,20 @@ export function ShipWizard({
       rCity,
       rPost: rPostal,
       rCountry,
-      weight: pKg,
-      pkgType: pType,
-      val: pVal,
-      contents: pDesc,
+      weight: String(Math.round(totalWeight * 100) / 100),
+      pkgType:
+        parcels.length > 1
+          ? "Multiple parcels"
+          : parcels[0]?.packageType || "Parcel",
+      val: String(Math.round(totalVal * 100) / 100),
+      contents: formatParcelContentsSummary(parcels),
       service,
       ...(selectedMethodId ? { paymentMethodId: selectedMethodId } : {}),
-      photos: photos
-        .filter((p) => Boolean(p.uploadedUrl || p.fallbackDataUrl))
-        .map((p) => ({
-          url: p.uploadedUrl || p.fallbackDataUrl || "",
-          ...(p.storagePath ? { storagePath: p.storagePath } : {}),
-          ...(p.name ? { name: p.name } : {}),
-        }))
-        .filter((p) => p.url && !p.url.startsWith("blob:")),
+      photos:
+        parcels.length === 1
+          ? cleanParcels[0]?.photos.slice(0, 4) || []
+          : aggPhotos,
+      parcels: cleanParcels,
     };
   }, [
     sName,
@@ -422,13 +556,9 @@ export function ShipWizard({
     rCity,
     rPostal,
     rCountry,
-    pKg,
-    pType,
-    pVal,
-    pDesc,
+    parcels,
     service,
     selectedMethodId,
-    photos,
   ]);
 
   const persistDraftNow = useCallback(async () => {
@@ -436,12 +566,12 @@ export function ShipWizard({
     const data = buildDraftData();
     const hasMeaningfulInput =
       step > 1 ||
+      parcels.length > 1 ||
       Boolean(rName.trim()) ||
       Boolean(rEmail.trim()) ||
       Boolean(rAddr.trim()) ||
       Boolean(sAddr.trim()) ||
-      Boolean(pDesc.trim()) ||
-      photos.length > 0;
+      parcels.some((p) => Boolean(p.contents.trim()) || p.photos.length > 0);
 
     if (!hasMeaningfulInput) return;
 
@@ -470,12 +600,11 @@ export function ShipWizard({
     confirmingPayment,
     buildDraftData,
     step,
+    parcels,
     rName,
     rEmail,
     rAddr,
     sAddr,
-    pDesc,
-    photos.length,
     user,
     activeDraftId,
     sEmail,
@@ -498,27 +627,32 @@ export function ShipWizard({
     return () => window.removeEventListener("beforeunload", onHide);
   }, [persistDraftNow]);
 
-  // Pricing computation
-  const actualKg = Math.max(0.1, Number(pKg) || 0.1);
-  const volKg =
-    ((Number(pL) || 0) * (Number(pW) || 0) * (Number(pH) || 0)) / 5000;
-  const chargeableKg = Math.max(actualKg, volKg);
-  const declaredNum = Math.max(0, Number(pVal) || 0);
+  // Multi-parcel pricing computation
+  const pricingInputs = useMemo(
+    () =>
+      parcels.map((p, idx) => ({
+        id: p.id,
+        label: p.contents.trim() || `Parcel ${idx + 1}`,
+        billableKg: computeParcelBillableKg(p),
+        declaredValue: Math.max(0, Number(p.declaredValue) || 0),
+      })),
+    [parcels]
+  );
 
   const allQuotes = useMemo(() => {
     return (["economy", "standard", "express"] as ServiceTier[]).map((tier) =>
-      calculateShippingPricing(
-        sCountry,
-        rCountry,
-        chargeableKg,
-        declaredNum,
-        tier
-      )
+      calculateMultiParcelPricing(sCountry, rCountry, pricingInputs, tier)
     );
-  }, [sCountry, rCountry, chargeableKg, declaredNum]);
+  }, [sCountry, rCountry, pricingInputs]);
 
   const activeQuote =
     allQuotes.find((q) => q.service === service) || allQuotes[1];
+  const chargeableKg = activeQuote.totalWeightKg;
+  const declaredNum = activeQuote.totalDeclaredValue;
+  const totalPhotosCount = useMemo(
+    () => parcels.reduce((sum, p) => sum + p.photos.length, 0),
+    [parcels]
+  );
 
   // Fetch enabled dynamic payment methods from Admin settings
   useEffect(() => {
@@ -612,14 +746,30 @@ export function ShipWizard({
     return () => cleanupBookingListeners();
   }, [cleanupBookingListeners]);
 
-  const handlePhotoFiles = async (fileList: FileList | null) => {
+  const updateParcel = useCallback(
+    (parcelId: string, updater: (prev: WizardParcel) => WizardParcel) => {
+      setParcels((prev) => prev.map((p) => (p.id === parcelId ? updater(p) : p)));
+    },
+    []
+  );
+
+  const handlePhotoFiles = async (parcelIdx: number, fileList: FileList | null) => {
     if (!fileList?.length) return;
-    const slotsLeft = 4 - photos.length;
-    if (slotsLeft <= 0) {
-      toast("Maximum 4 item photos allowed.");
+    const targetParcel = parcels[parcelIdx];
+    if (!targetParcel) return;
+
+    const parcelSlots = 4 - targetParcel.photos.length;
+    if (parcelSlots <= 0) {
+      toast("Maximum 4 photos allowed per parcel.");
       return;
     }
-    const chosen = Array.from(fileList).slice(0, slotsLeft);
+    const bookingSlots = MAX_TOTAL_PHOTOS - totalPhotosCount;
+    if (bookingSlots <= 0) {
+      toast(`Maximum ${MAX_TOTAL_PHOTOS} photos allowed per booking.`);
+      return;
+    }
+
+    const chosen = Array.from(fileList).slice(0, Math.min(parcelSlots, bookingSlots));
     try {
       const preparedItems = await Promise.all(
         chosen.map(async (file, idx) => {
@@ -635,7 +785,7 @@ export function ShipWizard({
             }).catch(() => undefined);
           }
           return {
-            id: `ph_${Date.now()}_${idx}`,
+            id: `ph_${Date.now()}_${parcelIdx}_${idx}`,
             previewUrl: uploaded?.url || p.previewUrl,
             blob: p.blob,
             fallbackDataUrl: p.fallbackDataUrl,
@@ -645,10 +795,13 @@ export function ShipWizard({
           } as WizardPhoto;
         })
       );
-      setPhotos((prev) => [...prev, ...preparedItems].slice(0, 4));
+      updateParcel(targetParcel.id, (cur) => ({
+        ...cur,
+        photos: [...cur.photos, ...preparedItems].slice(0, 4),
+      }));
       setErrors((prev) => {
         const next = { ...prev };
-        delete next.photos;
+        delete next[`parcel_${parcelIdx}_photos`];
         return next;
       });
     } catch (err) {
@@ -695,12 +848,29 @@ export function ShipWizard({
 
   const getStep2Errors = useCallback(() => {
     const e: Record<string, string> = {};
-    if (!(Number(pKg) > 0)) e.pKg = "Enter weight above 0 kg";
-    if (photos.length === 0) e.photos = "Upload at least 1 item photo (1–4)";
-    if (!pDesc.trim()) e.pDesc = "Describe parcel contents";
-    if (pVal === "" || Number(pVal) < 0) e.pVal = "Enter declared value";
+    parcels.forEach((p, idx) => {
+      const prefix = parcels.length > 1 ? `Parcel ${idx + 1}: ` : "";
+      const actual = Number(p.kg);
+      const billable = computeParcelBillableKg(p);
+      if (!Number.isFinite(actual) || actual < 0.1 || billable > 50000) {
+        e[`parcel_${idx}_kg`] = `${prefix}Enter weight between 0.1 and 50,000 kg`;
+      }
+      if (p.photos.length === 0) {
+        e[`parcel_${idx}_photos`] = `${prefix}Upload at least 1 item photo (1–4)`;
+      }
+      if (!p.contents.trim()) {
+        e[`parcel_${idx}_contents`] = `${prefix}Describe parcel contents`;
+      }
+      if (
+        p.declaredValue === "" ||
+        !Number.isFinite(Number(p.declaredValue)) ||
+        Number(p.declaredValue) < 0
+      ) {
+        e[`parcel_${idx}_val`] = `${prefix}Enter declared value`;
+      }
+    });
     return e;
-  }, [pKg, photos.length, pDesc, pVal]);
+  }, [parcels]);
 
   const step1Issues = useMemo(() => getStep1Errors(), [getStep1Errors]);
   const step2Issues = useMemo(() => getStep2Errors(), [getStep2Errors]);
@@ -708,11 +878,21 @@ export function ShipWizard({
     Object.keys(step1Issues).length === 0 &&
     Object.keys(step2Issues).length === 0;
 
+  const expandParcelForFieldKey = useCallback((fieldKey: string) => {
+    const match = /^parcel_(\d+)_/.exec(fieldKey);
+    if (!match) return;
+    const idx = Number(match[1]);
+    setParcels((prev) =>
+      prev.map((p, i) => (i === idx ? { ...p, expanded: true } : p))
+    );
+  }, []);
+
   const validateStep = (targetStep: number): boolean => {
     const e = targetStep === 1 ? getStep1Errors() : getStep2Errors();
     setErrors(e);
     const keys = Object.keys(e);
     if (keys.length > 0) {
+      if (targetStep === 2) expandParcelForFieldKey(keys[0]);
       toast.error("Please fix the highlighted fields.");
       focusField(keys[0]);
       return false;
@@ -722,15 +902,17 @@ export function ShipWizard({
 
   const cleanupDraftAfterBooking = useCallback(
     async (uid: string) => {
-      photos.forEach((p) => {
-        if (p.previewUrl.startsWith("blob:")) {
-          URL.revokeObjectURL(p.previewUrl);
-        }
+      parcels.forEach((parcel) => {
+        parcel.photos.forEach((p) => {
+          if (p.previewUrl.startsWith("blob:")) {
+            URL.revokeObjectURL(p.previewUrl);
+          }
+        });
       });
       clearGuestDraft();
       await deleteUserDraft(uid, activeDraftId).catch(() => null);
     },
-    [photos, activeDraftId]
+    [parcels, activeDraftId]
   );
 
   const finishBookingSuccess = useCallback(
@@ -755,6 +937,16 @@ export function ShipWizard({
 
       if (!liveShipment) {
         // Guaranteed local fallback so success screen NEVER fails after booking creation
+        const fallbackParcels = parcels.map((p, idx) => ({
+          id: p.id || `parcel_${idx + 1}`,
+          contents: p.contents.trim() || `Parcel ${idx + 1}`,
+          packageType: p.packageType || "Parcel",
+          weightKg: computeParcelBillableKg(p),
+          actualKg: Math.max(0.1, Number(p.kg) || 0.1),
+          declaredValue: Math.max(0, Number(p.declaredValue) || 0),
+          photos: [],
+          review: { state: "pending" as const, note: "" },
+        }));
         liveShipment = {
           code: trackingCode,
           senderId: uidOverride || user?.uid || "",
@@ -780,9 +972,13 @@ export function ShipWizard({
           },
           service,
           weightKg: Number(chargeableKg.toFixed(2)),
-          packageType: pType,
-          contents: pDesc.trim(),
+          packageType:
+            parcels.length > 1
+              ? "Multiple parcels"
+              : parcels[0]?.packageType || "Parcel",
+          contents: formatParcelContentsSummary(parcels),
           declaredValue: declaredNum,
+          parcels: fallbackParcels,
           priceTotal: activeAmounts.totalUsd,
           paymentMethod: selectedMethod?.name || "Pay on delivery",
           status: "Booked",
@@ -833,8 +1029,7 @@ export function ShipWizard({
       rCountry,
       service,
       chargeableKg,
-      pType,
-      pDesc,
+      parcels,
       declaredNum,
       activeAmounts.totalUsd,
       selectedMethod?.name,
@@ -943,23 +1138,52 @@ export function ShipWizard({
 
         const code = await reserveTrackingCode();
 
-        let uploadedPhotoUrls: string[];
+        let globalPhotoIndex = 0;
+        let uploadedParcelsPayload: Array<{
+          id: string;
+          contents: string;
+          packageType: string;
+          weightKg: number;
+          lengthCm: number;
+          widthCm: number;
+          heightCm: number;
+          declaredValue: number;
+          photos: string[];
+        }>;
+
         try {
-          uploadedPhotoUrls = await Promise.all(
-            photos.map(async (photo, index) => {
-              if (photo.uploadedUrl && !photo.uploadedUrl.startsWith("blob:")) {
-                return photo.uploadedUrl;
-              }
-              if (photo.blob) {
-                return await uploadShipmentPhotoBlob({
-                  code,
-                  index,
-                  blob: photo.blob,
-                  fallbackDataUrl: photo.fallbackDataUrl,
-                });
-              }
-              if (photo.fallbackDataUrl) return photo.fallbackDataUrl;
-              throw new Error("Missing photo binary");
+          uploadedParcelsPayload = await Promise.all(
+            parcels.map(async (parcel) => {
+              const startIdx = globalPhotoIndex;
+              globalPhotoIndex += parcel.photos.length;
+              const urls = await Promise.all(
+                parcel.photos.map(async (photo, pIdx) => {
+                  if (photo.uploadedUrl && !photo.uploadedUrl.startsWith("blob:")) {
+                    return photo.uploadedUrl;
+                  }
+                  if (photo.blob) {
+                    return await uploadShipmentPhotoBlob({
+                      code,
+                      index: startIdx + pIdx,
+                      blob: photo.blob,
+                      fallbackDataUrl: photo.fallbackDataUrl,
+                    });
+                  }
+                  if (photo.fallbackDataUrl) return photo.fallbackDataUrl;
+                  throw new Error("Missing photo binary");
+                })
+              );
+              return {
+                id: parcel.id,
+                contents: parcel.contents.trim(),
+                packageType: parcel.packageType,
+                weightKg: Number(parcel.kg) || 0.1,
+                lengthCm: Number(parcel.l) || 0,
+                widthCm: Number(parcel.w) || 0,
+                heightCm: Number(parcel.h) || 0,
+                declaredValue: Math.max(0, Number(parcel.declaredValue) || 0),
+                photos: urls,
+              };
             })
           );
         } catch (uploadErr) {
@@ -972,13 +1196,18 @@ export function ShipWizard({
           );
         }
 
-        if (!uploadedPhotoUrls.length) {
+        if (uploadedParcelsPayload.some((p) => !p.photos.length)) {
           throw new StepError(
             "validate_photos",
             "MISSING_PHOTOS",
-            "At least 1 uploaded item photo is required."
+            "Each parcel requires at least 1 uploaded item photo."
           );
         }
+
+        const aggregatePhotos = uploadedParcelsPayload
+          .map((p) => p.photos[0])
+          .filter(Boolean)
+          .slice(0, 4);
 
         const data = await apiFetch<{
           ok: boolean;
@@ -1022,17 +1251,21 @@ export function ShipWizard({
               postal: rPostal.trim(),
               country: rCountry,
             },
-            weightKg: Number(pKg) || 0.1,
-            lengthCm: Number(pL) || 0,
-            widthCm: Number(pW) || 0,
-            heightCm: Number(pH) || 0,
-            packageType: pType,
-            contents: pDesc.trim(),
+            weightKg: chargeableKg,
+            packageType:
+              uploadedParcelsPayload.length > 1
+                ? "Multiple parcels"
+                : uploadedParcelsPayload[0]?.packageType || "Parcel",
+            contents: formatParcelContentsSummary(uploadedParcelsPayload),
             declaredValue: declaredNum,
+            parcels: uploadedParcelsPayload,
             service,
             paymentMethodId: selectedMethod.id,
             paymentMethod: selectedMethod.name,
-            photos: uploadedPhotoUrls,
+            photos:
+              uploadedParcelsPayload.length === 1
+                ? uploadedParcelsPayload[0].photos.slice(0, 4)
+                : aggregatePhotos,
           }),
           step: "createBooking",
           timeoutMs: 28000,
@@ -1078,8 +1311,11 @@ export function ShipWizard({
               },
               service,
               weightKg: chargeableKg,
-              packageType: pType,
-              contents: pDesc.trim(),
+              packageType:
+                parcels.length > 1
+                  ? "Multiple parcels"
+                  : parcels[0]?.packageType || "Parcel",
+              contents: formatParcelContentsSummary(parcels),
               declaredValue: declaredNum,
               priceTotal: data.totalUsd,
               paymentMethod: selectedMethod.name,
@@ -1243,6 +1479,7 @@ export function ShipWizard({
       }
       const firstS2 = Object.keys(step2Issues)[0];
       if (firstS2) {
+        expandParcelForFieldKey(firstS2);
         setErrors(step2Issues);
         setStep(2);
         focusField(firstS2);
@@ -1292,8 +1529,7 @@ export function ShipWizard({
     setSubmitError(null);
     setCancelNotice("");
     setStep(1);
-    setPhotos([]);
-    setPDesc("");
+    setParcels([makeDefaultParcel(0, { id: "parcel_1", expanded: true })]);
     setTermsAccepted(false);
   };
 
@@ -2020,204 +2256,392 @@ export function ShipWizard({
           {/* STEP 2 */}
           {step === 2 && (
             <div>
-              <div className="panel">
-                <div className="panel-h">
-                  <div className="pi">
-                    <Boxes className="w-[17px] h-[17px]" />
-                  </div>
-                  <div>
-                    <b>Package details</b>
-                    <small>
-                      Chargeable weight uses the higher of actual and volumetric
-                    </small>
-                  </div>
-                </div>
-                <div className="panel-b">
-                  <div className="g2">
-                    <div className={`fw ${errors.pKg ? "err" : ""}`}>
-                      <label className="lbl" htmlFor="pKg">
-                        Weight (kg)
-                      </label>
-                      <input
-                        id="pKg"
-                        className="field"
-                        type="number"
-                        inputMode="decimal"
-                        min="0.1"
-                        step="0.1"
-                        value={pKg}
-                        onChange={(e) => setPKg(e.target.value)}
-                      />
-                      {errors.pKg && (
-                        <span className="ferr">{errors.pKg}</span>
-                      )}
-                    </div>
-                    <div className="fw">
-                      <label className="lbl" htmlFor="pType">
-                        Package type
-                      </label>
-                      <select
-                        id="pType"
-                        className="field"
-                        value={pType}
-                        onChange={(e) => setPType(e.target.value)}
-                      >
-                        <option>Parcel</option>
-                        <option>Document envelope</option>
-                        <option>Box</option>
-                        <option>Pallet</option>
-                      </select>
-                    </div>
-                  </div>
+              {parcels.map((parcel, idx) => {
+                const billable = computeParcelBillableKg(parcel);
+                const valNum = Math.max(0, Number(parcel.declaredValue) || 0);
+                const kgErr = errors[`parcel_${idx}_kg`];
+                const photoErr = errors[`parcel_${idx}_photos`];
+                const contentsErr = errors[`parcel_${idx}_contents`];
+                const valErr = errors[`parcel_${idx}_val`];
+                const summaryTitle = parcel.contents.trim() || `Parcel ${idx + 1}`;
+                const summaryMeta = `${billable.toFixed(1)} kg · ${formatMoney(valNum)}`;
 
-                  <div className="g3">
-                    <div className="fw">
-                      <label className="lbl" htmlFor="pL">
-                        Length (cm)
-                      </label>
-                      <input
-                        id="pL"
-                        className="field"
-                        type="number"
-                        inputMode="decimal"
-                        min="0"
-                        value={pL}
-                        onChange={(e) => setPL(e.target.value)}
-                      />
-                    </div>
-                    <div className="fw">
-                      <label className="lbl" htmlFor="pW">
-                        Width (cm)
-                      </label>
-                      <input
-                        id="pW"
-                        className="field"
-                        type="number"
-                        inputMode="decimal"
-                        min="0"
-                        value={pW}
-                        onChange={(e) => setPW(e.target.value)}
-                      />
-                    </div>
-                    <div className="fw">
-                      <label className="lbl" htmlFor="pH">
-                        Height (cm)
-                      </label>
-                      <input
-                        id="pH"
-                        className="field"
-                        type="number"
-                        inputMode="decimal"
-                        min="0"
-                        value={pH}
-                        onChange={(e) => setPH(e.target.value)}
-                      />
-                    </div>
-                  </div>
-
-                  <div className={`fw ${errors.photos ? "err" : ""}`}>
-                    <label className="lbl">
-                      Item photos (1–4 required){" "}
-                      <span style={{ float: "right", color: "var(--muted)" }}>
-                        {photos.length} / 4
-                      </span>
-                    </label>
-                    <label
-                      id="photos"
-                      className={`pf-zone ${dragOver ? "over" : ""}`}
-                      onDragOver={(e) => {
-                        e.preventDefault();
-                        setDragOver(true);
-                      }}
-                      onDragLeave={() => setDragOver(false)}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        setDragOver(false);
-                        handlePhotoFiles(e.dataTransfer.files);
+                return (
+                  <div
+                    key={parcel.id}
+                    className="panel"
+                    style={{ marginBottom: 14 }}
+                  >
+                    <div
+                      className="panel-h"
+                      style={{
+                        justifyContent: "space-between",
+                        flexWrap: "wrap",
+                        gap: 10,
                       }}
                     >
-                      <Camera className="w-[26px] h-[26px] text-[var(--em)]" />
-                      <b>Tap or drag photos to upload</b>
-                      <small>
-                        The receiver and operations reviewer will see these.
-                        JPG/PNG, up to 4.
-                      </small>
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept="image/*"
-                        multiple
-                        hidden
-                        onChange={(e) => handlePhotoFiles(e.target.files)}
-                      />
-                    </label>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 12,
+                          minWidth: 0,
+                          flex: "1 1 180px",
+                        }}
+                      >
+                        <div className="pi">
+                          <Boxes className="w-[17px] h-[17px]" />
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                          <b
+                            style={{
+                              display: "block",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {parcel.expanded
+                              ? parcels.length > 1
+                                ? `Parcel ${idx + 1} of ${parcels.length}`
+                                : "Package details"
+                              : `${summaryTitle} · ${summaryMeta}`}
+                          </b>
+                          <small>
+                            {parcel.expanded
+                              ? "Chargeable weight uses the higher of actual and volumetric"
+                              : `${parcel.packageType} · ${parcel.photos.length} photo${parcel.photos.length === 1 ? "" : "s"}`}
+                          </small>
+                        </div>
+                      </div>
 
-                    {photos.length > 0 && (
-                      <div className="pf-grid">
-                        {photos.map((item, idx) => (
-                          <div key={item.id} className="pf-th">
-                            <img
-                              src={item.previewUrl}
-                              alt={`Uploaded item ${idx + 1}`}
-                            />
-                            <button
-                              type="button"
-                              aria-label="Remove photo"
-                              onClick={() => {
-                                if (item.previewUrl.startsWith("blob:")) {
-                                  URL.revokeObjectURL(item.previewUrl);
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        {!parcel.expanded ? (
+                          <button
+                            type="button"
+                            className="sw-btn sw-btn-ghost"
+                            style={{ padding: "6px 12px", fontSize: 12 }}
+                            onClick={() =>
+                              updateParcel(parcel.id, (cur) => ({
+                                ...cur,
+                                expanded: true,
+                              }))
+                            }
+                          >
+                            Edit
+                          </button>
+                        ) : parcels.length > 1 ? (
+                          <button
+                            type="button"
+                            className="sw-btn sw-btn-ghost"
+                            style={{ padding: "6px 12px", fontSize: 12 }}
+                            onClick={() =>
+                              updateParcel(parcel.id, (cur) => ({
+                                ...cur,
+                                expanded: false,
+                              }))
+                            }
+                          >
+                            Collapse
+                          </button>
+                        ) : null}
+
+                        {idx > 0 && (
+                          <button
+                            type="button"
+                            className="sw-btn sw-btn-ghost"
+                            style={{ padding: "6px 10px", fontSize: 12 }}
+                            aria-label={`Remove parcel ${idx + 1}`}
+                            onClick={() => {
+                              parcel.photos.forEach((p) => {
+                                if (p.previewUrl.startsWith("blob:")) {
+                                  URL.revokeObjectURL(p.previewUrl);
                                 }
-                                setPhotos((prev) =>
-                                  prev.filter((_, i) => i !== idx)
-                                );
-                              }}
-                            >
-                              <X className="w-3.5 h-3.5" />
-                            </button>
+                              });
+                              setParcels((prev) =>
+                                prev.filter((item) => item.id !== parcel.id)
+                              );
+                              setErrors({});
+                            }}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            Remove
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {parcel.expanded && (
+                      <div className="panel-b">
+                        <div className="g2">
+                          <div className={`fw ${kgErr ? "err" : ""}`}>
+                            <label className="lbl" htmlFor={`parcel_${idx}_kg`}>
+                              Weight (kg)
+                            </label>
+                            <input
+                              id={`parcel_${idx}_kg`}
+                              className="field"
+                              type="number"
+                              inputMode="decimal"
+                              min="0.1"
+                              step="0.1"
+                              value={parcel.kg}
+                              onChange={(e) =>
+                                updateParcel(parcel.id, (cur) => ({
+                                  ...cur,
+                                  kg: e.target.value,
+                                }))
+                              }
+                            />
+                            {kgErr && <span className="ferr">{kgErr}</span>}
                           </div>
-                        ))}
+                          <div className="fw">
+                            <label
+                              className="lbl"
+                              htmlFor={`parcel_${idx}_type`}
+                            >
+                              Package type
+                            </label>
+                            <select
+                              id={`parcel_${idx}_type`}
+                              className="field"
+                              value={parcel.packageType}
+                              onChange={(e) =>
+                                updateParcel(parcel.id, (cur) => ({
+                                  ...cur,
+                                  packageType: e.target.value,
+                                }))
+                              }
+                            >
+                              <option>Parcel</option>
+                              <option>Document envelope</option>
+                              <option>Box</option>
+                              <option>Pallet</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="g3">
+                          <div className="fw">
+                            <label className="lbl" htmlFor={`parcel_${idx}_l`}>
+                              Length (cm)
+                            </label>
+                            <input
+                              id={`parcel_${idx}_l`}
+                              className="field"
+                              type="number"
+                              inputMode="decimal"
+                              min="0"
+                              value={parcel.l}
+                              onChange={(e) =>
+                                updateParcel(parcel.id, (cur) => ({
+                                  ...cur,
+                                  l: e.target.value,
+                                }))
+                              }
+                            />
+                          </div>
+                          <div className="fw">
+                            <label className="lbl" htmlFor={`parcel_${idx}_w`}>
+                              Width (cm)
+                            </label>
+                            <input
+                              id={`parcel_${idx}_w`}
+                              className="field"
+                              type="number"
+                              inputMode="decimal"
+                              min="0"
+                              value={parcel.w}
+                              onChange={(e) =>
+                                updateParcel(parcel.id, (cur) => ({
+                                  ...cur,
+                                  w: e.target.value,
+                                }))
+                              }
+                            />
+                          </div>
+                          <div className="fw">
+                            <label className="lbl" htmlFor={`parcel_${idx}_h`}>
+                              Height (cm)
+                            </label>
+                            <input
+                              id={`parcel_${idx}_h`}
+                              className="field"
+                              type="number"
+                              inputMode="decimal"
+                              min="0"
+                              value={parcel.h}
+                              onChange={(e) =>
+                                updateParcel(parcel.id, (cur) => ({
+                                  ...cur,
+                                  h: e.target.value,
+                                }))
+                              }
+                            />
+                          </div>
+                        </div>
+
+                        <div className={`fw ${photoErr ? "err" : ""}`}>
+                          <label className="lbl">
+                            Item photos (1–4 required){" "}
+                            <span
+                              style={{ float: "right", color: "var(--muted)" }}
+                            >
+                              {parcel.photos.length} / 4
+                            </span>
+                          </label>
+                          <label
+                            id={`parcel_${idx}_photos`}
+                            className={`pf-zone ${parcel.dragOver ? "over" : ""}`}
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              updateParcel(parcel.id, (cur) => ({
+                                ...cur,
+                                dragOver: true,
+                              }));
+                            }}
+                            onDragLeave={() =>
+                              updateParcel(parcel.id, (cur) => ({
+                                ...cur,
+                                dragOver: false,
+                              }))
+                            }
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              updateParcel(parcel.id, (cur) => ({
+                                ...cur,
+                                dragOver: false,
+                              }));
+                              handlePhotoFiles(idx, e.dataTransfer.files);
+                            }}
+                          >
+                            <Camera className="w-[26px] h-[26px] text-[var(--em)]" />
+                            <b>Tap or drag photos to upload</b>
+                            <small>
+                              The receiver and operations reviewer will see
+                              these. JPG/PNG, up to 4.
+                            </small>
+                            <input
+                              ref={(el) => {
+                                fileInputRefs.current[parcel.id] = el;
+                              }}
+                              type="file"
+                              accept="image/*"
+                              multiple
+                              hidden
+                              onChange={(e) => {
+                                handlePhotoFiles(idx, e.target.files);
+                                e.target.value = "";
+                              }}
+                            />
+                          </label>
+
+                          {parcel.photos.length > 0 && (
+                            <div className="pf-grid">
+                              {parcel.photos.map((item, pIdx) => (
+                                <div key={item.id} className="pf-th">
+                                  <img
+                                    src={item.previewUrl}
+                                    alt={`Parcel ${idx + 1} item ${pIdx + 1}`}
+                                  />
+                                  <button
+                                    type="button"
+                                    aria-label="Remove photo"
+                                    onClick={() => {
+                                      if (item.previewUrl.startsWith("blob:")) {
+                                        URL.revokeObjectURL(item.previewUrl);
+                                      }
+                                      updateParcel(parcel.id, (cur) => ({
+                                        ...cur,
+                                        photos: cur.photos.filter(
+                                          (_, i) => i !== pIdx
+                                        ),
+                                      }));
+                                    }}
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {photoErr && <span className="ferr">{photoErr}</span>}
+                        </div>
+
+                        <div className={`fw ${contentsErr ? "err" : ""}`}>
+                          <label
+                            className="lbl"
+                            htmlFor={`parcel_${idx}_contents`}
+                          >
+                            Contents
+                          </label>
+                          <input
+                            id={`parcel_${idx}_contents`}
+                            className="field"
+                            value={parcel.contents}
+                            onChange={(e) =>
+                              updateParcel(parcel.id, (cur) => ({
+                                ...cur,
+                                contents: e.target.value,
+                              }))
+                            }
+                            placeholder="e.g. Laptop, 2× linen shirts"
+                          />
+                          {contentsErr && (
+                            <span className="ferr">{contentsErr}</span>
+                          )}
+                        </div>
+
+                        <div className={`fw ${valErr ? "err" : ""}`}>
+                          <label className="lbl" htmlFor={`parcel_${idx}_val`}>
+                            Declared value (USD)
+                          </label>
+                          <input
+                            id={`parcel_${idx}_val`}
+                            className="field"
+                            type="number"
+                            inputMode="decimal"
+                            min="0"
+                            value={parcel.declaredValue}
+                            onChange={(e) =>
+                              updateParcel(parcel.id, (cur) => ({
+                                ...cur,
+                                declaredValue: e.target.value,
+                              }))
+                            }
+                          />
+                          {valErr && <span className="ferr">{valErr}</span>}
+                        </div>
                       </div>
                     )}
-                    {errors.photos && (
-                      <span className="ferr">{errors.photos}</span>
-                    )}
                   </div>
+                );
+              })}
 
-                  <div className={`fw ${errors.pDesc ? "err" : ""}`}>
-                    <label className="lbl" htmlFor="pDesc">
-                      Contents
-                    </label>
-                    <input
-                      id="pDesc"
-                      className="field"
-                      value={pDesc}
-                      onChange={(e) => setPDesc(e.target.value)}
-                      placeholder="e.g. Laptop, 2× linen shirts"
-                    />
-                    {errors.pDesc && (
-                      <span className="ferr">{errors.pDesc}</span>
-                    )}
-                  </div>
-
-                  <div className={`fw ${errors.pVal ? "err" : ""}`}>
-                    <label className="lbl" htmlFor="pVal">
-                      Declared value (USD)
-                    </label>
-                    <input
-                      id="pVal"
-                      className="field"
-                      type="number"
-                      inputMode="decimal"
-                      min="0"
-                      value={pVal}
-                      onChange={(e) => setPVal(e.target.value)}
-                    />
-                    {errors.pVal && (
-                      <span className="ferr">{errors.pVal}</span>
-                    )}
-                  </div>
+              {parcels.length < MAX_PARCELS && (
+                <div style={{ marginBottom: 14 }}>
+                  <button
+                    type="button"
+                    className="sw-btn sw-btn-ghost sw-btn-block"
+                    onClick={() => {
+                      const nextIdx = parcels.length;
+                      setParcels((prev) => [
+                        ...prev.map((p) => ({ ...p, expanded: false })),
+                        makeDefaultParcel(nextIdx, { expanded: true }),
+                      ]);
+                    }}
+                  >
+                    + Add another parcel ({parcels.length}/{MAX_PARCELS})
+                  </button>
                 </div>
-              </div>
+              )}
 
               <div className="acts">
                 <button
@@ -2385,6 +2809,7 @@ export function ShipWizard({
                           className="sw-btn sw-btn-ghost"
                           style={{ padding: "5px 10px", fontSize: 12 }}
                           onClick={() => {
+                            expandParcelForFieldKey(fieldKey);
                             setErrors(step2Issues);
                             setStep(2);
                             focusField(fieldKey);
@@ -2439,15 +2864,72 @@ export function ShipWizard({
                     </div>
                     <hr />
                     <div className="r">
-                      <span>Package</span>
+                      <span>Parcels ({parcels.length})</span>
                       <b>
-                        {pType} · {chargeableKg.toFixed(1)} kg
+                        {chargeableKg.toFixed(1)} kg · {formatMoney(declaredNum)} value
                       </b>
                     </div>
-                    <div className="r">
-                      <span>Contents</span>
-                      <b>{pDesc}</b>
-                    </div>
+                    {parcels.map((parcel, idx) => {
+                      const line = activeQuote.parcelLines[idx];
+                      return (
+                        <div
+                          key={parcel.id}
+                          style={{
+                            padding: "10px 12px",
+                            borderRadius: 12,
+                            border: "1px solid var(--border)",
+                            background: "var(--card2)",
+                            display: "grid",
+                            gap: 8,
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              gap: 8,
+                              flexWrap: "wrap",
+                            }}
+                          >
+                            <b style={{ fontSize: 13.5, wordBreak: "break-word" }}>
+                              {parcels.length > 1 ? `#${idx + 1} · ` : ""}
+                              {parcel.contents.trim() || `Parcel ${idx + 1}`}
+                            </b>
+                            <b style={{ fontSize: 13, color: "var(--em)" }}>
+                              {formatMoney(line?.lineTotal || 0)}
+                            </b>
+                          </div>
+                          <small style={{ color: "var(--muted)", fontSize: 12 }}>
+                            {parcel.packageType} ·{" "}
+                            {computeParcelBillableKg(parcel).toFixed(1)} kg ·
+                            Value{" "}
+                            {formatMoney(
+                              Math.max(0, Number(parcel.declaredValue) || 0)
+                            )}
+                          </small>
+                          {parcel.photos.length > 0 && (
+                            <div className="flex gap-2 flex-wrap">
+                              {parcel.photos.map((item, pIdx) => (
+                                <img
+                                  key={item.id}
+                                  src={item.previewUrl}
+                                  alt={`Parcel ${idx + 1} photo ${pIdx + 1}`}
+                                  style={{
+                                    width: 44,
+                                    height: 44,
+                                    borderRadius: 8,
+                                    objectFit: "cover",
+                                    border: "1px solid var(--border)",
+                                  }}
+                                />
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                    <hr />
                     <div className="r">
                       <span>Service</span>
                       <b>
@@ -2471,7 +2953,7 @@ export function ShipWizard({
                       </div>
                     )}
                     <div className="r">
-                      <span>Total due</span>
+                      <span>Total due ({parcels.length} parcel{parcels.length === 1 ? "" : "s"})</span>
                       <b style={{ color: "var(--em)" }}>
                         {formatMoney(activeAmounts.totalUsd)}
                         {activeAmounts.currency !== "USD" && (
@@ -2487,26 +2969,6 @@ export function ShipWizard({
                           </small>
                         )}
                       </b>
-                    </div>
-                    <hr />
-                    <div className="r">
-                      <span>Item photos ({photos.length})</span>
-                      <div className="flex gap-2 justify-end flex-wrap">
-                        {photos.map((item, i) => (
-                          <img
-                            key={item.id}
-                            src={item.previewUrl}
-                            alt={`Item ${i + 1}`}
-                            style={{
-                              width: 44,
-                              height: 44,
-                              borderRadius: 8,
-                              objectFit: "cover",
-                              border: "1px solid var(--border)",
-                            }}
-                          />
-                        ))}
-                      </div>
                     </div>
                   </div>
                 </div>
@@ -2712,8 +3174,10 @@ export function ShipWizard({
                 </b>
               </div>
               <div className="sr">
-                <span>Chargeable</span>
-                <b>{chargeableKg.toFixed(1)} kg</b>
+                <span>Parcels</span>
+                <b>
+                  {parcels.length} ({chargeableKg.toFixed(1)} kg)
+                </b>
               </div>
               <div className="sr">
                 <span>Service</span>
@@ -2726,6 +3190,22 @@ export function ShipWizard({
                 </b>
               </div>
               <hr />
+              {activeQuote.parcelLines.map((line, idx) => (
+                <div key={line.id} className="sr">
+                  <span
+                    style={{
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      maxWidth: 185,
+                    }}
+                  >
+                    #{idx + 1} {line.label} ({line.billableKg.toFixed(1)} kg)
+                  </span>
+                  <b>{formatMoney(line.lineTotal)}</b>
+                </div>
+              ))}
+              {parcels.length > 1 && <hr />}
               <div className="sr">
                 <span>Base freight</span>
                 <b>{formatMoney(activeQuote.base)}</b>

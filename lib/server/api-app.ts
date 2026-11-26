@@ -18,7 +18,12 @@ import {
   sanitizeHeaderText,
 } from "../email/templates.ts";
 import { checkRateLimit, dispatchTransactionalEmail } from "../email/sender.ts";
-import { COUNTRIES, calculateShippingPricing } from "../quote-engine.ts";
+import {
+  COUNTRIES,
+  calculateMultiParcelPricing,
+  calculateShippingPricing,
+} from "../quote-engine.ts";
+import { getParcels, type ShipmentRecord } from "../../types/tracking.ts";
 import {
   adminBookingAction,
   createBachsTestCheckout,
@@ -739,17 +744,49 @@ export function createApiApp(): express.Express {
         weightKg?: number;
         declaredValue?: number;
         service?: ServiceTier;
+        parcels?: Array<{
+          id?: string;
+          label?: string;
+          weightKg?: number;
+          billableKg?: number;
+          lengthCm?: number;
+          widthCm?: number;
+          heightCm?: number;
+          declaredValue?: number;
+        }>;
       };
       const from = body.from && COUNTRIES.includes(body.from) ? body.from : "United States";
       const to = body.to && COUNTRIES.includes(body.to) ? body.to : "United Kingdom";
-      const weightKg = Math.min(50000, Math.max(0.1, Number(body.weightKg) || 1));
-      const declaredValue = Math.max(0, Number(body.declaredValue) || 0);
       const service: ServiceTier =
         body.service === "economy" ||
         body.service === "express" ||
         body.service === "standard"
           ? body.service
           : "standard";
+
+      if (Array.isArray(body.parcels) && body.parcels.length > 0) {
+        const normalized = body.parcels.slice(0, 10).map((p, idx) => {
+          const actual = Math.min(50000, Math.max(0.1, Number(p.billableKg ?? p.weightKg) || 1));
+          const vol =
+            ((Math.max(0, Number(p.lengthCm) || 0) *
+              Math.max(0, Number(p.widthCm) || 0) *
+              Math.max(0, Number(p.heightCm) || 0)) /
+              5000) ||
+            0;
+          return {
+            id: p.id || `parcel_${idx + 1}`,
+            label: p.label || `Parcel ${idx + 1}`,
+            billableKg: Math.min(50000, Math.max(actual, vol)),
+            declaredValue: Math.max(0, Number(p.declaredValue) || 0),
+          };
+        });
+        const quote = calculateMultiParcelPricing(from, to, normalized, service);
+        res.json({ quote });
+        return;
+      }
+
+      const weightKg = Math.min(50000, Math.max(0.1, Number(body.weightKg) || 1));
+      const declaredValue = Math.max(0, Number(body.declaredValue) || 0);
 
       const quote = calculateShippingPricing(
         from,
@@ -986,8 +1023,11 @@ export function createApiApp(): express.Express {
       }
       const body = (req.body || {}) as {
         code?: string;
-        action?: "mark_pickup_paid" | "refund_booking";
+        action?: "mark_pickup_paid" | "refund_booking" | "approve_item" | "flag_item";
         reason?: string;
+        parcelId?: string;
+        approveAll?: boolean;
+        approve_all?: boolean;
       };
       if (body.action === "refund_booking" && !requireRecentAuth(actor, 900)) {
         res.status(403).json({
@@ -996,13 +1036,24 @@ export function createApiApp(): express.Express {
         });
         return;
       }
-      const action =
-        body.action === "refund_booking" ? "refund_booking" : "mark_pickup_paid";
+      const allowedActions = [
+        "mark_pickup_paid",
+        "refund_booking",
+        "approve_item",
+        "flag_item",
+      ] as const;
+      if (!body.action || !allowedActions.includes(body.action)) {
+        res.status(400).json({ error: "Unsupported booking action." });
+        return;
+      }
       const result = await adminBookingAction({
         actor,
         code: String(body.code || ""),
-        action,
+        action: body.action,
         reason: body.reason,
+        parcelId: body.parcelId,
+        approveAll: Boolean(body.approveAll || body.approve_all),
+        baseUrl: getOrigin(req),
       });
       res.json(result);
     } catch (err) {
@@ -1755,6 +1806,16 @@ export function createApiApp(): express.Express {
           ? "reminder"
           : "invite";
 
+      const shipSnap = await getAdminDb()
+        .collection("shipments")
+        .doc(code)
+        .get()
+        .catch(() => null);
+      const emailParcels =
+        shipSnap && shipSnap.exists
+          ? getParcels(shipSnap.data() as ShipmentRecord)
+          : undefined;
+
       const receiverPayload = receiverHasAccount
         ? buildReceiverOnItsWayEmail({
             baseUrl,
@@ -1767,6 +1828,7 @@ export function createApiApp(): express.Express {
             originCountry: String(body.originCountry || ""),
             etaLabel: String(body.etaLabel || "scheduled"),
             inviteToken: token,
+            parcels: emailParcels,
           })
         : buildReceiverInviteEmail({
             baseUrl,
@@ -1780,6 +1842,7 @@ export function createApiApp(): express.Express {
             etaLabel: String(body.etaLabel || "scheduled"),
             inviteToken: token,
             isReminder: Boolean(body.isReminder),
+            parcels: emailParcels,
           });
 
       const receiverDispatch = await dispatchTransactionalEmail(
@@ -1807,6 +1870,7 @@ export function createApiApp(): express.Express {
           routeLabel,
           etaLabel: String(body.etaLabel || "scheduled"),
           totalFormatted: String(body.totalFormatted || "$0.00"),
+          parcels: emailParcels,
         });
         senderSubject = senderPayload.subject;
         senderDispatch = await dispatchTransactionalEmail(senderEmail, senderPayload, {
@@ -1889,6 +1953,16 @@ export function createApiApp(): express.Express {
         }).token;
       }
 
+      const notifyShipSnap = await getAdminDb()
+        .collection("shipments")
+        .doc(code)
+        .get()
+        .catch(() => null);
+      const notifyParcels =
+        notifyShipSnap && notifyShipSnap.exists
+          ? getParcels(notifyShipSnap.data() as ShipmentRecord)
+          : undefined;
+
       const payload = buildShipmentUpdateEmail({
         baseUrl,
         trackingCode: code,
@@ -1898,6 +1972,7 @@ export function createApiApp(): express.Express {
         details: String(body.details || ""),
         hasAccount: Boolean(body.hasAccount),
         inviteToken,
+        parcels: notifyParcels,
       });
 
       const result = await dispatchTransactionalEmail(toEmail, payload, {

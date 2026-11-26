@@ -118,6 +118,27 @@ export async function saveUserDraft(params: {
     ...(p.name ? { name: String(p.name) } : {}),
   }));
 
+  const cleanParcels = Array.isArray(data.parcels)
+    ? data.parcels.slice(0, 10).map((parcel, idx) => ({
+        id: String(parcel.id || `parcel_${idx + 1}`),
+        weight: String(parcel.weight || "1.5"),
+        pkgType: String(parcel.pkgType || "Parcel"),
+        ...(parcel.lengthCm ? { lengthCm: String(parcel.lengthCm) } : {}),
+        ...(parcel.widthCm ? { widthCm: String(parcel.widthCm) } : {}),
+        ...(parcel.heightCm ? { heightCm: String(parcel.heightCm) } : {}),
+        val: String(parcel.val || "0"),
+        contents: String(parcel.contents || ""),
+        photos: (parcel.photos || [])
+          .slice(0, 4)
+          .map((p) => ({
+            url: String(p.url || ""),
+            ...(p.storagePath ? { storagePath: String(p.storagePath) } : {}),
+            ...(p.name ? { name: String(p.name) } : {}),
+          }))
+          .filter((p) => p.url && !p.url.startsWith("blob:")),
+      }))
+    : undefined;
+
   const cleanData: DraftWizardData = {
     sName: String(data.sName || ""),
     sEmail: String(data.sEmail || ""),
@@ -145,6 +166,7 @@ export async function saveUserDraft(params: {
       ? { paymentMethodId: String(data.paymentMethodId) }
       : {}),
     photos: cleanPhotos.filter((p) => p.url && !p.url.startsWith("blob:")),
+    ...(cleanParcels && cleanParcels.length > 0 ? { parcels: cleanParcels } : {}),
   };
 
   await setDoc(
@@ -197,12 +219,19 @@ export async function deleteUserDraft(
   const draftId = typeof draftOrId === "string" ? draftOrId : draftOrId.id;
   if (!draftId) return;
 
-  if (typeof draftOrId !== "string" && Array.isArray(draftOrId.data?.photos)) {
-    await Promise.all(
-      draftOrId.data.photos.map((p) =>
-        p.url ? deleteStorageUrlSafe(p.url) : Promise.resolve()
-      )
-    );
+  if (typeof draftOrId !== "string") {
+    const urls = new Set<string>();
+    for (const p of draftOrId.data?.photos || []) {
+      if (p?.url) urls.add(p.url);
+    }
+    for (const parcel of draftOrId.data?.parcels || []) {
+      for (const p of parcel?.photos || []) {
+        if (p?.url) urls.add(p.url);
+      }
+    }
+    if (urls.size > 0) {
+      await Promise.all(Array.from(urls).map((url) => deleteStorageUrlSafe(url)));
+    }
   }
 
   await Promise.allSettled([
@@ -218,10 +247,17 @@ export async function migrateGuestDraftToFirestore(
   const guest = readGuestDraft();
   if (!guest || !uid) return null;
 
+  const hasParcelContent = Array.isArray(guest.data.parcels)
+    ? guest.data.parcels.some(
+        (p) => Boolean(p.contents?.trim()) || Boolean(p.photos?.length)
+      )
+    : false;
+
   const hasContent =
     Boolean(guest.data.rName.trim()) ||
     Boolean(guest.data.rEmail.trim()) ||
     Boolean(guest.data.contents.trim()) ||
+    hasParcelContent ||
     guest.step > 1;
   if (!hasContent) {
     clearGuestDraft();

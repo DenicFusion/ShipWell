@@ -468,6 +468,8 @@ export function DashboardOverview({
                 <StageStepper
                   status={featured.status}
                   isHeld={Boolean(featured.hold)}
+                  events={featured.events}
+                  alerts={featured.alerts}
                 />
 
                 <div

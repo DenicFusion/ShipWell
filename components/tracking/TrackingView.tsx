@@ -10,6 +10,7 @@ import {
 import {
   AlertCircle,
   AlertTriangle,
+  Box,
   Camera,
   Check,
   Clock,
@@ -31,9 +32,15 @@ import {
   fetchFullShipmentBundleWithRetry,
   fetchTrackingTeaser,
 } from "@/lib/firestore-shipments";
-import { formatDateTime, formatShortDay, SERVICES } from "@/lib/quote-engine";
+import {
+  formatDateTime,
+  formatMoney,
+  formatShortDay,
+  SERVICES,
+} from "@/lib/quote-engine";
 import {
   formatTrackingCode,
+  getParcels,
   getShipmentChip,
   getStagePercent,
   isValidTrackingCode,
@@ -650,6 +657,19 @@ export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
     const sortedEvents = [...(shipment?.events || [])].sort(
       (a, b) => b.ts - a.ts
     );
+    const parcels = shipment ? getParcels(shipment) : [];
+    const allParcelPhotos =
+      parcels.length > 0
+        ? parcels.flatMap((p) =>
+            p.photos.map((src, idx) => ({
+              src,
+              label: `${p.contents} (${idx + 1})`,
+            }))
+          )
+        : (shipment?.photos || []).map((src, idx) => ({
+            src,
+            label: `${shipment?.contents || "Item"} (${idx + 1})`,
+          }));
 
     return (
       <div className="tcard">
@@ -838,7 +858,10 @@ export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
           </div>
           <div>
             <small>Weight</small>
-            <b>{(shipment?.weightKg ?? teaser.weightKg).toFixed(1)} kg</b>
+            <b>
+              {(shipment?.weightKg ?? teaser.weightKg).toFixed(1)} kg
+              {parcels.length > 1 ? ` · ${parcels.length} parcels` : ""}
+            </b>
           </div>
           <div>
             <small>Contents</small>
@@ -860,28 +883,95 @@ export function TrackingView({ initialCode = "" }: { initialCode?: string }) {
           </div>
         </div>
 
+        {/* PARCELS LIST (SENDER, RECEIVER & ADMIN ONLY) */}
+        {canSeePrivate && shipment && parcels.length > 0 && (
+          <div className="tk-sec">
+            <h6>
+              <Box className="w-3.5 h-3.5" />
+              Parcels ({parcels.length})
+              <i>
+                {formatMoney(
+                  parcels.reduce(
+                    (sum, p) => sum + Math.max(0, Number(p.declaredValue) || 0),
+                    0
+                  )
+                )}{" "}
+                declared
+              </i>
+            </h6>
+            <div className="flex flex-col gap-2.5">
+              {parcels.map((parcel, idx) => {
+                const revState = parcel.review?.state || "pending";
+                const revTone =
+                  revState === "approved"
+                    ? "g"
+                    : revState === "flagged"
+                      ? "r"
+                      : "a";
+                return (
+                  <div
+                    key={parcel.id || idx}
+                    style={{
+                      border: "1px solid var(--border)",
+                      borderRadius: 14,
+                      padding: 12,
+                      background: "var(--card2)",
+                    }}
+                  >
+                    <div className="flex items-start justify-between gap-2 flex-wrap">
+                      <div className="min-w-0">
+                        <b style={{ fontSize: 13.5, display: "block" }}>
+                          {parcels.length > 1
+                            ? `Parcel ${idx + 1}: ${parcel.contents}`
+                            : parcel.contents}
+                        </b>
+                        <small style={{ color: "var(--muted)", fontSize: 12 }}>
+                          {parcel.packageType} · {parcel.weightKg.toFixed(1)} kg ·{" "}
+                          {formatMoney(parcel.declaredValue)}
+                        </small>
+                      </div>
+                      <span className={`chip ${revTone}`}>{revState}</span>
+                    </div>
+                    {parcel.review?.note && (
+                      <div
+                        style={{
+                          marginTop: 6,
+                          fontSize: 12,
+                          color: "var(--amber)",
+                        }}
+                      >
+                        {parcel.review.note}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* ITEM PHOTOS (SENDER, RECEIVER & ADMIN ONLY) */}
         <div className="tk-sec">
           <h6>
             <Camera className="w-3.5 h-3.5" />
             Item photos{" "}
-            {canSeePrivate && shipment?.photos?.length ? (
+            {canSeePrivate && allParcelPhotos.length > 0 ? (
               <i>
-                {shipment.photos.length} uploaded · tap to zoom
+                {allParcelPhotos.length} uploaded · tap to zoom
               </i>
             ) : null}
           </h6>
           {canSeePrivate && shipment ? (
-            shipment.photos && shipment.photos.length > 0 ? (
+            allParcelPhotos.length > 0 ? (
               <div className="gal">
-                {shipment.photos.map((src, idx) => (
+                {allParcelPhotos.map((item, idx) => (
                   <button
-                    key={idx}
+                    key={`${item.src}_${idx}`}
                     type="button"
                     aria-label={`Zoom item photo ${idx + 1}`}
-                    onClick={() => openPhotoZoom(src, `${shipment.contents} (${idx + 1})`)}
+                    onClick={() => openPhotoZoom(item.src, item.label)}
                   >
-                    <img src={src} alt={`Item ${idx + 1}`} />
+                    <img src={item.src} alt={item.label} />
                   </button>
                 ))}
               </div>

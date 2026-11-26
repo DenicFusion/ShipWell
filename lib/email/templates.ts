@@ -35,6 +35,55 @@ function getBaseUrl(origin?: string): string {
   return base.replace(/\/+$/, "");
 }
 
+export interface EmailParcelSummary {
+  id?: string;
+  contents: string;
+  packageType?: string;
+  weightKg: number;
+  declaredValue?: number;
+}
+
+function renderParcelTableHtml(parcels?: EmailParcelSummary[]): string {
+  if (!Array.isArray(parcels) || parcels.length === 0) return "";
+  const rows = parcels
+    .map(
+      (p, idx) => `
+      <tr>
+        <td style="padding:8px 10px;border-top:1px solid #1E293B;font-size:13px;color:#E2E8F0;" class="sw-copy">
+          <strong class="sw-strong" style="color:#F1F5F9;">${parcels.length > 1 ? `#${idx + 1} · ` : ""}${escapeHtml(p.contents || "Parcel")}</strong>
+          ${p.packageType ? `<div class="sw-muted" style="font-size:11.5px;color:#94A3B8;">${escapeHtml(p.packageType)}</div>` : ""}
+        </td>
+        <td align="right" style="padding:8px 10px;border-top:1px solid #1E293B;font-size:13px;color:#E2E8F0;white-space:nowrap;font-family:'JetBrains Mono',Consolas,monospace;" class="sw-copy">
+          ${Number(p.weightKg || 0).toFixed(1)} kg
+        </td>
+        <td align="right" style="padding:8px 10px;border-top:1px solid #1E293B;font-size:13px;color:#E2E8F0;white-space:nowrap;font-family:'JetBrains Mono',Consolas,monospace;" class="sw-copy">
+          $${Number(p.declaredValue || 0).toFixed(2)}
+        </td>
+      </tr>`
+    )
+    .join("");
+
+  return `
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" class="sw-link-box" style="margin:14px 0 18px 0;background-color:#111827;border:1px solid #1E293B;border-radius:10px;border-collapse:separate;overflow:hidden;">
+      <tr>
+        <th align="left" style="padding:8px 10px;font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:#94A3B8;font-weight:700;">Parcels (${parcels.length})</th>
+        <th align="right" style="padding:8px 10px;font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:#94A3B8;font-weight:700;">Weight</th>
+        <th align="right" style="padding:8px 10px;font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:#94A3B8;font-weight:700;">Value</th>
+      </tr>
+      ${rows}
+    </table>
+  `;
+}
+
+function renderParcelTableText(parcels?: EmailParcelSummary[]): string {
+  if (!Array.isArray(parcels) || parcels.length === 0) return "";
+  const lines = parcels.map(
+    (p, idx) =>
+      `- ${parcels.length > 1 ? `Parcel ${idx + 1}: ` : ""}${p.contents || "Parcel"} (${p.packageType || "Parcel"}, ${Number(p.weightKg || 0).toFixed(1)} kg, $${Number(p.declaredValue || 0).toFixed(2)})`
+  );
+  return `\nParcels (${parcels.length}):\n${lines.join("\n")}\n`;
+}
+
 interface ShellOptions {
   baseUrl: string;
   preheader: string;
@@ -154,6 +203,7 @@ export function buildReceiverInviteEmail(params: {
   etaLabel: string;
   inviteToken: string;
   isReminder?: boolean;
+  parcels?: EmailParcelSummary[];
 }): EmailPayload {
   const baseUrl = getBaseUrl(params.baseUrl);
   const code = sanitizeHeaderText(params.trackingCode).toUpperCase();
@@ -165,9 +215,13 @@ export function buildReceiverInviteEmail(params: {
   const unknownSenderUrl = `${baseUrl}/api/invites/action?token=${encodeURIComponent(params.inviteToken)}&action=unknown_sender`;
   const unsubUrl = `${baseUrl}/api/invites/action?token=${encodeURIComponent(params.inviteToken)}&action=unsubscribe`;
 
+  const parcelNoun =
+    params.parcels && params.parcels.length > 1
+      ? `${params.parcels.length} parcels`
+      : "a parcel";
   const subjectPrefix = params.isReminder ? "Reminder: " : "";
   const subject = sanitizeHeaderText(
-    `${subjectPrefix}${senderFirst} is sending you a parcel — track it on ShipWell`
+    `${subjectPrefix}${senderFirst} is sending you ${parcelNoun} — track it on ShipWell`
   );
   const preheader =
     "Create your free account to see live progress and the item photos.";
@@ -179,6 +233,7 @@ export function buildReceiverInviteEmail(params: {
     <p style="margin:0 0 16px 0;">
       Your tracking number is <strong style="font-family:'JetBrains Mono',Consolas,monospace;color:#34D399;letter-spacing:0.04em;">${escapeHtml(code)}</strong> &middot; Estimated delivery ${escapeHtml(params.etaLabel)}.
     </p>
+    ${renderParcelTableHtml(params.parcels)}
     <p style="margin:0 0 16px 0;">
       ShipWell is the live tracking platform for this shipment. Every checkpoint, delay and delivery update &mdash; and the photos ${escapeHtml(senderFirst)} uploaded of the item &mdash; appear on your dashboard.
     </p>
@@ -200,7 +255,7 @@ export function buildReceiverInviteEmail(params: {
 Hello ${receiverFirst}. ${params.senderFullName} has shipped ${params.contents} to you from ${params.originCity}, ${params.originCountry}.
 
 Your tracking number is ${code} · Estimated delivery ${params.etaLabel}.
-
+${renderParcelTableText(params.parcels)}
 ShipWell is the live tracking platform for this shipment. Every checkpoint, delay and delivery update — and the photos ${senderFirst} uploaded of the item — appear on your dashboard.
 
 Create your free account to see it:
@@ -243,6 +298,7 @@ export function buildReceiverOnItsWayEmail(params: {
   originCountry: string;
   etaLabel: string;
   inviteToken?: string;
+  parcels?: EmailParcelSummary[];
 }): EmailPayload {
   const baseUrl = getBaseUrl(params.baseUrl);
   const code = sanitizeHeaderText(params.trackingCode).toUpperCase();
@@ -254,8 +310,12 @@ export function buildReceiverOnItsWayEmail(params: {
     ? `${baseUrl}/api/invites/action?token=${encodeURIComponent(params.inviteToken)}&action=unknown_sender`
     : `${baseUrl}/track/${encodeURIComponent(code)}`;
 
+  const parcelNoun =
+    params.parcels && params.parcels.length > 1
+      ? `${params.parcels.length} parcels`
+      : "A parcel";
   const subject = sanitizeHeaderText(
-    `A parcel from ${senderFirst} is on its way to you`
+    `${parcelNoun} from ${senderFirst} ${params.parcels && params.parcels.length > 1 ? "are" : "is"} on the way to you`
   );
   const preheader = `Tracking ${code} · Est. delivery ${params.etaLabel}.`;
 
@@ -266,6 +326,7 @@ export function buildReceiverOnItsWayEmail(params: {
     <p style="margin:0 0 16px 0;">
       Your tracking number is <strong style="font-family:'JetBrains Mono',Consolas,monospace;color:#34D399;letter-spacing:0.04em;">${escapeHtml(code)}</strong> &middot; Estimated delivery ${escapeHtml(params.etaLabel)}.
     </p>
+    ${renderParcelTableHtml(params.parcels)}
     <p style="margin:0;">It&apos;s already on your ShipWell dashboard.</p>
   `;
 
@@ -282,7 +343,7 @@ export function buildReceiverOnItsWayEmail(params: {
 
 Hello ${receiverFirst}. ${params.senderFullName} has shipped ${params.contents} to you from ${params.originCity}, ${params.originCountry}.
 Your tracking number is ${code} · Estimated delivery ${params.etaLabel}.
-
+${renderParcelTableText(params.parcels)}
 It's already on your ShipWell dashboard.
 
 Track my parcel: ${trackUrl}
@@ -296,7 +357,10 @@ Not you? Sign in with a different account: ${switchAccountUrl}
     html: renderEmailShell({
       baseUrl,
       preheader,
-      heading: "A parcel is on its way to you",
+      heading:
+        params.parcels && params.parcels.length > 1
+          ? `${params.parcels.length} parcels are on their way to you`
+          : "A parcel is on its way to you",
       bodyHtml,
       ctaLabel: "Track my parcel",
       ctaUrl: trackUrl,
@@ -317,6 +381,7 @@ export function buildSenderBookingEmail(params: {
   routeLabel: string;
   etaLabel: string;
   totalFormatted: string;
+  parcels?: EmailParcelSummary[];
 }): EmailPayload {
   const baseUrl = getBaseUrl(params.baseUrl);
   const code = sanitizeHeaderText(params.trackingCode).toUpperCase();
@@ -338,6 +403,7 @@ export function buildSenderBookingEmail(params: {
       Estimated delivery: <strong class="sw-strong" style="color:#F1F5F9;">${escapeHtml(params.etaLabel)}</strong><br>
       Total: <strong class="sw-strong" style="color:#F1F5F9;">${escapeHtml(params.totalFormatted)}</strong>
     </p>
+    ${renderParcelTableHtml(params.parcels)}
     <p style="margin:0;">
       We&apos;ve emailed <strong class="sw-strong" style="color:#F1F5F9;">${escapeHtml(params.receiverFullName)}</strong> at <strong class="sw-strong" style="color:#F1F5F9;">${escapeHtml(params.receiverEmail)}</strong> so they can follow it too.
     </p>
@@ -357,7 +423,7 @@ export function buildSenderBookingEmail(params: {
       footerHtml:
         'Questions? Email <a href="mailto:support@mail.shipwell.cc" style="color:#94A3B8;text-decoration:underline;">support@mail.shipwell.cc</a> &middot; ShipWell Logistics Ltd.',
     }),
-    text: `Your shipment is booked\n\nTracking code: ${code}\nRoute: ${params.routeLabel}\nEstimated delivery: ${params.etaLabel}\nTotal: ${params.totalFormatted}\n\nWe've emailed ${params.receiverFullName} at ${params.receiverEmail} so they can follow it too.\n\nView shipment: ${trackUrl}`,
+    text: `Your shipment is booked\n\nTracking code: ${code}\nRoute: ${params.routeLabel}\nEstimated delivery: ${params.etaLabel}\nTotal: ${params.totalFormatted}\n${renderParcelTableText(params.parcels)}\nWe've emailed ${params.receiverFullName} at ${params.receiverEmail} so they can follow it too.\n\nView shipment: ${trackUrl}`,
   };
 }
 
@@ -370,6 +436,7 @@ export function buildShipmentUpdateEmail(params: {
   details: string;
   hasAccount: boolean;
   inviteToken?: string;
+  parcels?: EmailParcelSummary[];
 }): EmailPayload {
   const baseUrl = getBaseUrl(params.baseUrl);
   const code = sanitizeHeaderText(params.trackingCode).toUpperCase();
@@ -400,6 +467,7 @@ export function buildShipmentUpdateEmail(params: {
       Update for tracking number <strong style="font-family:'JetBrains Mono',Consolas,monospace;color:#34D399;">${escapeHtml(code)}</strong>:
     </p>
     <p style="margin:0 0 16px 0;"><strong class="sw-strong" style="color:#F1F5F9;">${escapeHtml(params.headline)}</strong><br>${escapeHtml(params.details)}</p>
+    ${renderParcelTableHtml(params.parcels)}
     ${
       !params.hasAccount
         ? `<p style="margin:0;">Sign up for free with this email to see full progress, alerts and next steps.</p>`
@@ -421,7 +489,7 @@ export function buildShipmentUpdateEmail(params: {
       footerHtml:
         'You are receiving updates for an active ShipWell shipment. Questions? Email <a href="mailto:support@mail.shipwell.cc" style="color:#94A3B8;text-decoration:underline;">support@mail.shipwell.cc</a>.',
     }),
-    text: `${params.headline}\n\nHello ${first}, update for ${code}:\n${params.details}\n\nOpen: ${deepUrl}`,
+    text: `${params.headline}\n\nHello ${first}, update for ${code}:\n${params.details}${renderParcelTableText(params.parcels)}\n\nOpen: ${deepUrl}`,
   };
 }
 

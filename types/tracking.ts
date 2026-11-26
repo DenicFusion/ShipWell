@@ -101,6 +101,36 @@ export interface ShipmentReview {
   by?: string | null;
 }
 
+export interface Parcel {
+  id: string;
+  contents: string;
+  packageType: string;
+  weightKg: number;
+  actualKg: number;
+  lengthCm?: number;
+  widthCm?: number;
+  heightCm?: number;
+  declaredValue: number;
+  photos: string[];
+  review: ShipmentReview;
+}
+
+export interface DraftParcel {
+  id: string;
+  weight: string;
+  pkgType: string;
+  lengthCm?: string;
+  widthCm?: string;
+  heightCm?: string;
+  val: string;
+  contents: string;
+  photos?: Array<{
+    url: string;
+    storagePath?: string;
+    name?: string;
+  }>;
+}
+
 export interface TrackingEvent {
   id: string;
   stage: ShipmentStage;
@@ -337,6 +367,7 @@ export interface BookingRecord {
   service: ServiceTier;
   weightKg: number;
   declaredValue: number;
+  parcels?: Parcel[];
   total: number;
   feeAmount?: number;
   currency: string;
@@ -376,6 +407,7 @@ export interface ShipmentRecord {
   packageType: string;
   contents: string;
   declaredValue: number;
+  parcels?: Parcel[];
   priceTotal: number;
   paymentMethod: string;
   paymentMethodId?: string | null;
@@ -432,6 +464,7 @@ export interface DraftWizardData {
     storagePath?: string;
     name?: string;
   }>;
+  parcels?: DraftParcel[];
 }
 
 export interface DraftShipmentRecord {
@@ -766,4 +799,173 @@ export function formatUsd(amount: number, currency = "USD"): string {
     return `$${num.toFixed(2)}`;
   }
   return `${currency.toUpperCase()} ${num.toFixed(2)}`;
+}
+
+export function getParcels(
+  shipment:
+    | Partial<
+        Pick<
+          ShipmentRecord,
+          | "parcels"
+          | "contents"
+          | "packageType"
+          | "weightKg"
+          | "declaredValue"
+          | "photos"
+          | "review"
+        >
+      >
+    | null
+    | undefined
+): Parcel[] {
+  if (!shipment) return [];
+  if (Array.isArray(shipment.parcels) && shipment.parcels.length > 0) {
+    return shipment.parcels.map((p, idx) => {
+      const billable = Number(p.weightKg || p.actualKg || 0.1);
+      const actual = Number(p.actualKg || p.weightKg || billable);
+      return {
+        id: p.id || `parcel_${idx + 1}`,
+        contents: String(p.contents || "Parcel"),
+        packageType: String(p.packageType || "Parcel"),
+        weightKg: Number.isFinite(billable) && billable > 0 ? billable : 0.1,
+        actualKg: Number.isFinite(actual) && actual > 0 ? actual : 0.1,
+        ...(typeof p.lengthCm === "number" && p.lengthCm > 0
+          ? { lengthCm: p.lengthCm }
+          : {}),
+        ...(typeof p.widthCm === "number" && p.widthCm > 0
+          ? { widthCm: p.widthCm }
+          : {}),
+        ...(typeof p.heightCm === "number" && p.heightCm > 0
+          ? { heightCm: p.heightCm }
+          : {}),
+        declaredValue: Math.max(0, Number(p.declaredValue) || 0),
+        photos: Array.isArray(p.photos) ? p.photos.filter(Boolean) : [],
+        review: p.review || { state: "pending", note: "" },
+      };
+    });
+  }
+  const w = Math.max(0.1, Number(shipment.weightKg) || 0.1);
+  return [
+    {
+      id: "parcel_1",
+      contents: String(shipment.contents || "Parcel"),
+      packageType: String(shipment.packageType || "Parcel"),
+      weightKg: w,
+      actualKg: w,
+      declaredValue: Math.max(0, Number(shipment.declaredValue) || 0),
+      photos: Array.isArray(shipment.photos)
+        ? shipment.photos.filter(Boolean)
+        : [],
+      review: shipment.review || { state: "pending", note: "" },
+    },
+  ];
+}
+
+export function formatParcelContentsSummary(
+  parcels: Array<{ contents: string }>
+): string {
+  const names = parcels
+    .map((p) => String(p.contents || "").trim())
+    .filter(Boolean);
+  if (names.length === 0) return "Parcel";
+  if (names.length === 1) return names[0].slice(0, 240);
+  if (names.length === 2) {
+    const joined = `${names[0]}, ${names[1]}`;
+    return joined.length <= 240
+      ? joined
+      : `${names[0].slice(0, 220)} +1 more`;
+  }
+  const suffix = ` +${names.length - 2} more`;
+  const head = `${names[0]}, ${names[1]}`;
+  if (head.length + suffix.length <= 240) return `${head}${suffix}`;
+  return `${head.slice(0, 240 - suffix.length)}${suffix}`;
+}
+
+export function computeAggregateReview(
+  parcels: Array<{ review?: ShipmentReview }>,
+  existingNote = ""
+): ShipmentReview {
+  if (!parcels.length) {
+    return { state: "pending", note: existingNote };
+  }
+  const flagged = parcels.find((p) => p.review?.state === "flagged");
+  if (flagged) {
+    return {
+      state: "flagged",
+      note: flagged.review?.note || existingNote,
+      at: flagged.review?.at ?? Date.now(),
+      by: flagged.review?.by || "ShipWell Operations",
+    };
+  }
+  const allApproved = parcels.every((p) => p.review?.state === "approved");
+  if (allApproved) {
+    const latestAt = parcels.reduce(
+      (max, p) => Math.max(max, Number(p.review?.at || 0)),
+      0
+    );
+    return {
+      state: "approved",
+      note: "",
+      at: latestAt || Date.now(),
+      by: "ShipWell Operations",
+    };
+  }
+  return {
+    state: "pending",
+    note: "",
+  };
+}
+
+export function summarizeParcels(parcels: Parcel[]): {
+  weightKg: number;
+  declaredValue: number;
+  contents: string;
+  packageType: string;
+  photos: string[];
+  review: ShipmentReview;
+} {
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  const weightKg = r2(
+    parcels.reduce((sum, p) => sum + Math.max(0.1, Number(p.weightKg) || 0.1), 0)
+  );
+  const declaredValue = r2(
+    parcels.reduce(
+      (sum, p) => sum + Math.max(0, Number(p.declaredValue) || 0),
+      0
+    )
+  );
+  const contents = formatParcelContentsSummary(parcels);
+  const packageType =
+    parcels.length > 1
+      ? "Multiple parcels"
+      : String(parcels[0]?.packageType || "Parcel").slice(0, 60);
+
+  const seen = new Set<string>();
+  const photos: string[] = [];
+  for (const p of parcels) {
+    const first = p.photos?.[0];
+    if (first && !seen.has(first)) {
+      seen.add(first);
+      photos.push(first);
+      if (photos.length >= 4) break;
+    }
+  }
+  if (photos.length < 4 && parcels.length === 1) {
+    for (const url of parcels[0]?.photos || []) {
+      if (url && !seen.has(url)) {
+        seen.add(url);
+        photos.push(url);
+        if (photos.length >= 4) break;
+      }
+    }
+  }
+
+  return {
+    weightKg,
+    declaredValue,
+    contents,
+    packageType,
+    photos,
+    review: computeAggregateReview(parcels),
+  };
 }

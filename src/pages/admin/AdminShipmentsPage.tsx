@@ -10,7 +10,7 @@ import {
 } from "@/lib/firestore-shipments";
 import { useShipWell } from "@/components/providers/ShipWellProvider";
 import { formatShortDay } from "@/lib/quote-engine";
-import { getShipmentChip, type ShipmentRecord } from "@/types/tracking";
+import { getParcels, getShipmentChip, type ShipmentRecord } from "@/types/tracking";
 
 function ShipmentsListContent() {
   const [searchParams] = useSearchParams();
@@ -50,13 +50,15 @@ function ShipmentsListContent() {
 
   const filtered = shipments.filter((s) => {
     const q = queryText.trim().toLowerCase();
+    const parcels = getParcels(s);
     const matchesSearch =
       !q ||
       s.code.toLowerCase().includes(q) ||
       s.sender.name.toLowerCase().includes(q) ||
       s.receiver.name.toLowerCase().includes(q) ||
       s.receiverEmail.toLowerCase().includes(q) ||
-      s.contents.toLowerCase().includes(q);
+      s.contents.toLowerCase().includes(q) ||
+      parcels.some((p) => p.contents.toLowerCase().includes(q));
 
     if (!matchesSearch) return false;
     if (filter === "review") return s.review?.state === "pending";
@@ -116,6 +118,7 @@ function ShipmentsListContent() {
             filtered.map((s) => {
               const chip = getShipmentChip(s);
               const signedUp = receiverMap[s.receiverEmail];
+              const parcelCount = getParcels(s).length;
               const payLabel =
                 s.paymentStatus === "paid"
                   ? "Paid"
@@ -139,6 +142,7 @@ function ShipmentsListContent() {
                   <div className="c2">
                     <span className="m">
                       {s.sender.city} → {s.receiver.city}
+                      {parcelCount > 1 ? ` · ${parcelCount} parcels` : ""}
                     </span>
                   </div>
                   <div className="c3">

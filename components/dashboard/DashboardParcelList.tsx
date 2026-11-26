@@ -26,6 +26,7 @@ import {
 import { SERVICES } from "@/lib/quote-engine";
 import {
   formatTimeAgo,
+  getParcels,
   getShipmentChip,
   getStagePercent,
   normalizeEmail,
@@ -224,6 +225,9 @@ export function DashboardParcelList({
                 <div className="rm">
                   <b>
                     {d.data.contents || d.data.pkgType || "Unfinished parcel"}
+                    {Array.isArray(d.data.parcels) && d.data.parcels.length > 1
+                      ? ` (${d.data.parcels.length} parcels)`
+                      : ""}
                   </b>
                   <small>
                     {d.data.sCity || d.data.sCountry} →{" "}
@@ -372,6 +376,8 @@ export function DashboardParcelList({
             const linkedManualPay =
               mode === "sent" ? manualPaymentsByCode[s.code] : undefined;
 
+            const parcelCount = getParcels(s).length;
+
             return (
               <article key={`${mode}_${s.code}`} className="dx-parcel">
                 <Link
@@ -413,11 +419,13 @@ export function DashboardParcelList({
                       <>
                         From <b>{s.sender.name}</b> · {s.sender.city} →{" "}
                         {s.receiver.city}
+                        {parcelCount > 1 ? ` · ${parcelCount} parcels` : ""}
                       </>
                     ) : (
                       <>
                         To <b>{s.receiver.name}</b> · {s.sender.city} →{" "}
                         {s.receiver.city}
+                        {parcelCount > 1 ? ` · ${parcelCount} parcels` : ""}
                         {linkedManualPay?.reference ? (
                           <>
                             {" "}

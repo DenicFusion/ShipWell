@@ -36,6 +36,7 @@ import { formatDateTime, formatMoney, SERVICES } from "@/lib/quote-engine";
 import {
   formatTimeAgo,
   formatTrackingCode,
+  getParcels,
   getShipmentChip,
   isValidTrackingCode,
   normalizeEmail,
@@ -362,6 +363,8 @@ function FullTrackedContent({
     return { tone: "a", label: "Awaiting payment" };
   }, [shipment.paymentStatus, bookingManualPay?.status]);
 
+  const parcels = useMemo(() => getParcels(shipment), [shipment]);
+
   return (
     <>
       {isBookingRedirect && (
@@ -534,6 +537,8 @@ function FullTrackedContent({
           <StageStepper
             status={shipment.status}
             isHeld={Boolean(shipment.hold)}
+            events={shipment.events}
+            alerts={shipment.alerts}
           />
 
           <div className="dxt-role">
@@ -674,7 +679,10 @@ function FullTrackedContent({
                 </div>
                 <div>
                   <small>Weight</small>
-                  <b>{Number(shipment.weightKg || 0).toFixed(1)} kg</b>
+                  <b>
+                    {Number(shipment.weightKg || 0).toFixed(1)} kg
+                    {parcels.length > 1 ? ` · ${parcels.length} parcels` : ""}
+                  </b>
                 </div>
                 <div>
                   <small>Contents</small>
@@ -716,32 +724,126 @@ function FullTrackedContent({
             </div>
           </div>
 
-          {shipment.photos && shipment.photos.length > 0 && (
-            <div className="dx-card">
-              <div className="dx-ch">
-                <h3>Item photos</h3>
-                <span className="chip n">Uploaded by sender</span>
-              </div>
-              <div className="dxt-photos">
-                {shipment.photos.map((photoUrl, idx) => (
-                  <button
-                    key={`${shipment.code}_photo_${idx}`}
-                    type="button"
-                    aria-label={`View photo ${idx + 1}`}
-                    onClick={() =>
-                      onZoomPhoto(photoUrl, `${shipment.contents} photo ${idx + 1}`)
-                    }
-                  >
-                    <img
-                      src={photoUrl}
-                      alt={`Item photo ${idx + 1}`}
-                      loading="lazy"
-                    />
-                  </button>
-                ))}
-              </div>
+          <div className="dx-card">
+            <div className="dx-ch">
+              <h3>Parcels ({parcels.length})</h3>
+              <span className="chip n">
+                {formatMoney(
+                  parcels.reduce(
+                    (sum, p) => sum + Math.max(0, Number(p.declaredValue) || 0),
+                    0
+                  )
+                )}{" "}
+                declared
+              </span>
             </div>
-          )}
+            <div className="dx-cb flex flex-col gap-3">
+              {parcels.map((parcel, idx) => {
+                const revState = parcel.review?.state || "pending";
+                const revTone =
+                  revState === "approved"
+                    ? "g"
+                    : revState === "flagged"
+                      ? "r"
+                      : "a";
+                return (
+                  <div
+                    key={parcel.id || idx}
+                    style={{
+                      border: "1px solid var(--border)",
+                      borderRadius: 14,
+                      padding: 12,
+                      background: "var(--card2)",
+                    }}
+                  >
+                    <div className="flex items-start justify-between gap-2 flex-wrap">
+                      <div className="min-w-0">
+                        <b style={{ fontSize: 13.5, display: "block" }}>
+                          {parcels.length > 1
+                            ? `Parcel ${idx + 1}: ${parcel.contents}`
+                            : parcel.contents}
+                        </b>
+                        <small style={{ color: "var(--muted)", fontSize: 12 }}>
+                          {parcel.packageType} · {parcel.weightKg.toFixed(1)} kg ·{" "}
+                          {formatMoney(parcel.declaredValue)}
+                        </small>
+                      </div>
+                      <span className={`chip ${revTone}`}>{revState}</span>
+                    </div>
+                    {parcel.review?.note && (
+                      <div
+                        style={{
+                          marginTop: 8,
+                          fontSize: 12,
+                          color: "var(--amber)",
+                        }}
+                      >
+                        {parcel.review.note}
+                      </div>
+                    )}
+                    {parcels.length > 1 && parcel.photos.length > 0 && (
+                      <div
+                        className="dxt-photos"
+                        style={{ padding: "10px 0 0" }}
+                      >
+                        {parcel.photos.map((photoUrl, pIdx) => (
+                          <button
+                            key={`${parcel.id}_photo_${pIdx}`}
+                            type="button"
+                            aria-label={`View ${parcel.contents} photo ${pIdx + 1}`}
+                            onClick={() =>
+                              onZoomPhoto(
+                                photoUrl,
+                                `${parcel.contents} photo ${pIdx + 1}`
+                              )
+                            }
+                          >
+                            <img
+                              src={photoUrl}
+                              alt={`${parcel.contents} photo ${pIdx + 1}`}
+                              loading="lazy"
+                            />
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {parcels.length === 1 &&
+            shipment.photos &&
+            shipment.photos.length > 0 && (
+              <div className="dx-card">
+                <div className="dx-ch">
+                  <h3>Item photos</h3>
+                  <span className="chip n">Uploaded by sender</span>
+                </div>
+                <div className="dxt-photos">
+                  {shipment.photos.map((photoUrl, idx) => (
+                    <button
+                      key={`${shipment.code}_photo_${idx}`}
+                      type="button"
+                      aria-label={`View photo ${idx + 1}`}
+                      onClick={() =>
+                        onZoomPhoto(
+                          photoUrl,
+                          `${shipment.contents} photo ${idx + 1}`
+                        )
+                      }
+                    >
+                      <img
+                        src={photoUrl}
+                        alt={`Item photo ${idx + 1}`}
+                        loading="lazy"
+                      />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           {(shipment.alerts || []).some((a) => a.kind === "duty") && (
             <CustomsLedger
               shipment={shipment}
