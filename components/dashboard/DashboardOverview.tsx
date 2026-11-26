@@ -463,6 +463,8 @@ export function DashboardOverview({
                   destCountry={featured.receiver.country}
                   status={featured.status}
                   isHeld={Boolean(featured.hold)}
+                  events={featured.events}
+                  alerts={featured.alerts}
                 />
 
                 <StageStepper
