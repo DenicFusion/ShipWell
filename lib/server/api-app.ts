@@ -1113,6 +1113,39 @@ export function createApiApp(): express.Express {
     }
   });
 
+  // ── WEBMAIL (admin only): every email ShipWell has sent ──
+  app.get("/api/mail/messages", async (req, res) => {
+    try {
+      const actor = await verifyFirebaseAdminAuth(req.headers);
+      if (!actor?.isAdmin) {
+        res.status(actor ? 403 : 401).json({ error: "Admin authorization required." });
+        return;
+      }
+      const snap = await getAdminDb()
+        .collection("emailLogs")
+        .orderBy("createdAt", "desc")
+        .limit(150)
+        .get();
+      const items = snap.docs.map((d) => {
+        const x = d.data();
+        return {
+          id: d.id,
+          to: String(x.to || ""),
+          from: String(x.from || ""),
+          subject: String(x.subject || "(no subject)"),
+          template: String(x.template || ""),
+          code: String(x.code || ""),
+          status: String(x.status || ""),
+          ts: x.createdAt?.toMillis ? x.createdAt.toMillis() : 0,
+          html: String(x.htmlPreview || ""),
+        };
+      });
+      res.json({ items });
+    } catch (err) {
+      handleServerError(res, err, "Could not load the mailbox.", "webmail_list");
+    }
+  });
+
   // ── ADMIN PUSH NOTIFICATION TOKENS ──
   app.post("/api/admin/push-token", async (req, res) => {
     try {

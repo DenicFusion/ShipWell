@@ -12,6 +12,7 @@ import { ShipWellProvider } from "@/components/providers/ShipWellProvider";
 import {
   getAdminOrigin,
   isAdminHostname,
+  isWebmailHostname,
   isPreviewHostname,
 } from "@/lib/host";
 import HomePage from "@/src/pages/HomePage";
@@ -35,6 +36,7 @@ import AdminAlertsPage from "@/src/pages/admin/AdminAlertsPage";
 import AdminCustomersPage from "@/src/pages/admin/AdminCustomersPage";
 import AdminMessagesPage from "@/src/pages/admin/AdminMessagesPage";
 import AdminMailPage from "@/src/pages/admin/AdminMailPage";
+import WebmailPage from "@/src/pages/WebmailPage";
 import AdminSettingsPage from "@/src/pages/admin/AdminSettingsPage";
 
 const queryClient = new QueryClient({
@@ -70,6 +72,8 @@ function RobotsMetaManager() {
     const onAdminHost = isAdminHostname();
     const shouldNoIndex =
       onAdminHost ||
+      isWebmailHostname() ||
+      pathname.startsWith("/webmail") ||
       pathname.startsWith("/admin") ||
       pathname.startsWith("/auth/action");
 
@@ -103,6 +107,7 @@ function AdminExternalRedirect() {
 
 export default function App() {
   const onAdminHost = isAdminHostname();
+  const onWebmailHost = isWebmailHostname();
   const onPreviewHost = isPreviewHostname();
 
   return (
@@ -112,7 +117,11 @@ export default function App() {
           <ScrollManager />
           <RobotsMetaManager />
 
-          {onAdminHost ? (
+          {onWebmailHost ? (
+            <Routes>
+              <Route path="*" element={<WebmailPage />} />
+            </Routes>
+          ) : onAdminHost ? (
             <Routes>
               <Route path="/login" element={<AdminLoginPage />} />
               <Route path="/" element={<AdminOverviewPage />} />
@@ -142,6 +151,7 @@ export default function App() {
               <Route path="/quote" element={<QuotePage />} />
               <Route path="/ship" element={<ShipPage />} />
               <Route path="/business-shipping" element={<BusinessShippingPage />} />
+              <Route path="/webmail" element={<WebmailPage />} />
               <Route path="/track" element={<TrackPage />} />
               <Route path="/track/:trackingId" element={<TrackPage />} />
               <Route path="/dashboard" element={<DashboardPage section="overview" />} />
