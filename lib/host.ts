@@ -26,6 +26,14 @@ export function isAdminHostname(hostname?: string): boolean {
   return host === "admin.shipwell.cc" || host.startsWith("admin.");
 }
 
+export function isWebmailHostname(hostname?: string): boolean {
+  const host = (
+    hostname ||
+    (typeof window !== "undefined" ? window.location.hostname : "")
+  ).toLowerCase();
+  return host === "webmail.shipwell.cc" || host.startsWith("webmail.");
+}
+
 export function isProductionPublicHost(hostname?: string): boolean {
   const host = (
     hostname ||
