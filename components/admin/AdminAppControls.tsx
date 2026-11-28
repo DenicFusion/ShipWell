@@ -11,14 +11,14 @@ import {
   registerAdminServiceWorker,
   type PushState,
 } from "@/lib/admin-push";
-import { isAdminHostname } from "@/lib/host";
+import { isPushHost } from "@/lib/admin-push";
 
 type InstallEvent = Event & {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: string }>;
 };
 
-/** Install-app and notification controls. Renders only on admin.shipwell.cc. */
+/** Install-app and notification controls. Renders on admin and webmail hosts. */
 export function AdminAppControls() {
   const [state, setState] = useState<PushState>("unsupported");
   const [busy, setBusy] = useState(false);
@@ -30,7 +30,7 @@ export function AdminAppControls() {
   }, []);
 
   useEffect(() => {
-    if (!isAdminHostname()) return;
+    if (!isPushHost()) return;
     registerAdminServiceWorker();
     refresh();
     const onPrompt = (e: Event) => {
@@ -54,7 +54,7 @@ export function AdminAppControls() {
     };
   }, [refresh]);
 
-  if (!isAdminHostname()) return null;
+  if (!isPushHost()) return null;
 
   const btn: React.CSSProperties = {
     display: "inline-flex",

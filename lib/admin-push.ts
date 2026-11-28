@@ -7,10 +7,16 @@ import {
   deleteToken,
 } from "firebase/messaging";
 import { auth } from "@/lib/firebase";
-import { isAdminHostname } from "@/lib/host";
+import { isAdminHostname, isWebmailHostname } from "@/lib/host";
+
+export function isPushHost(): boolean {
+  return isAdminHostname() || isWebmailHostname();
+}
+
+const tokenKey = () => (isWebmailHostname() ? "sw_mail_push_token" : "sw_admin_push_token");
+const tokenEndpoint = () => (isWebmailHostname() ? "/api/mail/push-token" : "/api/admin/push-token");
 
 const VAPID_KEY = (import.meta.env.VITE_FIREBASE_VAPID_KEY as string | undefined) || "";
-const TOKEN_KEY = "sw_admin_push_token";
 
 export type PushState =
   | "unsupported" // browser cannot do push (e.g. iOS Safari tab, not installed)
@@ -32,7 +38,7 @@ export function isIos(): boolean {
 }
 
 export async function registerAdminServiceWorker(): Promise<ServiceWorkerRegistration | null> {
-  if (!isAdminHostname() || !("serviceWorker" in navigator)) return null;
+  if (!isPushHost() || !("serviceWorker" in navigator)) return null;
   try {
     return await navigator.serviceWorker.register("/firebase-messaging-sw.js");
   } catch (err) {
@@ -42,7 +48,7 @@ export async function registerAdminServiceWorker(): Promise<ServiceWorkerRegistr
 }
 
 export async function getPushState(): Promise<PushState> {
-  if (!isAdminHostname()) return "unsupported";
+  if (!isPushHost()) return "unsupported";
   if (!VAPID_KEY) return "not-configured";
   try {
     if (!(await isSupported()) || !("Notification" in window)) return "unsupported";
@@ -52,7 +58,7 @@ export async function getPushState(): Promise<PushState> {
   if (Notification.permission === "denied") return "blocked";
   let saved = "";
   try {
-    saved = localStorage.getItem(TOKEN_KEY) || "";
+    saved = localStorage.getItem(tokenKey()) || "";
   } catch {
     saved = "";
   }
@@ -62,7 +68,7 @@ export async function getPushState(): Promise<PushState> {
 async function authedFetch(method: string, token: string) {
   const idToken = await auth.currentUser?.getIdToken();
   if (!idToken) throw new Error("Please sign in again.");
-  const res = await fetch("/api/admin/push-token", {
+  const res = await fetch(tokenEndpoint(), {
     method,
     headers: {
       "Content-Type": "application/json",
@@ -93,7 +99,7 @@ export async function enableAdminPush(): Promise<void> {
   if (!token) throw new Error("Could not get a notification token.");
   await authedFetch("POST", token);
   try {
-    localStorage.setItem(TOKEN_KEY, token);
+    localStorage.setItem(tokenKey(), token);
   } catch {
     /* ignore */
   }
@@ -102,8 +108,8 @@ export async function enableAdminPush(): Promise<void> {
 export async function disableAdminPush(): Promise<void> {
   let token = "";
   try {
-    token = localStorage.getItem(TOKEN_KEY) || "";
-    localStorage.removeItem(TOKEN_KEY);
+    token = localStorage.getItem(tokenKey()) || "";
+    localStorage.removeItem(tokenKey());
   } catch {
     /* ignore */
   }
@@ -123,7 +129,7 @@ export async function listenForegroundPush(
     if (!VAPID_KEY || !(await isSupported())) return () => undefined;
     return onMessage(getMessaging(getApp()), (payload) => {
       const d = payload.data || {};
-      handler({ title: d.title || "ShipWell Admin", body: d.body || "", url: d.url || "/" });
+      handler({ title: d.title || "ShipWell", body: d.body || "", url: d.url || "/" });
     });
   } catch {
     return () => undefined;
