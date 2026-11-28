@@ -1243,6 +1243,7 @@ export async function adminAddCustomsCharge(params: {
   amount: number;
   currency?: string;
   note?: string;
+  heldAt?: string;
   holdShipment: boolean;
   to?: AlertTarget;
   actorUid: string;
@@ -1270,6 +1271,7 @@ export async function adminAddCustomsCharge(params: {
     amount: cleanAmount,
     currency,
     note: cleanNote,
+    heldAt: (params.heldAt || "").trim(),
     holdShipment: Boolean(holdShipment),
     to,
   });

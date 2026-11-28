@@ -101,17 +101,28 @@ export function AttachPicker({
   files,
   onChange,
   disabled,
+  compact,
 }: {
   files: OutgoingAttachment[];
   onChange: (f: OutgoingAttachment[]) => void;
   disabled?: boolean;
+  compact?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-      <label style={{ ...box, cursor: disabled || busy ? "default" : "pointer", opacity: disabled ? 0.5 : 1 }}>
+      <label
+        title="Attach a file"
+        aria-label="Attach a file"
+        style={{
+          ...box,
+          ...(compact ? { border: 0, background: "transparent", padding: 6, color: "var(--muted)" } : {}),
+          cursor: disabled || busy ? "default" : "pointer",
+          opacity: disabled ? 0.5 : 1,
+        }}
+      >
         {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Paperclip className="w-4 h-4" />}
-        Attach
+        {!compact && "Attach"}
         <input
           type="file"
           multiple
