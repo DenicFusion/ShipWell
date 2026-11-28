@@ -166,6 +166,7 @@ export default function AdminShipmentDetailPage() {
   const [chgAmount, setChgAmount] = useState("38.40");
   const [chgNote, setChgNote] = useState("");
   const [chgHold, setChgHold] = useState(true);
+  const [chgPlace, setChgPlace] = useState("");
   const [chgTo, setChgTo] = useState<AlertTarget>("receiver");
 
   // Refund modal + re-auth password (supports customs charge or booking refund)
@@ -1090,12 +1091,14 @@ export default function AdminShipmentDetailPage() {
                           amount: amt,
                           currency: "USD",
                           note: chgNote,
+                          heldAt: chgPlace,
                           holdShipment: chgHold,
                           to: chgTo,
                           actorUid: user.uid,
                           actorEmail: adminEmail,
                         });
                         setChgNote("");
+                        setChgPlace("");
                         toast.success(
                           `${chgType} ($${amt.toFixed(2)}) added & receiver notified`
                         );
@@ -1175,6 +1178,19 @@ export default function AdminShipmentDetailPage() {
                           value={chgNote}
                           onChange={(e) => setChgNote(e.target.value)}
                           placeholder="e.g. Tariff assessment ref #884"
+                        />
+                      </div>
+                      <div className="fw">
+                        <label className="lbl" htmlFor="chg-place">
+                          Where the parcel is being held
+                        </label>
+                        <input
+                          id="chg-place"
+                          className="field"
+                          value={chgPlace}
+                          onChange={(e) => setChgPlace(e.target.value)}
+                          maxLength={160}
+                          placeholder="e.g. Heathrow customs warehouse, London"
                         />
                       </div>
                     </div>

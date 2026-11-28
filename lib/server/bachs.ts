@@ -3253,10 +3253,11 @@ export async function adminShipmentUpdate(params: {
   const alertId = `chg_${now.toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
   const nextStage = status === "In Transit" || status === "At Hub" ? "Customs" : status;
   const evLabel = `${chargeType} added ($${amount.toFixed(2)})`;
-  const evLoc = `${shipment.receiver?.city || ""}, ${shipment.receiver?.country || ""}`;
+  const heldAt = String(d.heldAt || "").trim().slice(0, 160);
+  const evLoc = heldAt || `${shipment.receiver?.city || ""}, ${shipment.receiver?.country || ""}`;
   const batch = db.batch();
   batch.set(shipRef.collection("alerts").doc(alertId), {
-    to, kind: "duty", chargeType, currency, holdShipment: hold,
+    to, kind: "duty", chargeType, currency, holdShipment: hold, heldAt,
     title: `${chargeType} ($${amount.toFixed(2)})`,
     message: note, amount, status: "open",
     payment: { provider: "bachs", environment: "sandbox", status: "unpaid", currency, events: [] },
@@ -3268,7 +3269,7 @@ export async function adminShipmentUpdate(params: {
   });
   batch.update(shipRef, {
     status: nextStage,
-    ...(hold ? { hold: { type: "On Hold", reason: `${chargeType} due ($${amount.toFixed(2)} ${currency})`, at: now, alertId } } : {}),
+    ...(hold ? { hold: { type: "On Hold", reason: `${chargeType} due ($${amount.toFixed(2)} ${currency})`, at: now, alertId, ...(heldAt ? { location: heldAt } : {}) } } : {}),
     updatedAt: FieldValue.serverTimestamp(),
   });
   batch.set(teaserRef, {

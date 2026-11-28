@@ -915,7 +915,7 @@ export default function WebmailPage() {
 
   const isPanel = folder === "broadcast" || folder === "team";
   const readingOpen = !isPanel && (Boolean(openThread) || Boolean(openMail));
-  const fromLine = `${me.name} from ShipWell`;
+  const fromLine = me.name === "ShipWell Support" ? me.name : `${me.name} from ShipWell`;
 
   const navItems: Array<[Folder, string, React.ElementType, number]> = [
     ["inbox", "Inbox", Inbox, unread],
@@ -1210,21 +1210,25 @@ export default function WebmailPage() {
                 <div className="wm-spamnote">This conversation is in Spam. Move it to Inbox to reply.</div>
               ) : (
                 <form className="wm-reply" onSubmit={sendReply}>
-                  <div className="wm-rtop">
-                    <AttachPicker files={files} onChange={setFiles} disabled={sending} />
-                    <small className="wm-muted">{draftNote}</small>
-                  </div>
-                  <div className="wm-rbody">
+                  <div className="wm-box">
                     <textarea
                       ref={replyRef}
                       value={reply}
                       onChange={(e) => setReply(e.target.value)}
                       placeholder={`Reply as ${fromLine}`}
-                      rows={3}
+                      rows={2}
                     />
-                    <button className="wm-btn" disabled={sending || (!reply.trim() && files.length === 0)}>
-                      {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />} Send
-                    </button>
+                    <div className="wm-boxbar">
+                      <AttachPicker compact files={files} onChange={setFiles} disabled={sending} />
+                      <small className="wm-muted wm-draftnote">{draftNote}</small>
+                      <button
+                        className="wm-sendi"
+                        aria-label="Send"
+                        disabled={sending || (!reply.trim() && files.length === 0)}
+                      >
+                        {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                      </button>
+                    </div>
                   </div>
                 </form>
               )}
@@ -1344,10 +1348,14 @@ textarea.wm-input { resize: vertical; }
 .wm-mh { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; margin-bottom: 6px; }
 .wm-mh time { color: var(--muted); }
 .wm-mb { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14.5px; line-height: 1.55; }
-.wm-reply { display: grid; gap: 8px; padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid var(--border); background: var(--card); }
-.wm-rtop { display: flex; justify-content: space-between; gap: 8px; align-items: center; flex-wrap: wrap; }
-.wm-rbody { display: flex; gap: 10px; align-items: flex-end; }
-.wm-rbody textarea { flex: 1; min-width: 0; resize: none; background: var(--card2); border: 1px solid var(--border); color: var(--text); border-radius: 12px; padding: 10px 12px; font: inherit; font-size: 14px; }
+.wm-reply { padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); border-top: 1px solid var(--border); background: var(--card); }
+.wm-box { background: var(--card2); border: 1px solid var(--border); border-radius: 14px; padding: 6px 8px 4px; display: grid; gap: 2px; min-width: 0; }
+.wm-box textarea { width: 100%; min-width: 0; resize: none; background: none; border: 0; outline: 0; color: var(--text); padding: 6px 4px; font: inherit; font-size: 14px; max-height: 96px; }
+.wm-boxbar { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.wm-boxbar > div:first-child { flex: 1; min-width: 0; }
+.wm-draftnote { flex-shrink: 0; font-size: 11px; }
+.wm-sendi { width: 34px; height: 34px; border-radius: 10px; border: 0; background: var(--em); color: #04120C; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
+.wm-sendi:disabled { opacity: .45; cursor: default; }
 .wm-spamnote { padding: 14px; text-align: center; color: var(--muted); font-size: 13px; border-top: 1px solid var(--border); }
 .wm-frame { width: 100%; border: 0; border-radius: 12px; background: #fff; min-height: 480px; }
 
@@ -1368,7 +1376,8 @@ textarea.wm-input { resize: vertical; }
 @media (max-width: 900px) {
   .wm { grid-template-columns: minmax(0,1fr); grid-template-areas: "top" "name" "nav" "list"; }
   .wm-read { display: none; }
-  .wm.reading { grid-template-areas: "top" "name" "nav" "read"; }
+  .wm.reading { grid-template-areas: "read"; grid-template-rows: minmax(0,1fr); }
+  .wm.reading .wm-top, .wm.reading .wm-nav, .wm.reading .wm-namebar { display: none; }
   .wm.reading .wm-list { display: none; }
   .wm.reading .wm-read { display: flex; }
   .wm.panelmode .wm-list, .wm.panelmode .wm-read { display: none; }
