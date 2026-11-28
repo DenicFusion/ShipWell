@@ -14,6 +14,8 @@ export async function saveAdminPushToken(params: {
   email: string;
   token: string;
   userAgent?: string;
+  host?: "admin" | "webmail";
+  role?: "owner" | "support";
 }): Promise<void> {
   const token = String(params.token || "").trim();
   if (token.length < 20 || token.length > 4096) throw new Error("Invalid push token.");
@@ -25,6 +27,8 @@ export async function saveAdminPushToken(params: {
         token,
         uid: params.uid,
         email: params.email,
+        host: params.host || "admin",
+        role: params.role || "owner",
         userAgent: String(params.userAgent || "").slice(0, 200),
         updatedAt: FieldValue.serverTimestamp(),
       },
@@ -45,42 +49,60 @@ export async function removeAdminPushToken(token: string): Promise<void> {
 export async function notifyAdmins(n: {
   title: string;
   body: string;
+  /** Link opened on admin.shipwell.cc */
   url?: string;
+  /** Link opened on webmail.shipwell.cc (defaults to the inbox) */
+  webmailUrl?: string;
   tag?: string;
+  /** "owner" = only the owner/admin devices. "team" = owner plus support staff. */
+  audience?: "owner" | "team";
 }): Promise<void> {
   try {
     const db = getAdminDb();
     const snap = await db.collection(COLLECTION).get();
     if (snap.empty) return;
-    const docs = snap.docs.map((d) => ({ id: d.id, token: String(d.data().token || "") }));
+    const audience = n.audience || "owner";
+    const docs = snap.docs
+      .map((d) => {
+        const x = d.data();
+        return {
+          id: d.id,
+          token: String(x.token || ""),
+          host: x.host === "webmail" ? "webmail" : "admin",
+          role: x.role === "support" ? "support" : "owner",
+        };
+      })
+      .filter((d) => d.token && (audience === "team" || d.role === "owner"));
     const messaging = getMessaging(getFirebaseAdminApp());
-    for (let i = 0; i < docs.length; i += 500) {
-      const chunk = docs.slice(i, i + 500).filter((d) => d.token);
-      if (!chunk.length) continue;
-      const res = await messaging.sendEachForMulticast({
-        tokens: chunk.map((d) => d.token),
-        data: {
-          title: n.title.slice(0, 120),
-          body: n.body.slice(0, 240),
-          url: n.url || "/",
-          ...(n.tag ? { tag: n.tag } : {}),
-        },
-        webpush: { headers: { Urgency: "high", TTL: "86400" } },
-      });
-      await Promise.all(
-        res.responses.map((r, idx) => {
-          const code = r.error?.code || "";
-          if (
-            !r.success &&
-            (code === "messaging/registration-token-not-registered" ||
-              code === "messaging/invalid-registration-token" ||
-              code === "messaging/invalid-argument")
-          ) {
-            return db.collection(COLLECTION).doc(chunk[idx].id).delete().catch(() => null);
-          }
-          return null;
-        })
-      );
+    for (const host of ["admin", "webmail"] as const) {
+      const group = docs.filter((d) => d.host === host);
+      for (let i = 0; i < group.length; i += 500) {
+        const chunk = group.slice(i, i + 500);
+        const res = await messaging.sendEachForMulticast({
+          tokens: chunk.map((d) => d.token),
+          data: {
+            title: n.title.slice(0, 120),
+            body: n.body.slice(0, 240),
+            url: host === "webmail" ? n.webmailUrl || "/" : n.url || "/",
+            ...(n.tag ? { tag: n.tag } : {}),
+          },
+          webpush: { headers: { Urgency: "high", TTL: "86400" } },
+        });
+        await Promise.all(
+          res.responses.map((r, idx) => {
+            const code = r.error?.code || "";
+            if (
+              !r.success &&
+              (code === "messaging/registration-token-not-registered" ||
+                code === "messaging/invalid-registration-token" ||
+                code === "messaging/invalid-argument")
+            ) {
+              return db.collection(COLLECTION).doc(chunk[idx].id).delete().catch(() => null);
+            }
+            return null;
+          })
+        );
+      }
     }
   } catch (err) {
     console.error("notifyAdmins failed", err instanceof Error ? err.message : err);

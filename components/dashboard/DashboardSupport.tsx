@@ -24,6 +24,8 @@ import {
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { db } from "@/lib/firebase";
+import { AttachPicker, AttachmentList } from "@/components/AttachmentView";
+import { toPayload, type OutgoingAttachment } from "@/lib/attachments";
 import { formatDateTime } from "@/lib/quote-engine";
 import {
   formatTimeAgo,
@@ -73,6 +75,8 @@ export function DashboardSupport({
   // Reply state
   const [replyText, setReplyText] = useState("");
   const [sendingReply, setSendingReply] = useState(false);
+  const [newFiles, setNewFiles] = useState<OutgoingAttachment[]>([]);
+  const [replyFiles, setReplyFiles] = useState<OutgoingAttachment[]>([]);
   const msgsEndRef = useRef<HTMLDivElement>(null);
 
   // Subscribe live to supportThreads owned by this user
@@ -220,6 +224,7 @@ export function DashboardSupport({
           code: relatedCode || undefined,
           subject: topic,
           message: newMessage.trim(),
+          attachments: toPayload(newFiles),
         }),
       });
       const data = await res.json();
@@ -227,6 +232,7 @@ export function DashboardSupport({
         throw new Error(data.error || "Unable to send message.");
       }
       setNewMessage("");
+      setNewFiles([]);
       toast.success(`Conversation started (${data.ticketCode})`);
       if (data.threadId) {
         navigate(`/dashboard/support/${data.threadId}`);
@@ -242,7 +248,7 @@ export function DashboardSupport({
 
   const handleSendReply = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!activeThread || !replyText.trim()) return;
+    if (!activeThread || (!replyText.trim() && replyFiles.length === 0)) return;
     setSendingReply(true);
     try {
       const token = await user.getIdToken();
@@ -255,6 +261,7 @@ export function DashboardSupport({
         body: JSON.stringify({
           threadId: activeThread.id,
           message: replyText.trim(),
+          attachments: toPayload(replyFiles),
         }),
       });
       const data = await res.json();
@@ -262,6 +269,7 @@ export function DashboardSupport({
         throw new Error(data.error || "Unable to send reply.");
       }
       setReplyText("");
+      setReplyFiles([]);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not send reply.");
     } finally {
@@ -443,6 +451,8 @@ export function DashboardSupport({
                 />
               </div>
 
+              <AttachPicker files={newFiles} onChange={setNewFiles} disabled={sendingNew} />
+
               <div className="flex justify-end gap-2">
                 <button
                   type="button"
@@ -510,9 +520,15 @@ export function DashboardSupport({
                     key={m.id}
                     className={`sp-b ${m.from === "user" ? "me" : "them"}`}
                   >
-                    <div className="sp-bt">{m.body}</div>
+                    {m.body && <div className="sp-bt">{m.body}</div>}
+                    <AttachmentList threadId={activeThread.id} items={m.attachments} />
                     <small>
-                      {m.from === "user" ? "You" : "ShipWell Support"} ·{" "}
+                      {m.from === "user"
+                        ? "You"
+                        : m.senderName && m.senderName !== "ShipWell Support"
+                          ? `${m.senderName} from ShipWell`
+                          : "ShipWell Support"}{" "}
+                      ·{" "}
                       {formatDateTime(m.ts)}
                     </small>
                   </div>
@@ -521,6 +537,9 @@ export function DashboardSupport({
               <div ref={msgsEndRef} />
             </div>
 
+            <div style={{ padding: "8px 14px 0" }}>
+              <AttachPicker files={replyFiles} onChange={setReplyFiles} disabled={sendingReply} />
+            </div>
             <form className="sp-reply" onSubmit={handleSendReply}>
               <textarea
                 className="field"
@@ -535,7 +554,7 @@ export function DashboardSupport({
               />
               <button
                 type="submit"
-                disabled={sendingReply || !replyText.trim()}
+                disabled={sendingReply || (!replyText.trim() && replyFiles.length === 0)}
                 className="sw-btn sw-btn-em"
               >
                 {sendingReply ? (

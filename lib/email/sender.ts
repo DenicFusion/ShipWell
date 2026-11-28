@@ -54,6 +54,7 @@ export interface DispatchMeta {
   replyToOverride?: string;
   omitReplyTo?: boolean;
   logToFirestore?: boolean;
+  attachments?: Array<{ filename: string; content: string }>;
 }
 
 async function shouldSkipByUserPrefs(
@@ -196,6 +197,12 @@ export async function dispatchTransactionalEmail(
         };
         if (replyTo) {
           resendBody.reply_to = replyTo;
+        }
+        if (meta.attachments?.length) {
+          resendBody.attachments = meta.attachments.map((f) => ({
+            filename: f.filename,
+            content: f.content,
+          }));
         }
         const res = await fetch("https://api.resend.com/emails", {
           method: "POST",

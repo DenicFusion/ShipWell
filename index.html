@@ -10,11 +10,12 @@
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <script>
-      // Installable app (PWA) only on the admin host.
-      if (/^admin\./i.test(location.hostname)) {
+      // Installable app (PWA) only on the admin and webmail hosts.
+      var h = location.hostname, isMail = /^webmail\./i.test(h);
+      if (/^admin\./i.test(h) || isMail) {
         var m = document.createElement("link");
         m.rel = "manifest";
-        m.href = "/admin.webmanifest";
+        m.href = isMail ? "/webmail.webmanifest" : "/admin.webmanifest";
         document.head.appendChild(m);
         var cap = document.createElement("meta");
         cap.name = "apple-mobile-web-app-capable";
@@ -22,7 +23,7 @@
         document.head.appendChild(cap);
         var t = document.createElement("meta");
         t.name = "apple-mobile-web-app-title";
-        t.content = "SW Admin";
+        t.content = isMail ? "SW Mail" : "SW Admin";
         document.head.appendChild(t);
       }
     </script>

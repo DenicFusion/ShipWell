@@ -539,6 +539,7 @@ export interface SupportMessage {
   body: string;
   source: "web" | "email";
   ts: number;
+  attachments?: Array<{ id: string; name: string; type: string; size: number }>;
   createdAt?: unknown;
 }
 

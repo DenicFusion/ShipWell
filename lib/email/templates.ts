@@ -1149,3 +1149,68 @@ export function buildUnmonitoredReplyNoticeEmail(params: {
   };
 }
 
+
+
+export function buildStaffInviteEmail(params: {
+  joinUrl: string;
+  inviteeName: string;
+  invitedBy: string;
+  baseUrl?: string;
+}): EmailPayload {
+  const baseUrl = getBaseUrl(params.baseUrl);
+  const first = sanitizeHeaderText(firstName(params.inviteeName));
+  const bodyHtml = `
+    <p style="margin:0 0 14px 0;">Hello ${escapeHtml(first)},</p>
+    <p style="margin:0 0 14px 0;"><strong class="sw-strong" style="color:#F1F5F9;">${escapeHtml(sanitizeHeaderText(params.invitedBy))}</strong> invited you to join the ShipWell support team. You will answer customers from <strong class="sw-strong" style="color:#F1F5F9;">support@mail.shipwell.cc</strong> using your own name.</p>
+    <p style="margin:0;">Create your account to get started. This invitation expires in 7 days.</p>
+  `;
+  return {
+    subject: sanitizeHeaderText("You are invited to the ShipWell support team"),
+    preheader: "Create your ShipWell Mail account.",
+    html: renderEmailShell({
+      baseUrl,
+      preheader: "Create your ShipWell Mail account.",
+      heading: "Join the ShipWell team",
+      bodyHtml,
+      ctaLabel: "Create my account",
+      ctaUrl: params.joinUrl,
+      fallbackUrl: params.joinUrl,
+      footerHtml:
+        "If you were not expecting this invitation, ignore this email. ShipWell Logistics Ltd.",
+    }),
+    text: `You are invited to the ShipWell support team.\n\nCreate your account: ${params.joinUrl}\n\nThis invitation expires in 7 days.`,
+  };
+}
+
+export function buildBroadcastEmail(params: {
+  subject: string;
+  message: string;
+  ctaLabel?: string;
+  ctaUrl?: string;
+  baseUrl?: string;
+}): EmailPayload {
+  const baseUrl = getBaseUrl(params.baseUrl);
+  const ctaUrl = params.ctaUrl || `${baseUrl}/dashboard`;
+  const paragraphs = params.message
+    .split(/\n{2,}/)
+    .map(
+      (p) =>
+        `<p style="margin:0 0 14px 0;white-space:pre-wrap;">${escapeHtml(p.trim())}</p>`
+    )
+    .join("");
+  return {
+    subject: sanitizeHeaderText(params.subject),
+    preheader: params.message.slice(0, 90),
+    html: renderEmailShell({
+      baseUrl,
+      preheader: params.message.slice(0, 90),
+      heading: sanitizeHeaderText(params.subject),
+      bodyHtml: paragraphs,
+      ctaLabel: params.ctaLabel || "Open ShipWell",
+      ctaUrl,
+      fallbackUrl: ctaUrl,
+      footerHtml: `You are getting this because you have a ShipWell account. Manage your email settings in your <a href="${escapeHtml(baseUrl)}/dashboard" style="color:#94A3B8;text-decoration:underline;">dashboard</a>. Questions? <a href="mailto:support@mail.shipwell.cc" style="color:#94A3B8;text-decoration:underline;">support@mail.shipwell.cc</a>.<br><br>ShipWell Logistics Ltd. &middot; 14 Broadwick Street, London W1F 8HS`,
+    }),
+    text: `${params.subject}\n\n${params.message}\n\n${ctaUrl}`,
+  };
+}

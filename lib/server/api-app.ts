@@ -47,6 +47,12 @@ import {
 } from "./firebase-admin.ts";
 import { notifyAdmins, removeAdminPushToken, saveAdminPushToken } from "./admin-push.ts";
 import {
+  isBlockedSender,
+  registerWebmailRoutes,
+  saveAttachments,
+  validateAttachments,
+} from "./webmail.ts";
+import {
   adminPaymentAction,
   deleteOrDisablePaymentMethodAdmin,
   duplicatePaymentMethodAdmin,
@@ -299,12 +305,14 @@ export function createApiApp(): express.Express {
 
   app.use(
     express.json({
-      limit: "2mb",
+      limit: "4mb",
       verify: (req, _res, buf) => {
         (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
       },
     })
   );
+
+  registerWebmailRoutes(app, { handleServerError, getOrigin });
 
   // ── AUTHENTICATION BRANDED EMAILS (RESEND) ──
   app.post("/api/auth/send-verification", async (req, res) => {
@@ -1196,6 +1204,7 @@ export function createApiApp(): express.Express {
         code?: string;
         subject?: string;
         message?: string;
+        attachments?: unknown;
         _hp?: string;
       };
 
@@ -1218,6 +1227,15 @@ export function createApiApp(): express.Express {
         return;
       }
 
+      let contactAtts: ReturnType<typeof validateAttachments> = [];
+      try {
+        contactAtts = validateAttachments(body.attachments);
+      } catch (e) {
+        res.status(400).json({ error: e instanceof Error ? e.message : "Attachments are invalid." });
+        return;
+      }
+      const blocked = await isBlockedSender(email);
+
       const db = getAdminDb();
       const ticketCode = makeTicketCode();
       const now = Date.now();
@@ -1234,23 +1252,31 @@ export function createApiApp(): express.Express {
         code,
         status: "open",
         source: "web",
-        unreadAdmin: true,
+        spam: blocked,
+        unreadAdmin: !blocked,
         unreadUser: false,
         lastMessageAt: now,
         lastMessagePreview: message.slice(0, 140),
         createdAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
       });
+      const contactSaved = await saveAttachments(threadRef, contactAtts);
       batch.set(msgRef, {
         from: "user",
         senderName: name,
         senderEmail: email,
         body: message,
+        attachments: contactSaved.meta,
         source: "web",
         ts: now,
         createdAt: FieldValue.serverTimestamp(),
       });
       await batch.commit();
+
+      if (blocked) {
+        res.json({ ok: true, threadId: threadRef.id, ticketCode });
+        return;
+      }
 
       const { publicSettings } = await loadSettingsBundle();
       const supportInbox = publicSettings.resend.supportInbox || ADMIN_EMAIL;
@@ -1272,6 +1298,7 @@ export function createApiApp(): express.Express {
           code,
           replyToOverride: email,
           createdBy: actor?.uid || "public_contact",
+          attachments: contactSaved.email,
         }
       );
 
@@ -1279,7 +1306,9 @@ export function createApiApp(): express.Express {
         title: `New message from ${name}`,
         body: subject || message.slice(0, 120),
         url: `/thread/${threadRef.id}`,
+        webmailUrl: `/?thread=${threadRef.id}`,
         tag: `thread-${threadRef.id}`,
+        audience: "team",
       });
       res.json({
         ok: true,
@@ -1303,9 +1332,17 @@ export function createApiApp(): express.Express {
         threadId?: string;
         message?: string;
         status?: "open" | "closed";
+        attachments?: unknown;
       };
       const threadId = String(body.threadId || "").trim();
       const message = String(body.message || "").trim().slice(0, 4000);
+      let replyAtts: ReturnType<typeof validateAttachments> = [];
+      try {
+        replyAtts = validateAttachments(body.attachments);
+      } catch (e) {
+        res.status(400).json({ error: e instanceof Error ? e.message : "Attachments are invalid." });
+        return;
+      }
       if (!threadId) {
         res.status(400).json({ error: "Thread ID is required." });
         return;
@@ -1339,18 +1376,20 @@ export function createApiApp(): express.Express {
 
       const now = Date.now();
       const batch = db.batch();
+      const replySaved = await saveAttachments(threadRef, replyAtts);
       const nextStatus =
         actor.isAdmin && (body.status === "open" || body.status === "closed")
           ? body.status
           : "open";
 
-      if (message) {
+      if (message || replySaved.meta.length) {
         const msgRef = threadRef.collection("messages").doc();
         batch.set(msgRef, {
           from: actor.isAdmin ? "admin" : "user",
           senderName: actor.isAdmin ? "ShipWell Support" : thread.userName || actor.email,
           senderEmail: actor.email,
           body: message,
+          attachments: replySaved.meta,
           source: "web",
           ts: now,
           createdAt: FieldValue.serverTimestamp(),
@@ -1360,7 +1399,7 @@ export function createApiApp(): express.Express {
           unreadAdmin: !actor.isAdmin,
           unreadUser: actor.isAdmin,
           lastMessageAt: now,
-          lastMessagePreview: message.slice(0, 140),
+          lastMessagePreview: (message || "Sent an attachment").slice(0, 140),
           updatedAt: FieldValue.serverTimestamp(),
         });
       } else if (actor.isAdmin && (body.status === "open" || body.status === "closed")) {
@@ -1372,7 +1411,7 @@ export function createApiApp(): express.Express {
 
       await batch.commit();
 
-      if (message) {
+      if (message || replySaved.meta.length) {
         const { publicSettings } = await loadSettingsBundle();
         if (actor.isAdmin) {
           await dispatchTransactionalEmail(
@@ -1382,7 +1421,7 @@ export function createApiApp(): express.Express {
               ticketCode: thread.ticketCode,
               recipientName: thread.userName || "Customer",
               subject: thread.subject,
-              replyBody: message,
+              replyBody: message || "Sent you an attachment.",
               trackingCode: thread.code,
               threadId,
             }),
@@ -1391,6 +1430,7 @@ export function createApiApp(): express.Express {
               category: "support",
               code: thread.code || null,
               createdBy: actor.uid,
+              attachments: replySaved.email,
             }
           );
         } else {
@@ -1412,6 +1452,7 @@ export function createApiApp(): express.Express {
               code: thread.code || null,
               replyToOverride: actor.email,
               createdBy: actor.uid,
+              attachments: replySaved.email,
             }
           );
         }
@@ -1420,9 +1461,11 @@ export function createApiApp(): express.Express {
       if (!actor.isAdmin) {
         void notifyAdmins({
           title: `Reply from ${thread.userName || actor.email}`,
-          body: message.slice(0, 140),
+          body: (message || "Sent an attachment").slice(0, 140),
           url: `/thread/${threadId}`,
+          webmailUrl: `/?thread=${threadId}`,
           tag: `thread-${threadId}`,
+          audience: "team",
         });
       }
       res.json({ ok: true });
@@ -1683,6 +1726,7 @@ export function createApiApp(): express.Express {
       }
 
       const now = Date.now();
+      const inboundBlocked = await isBlockedSender(fromEmail);
       if (!targetThreadRef) {
         targetThreadRef = db.collection("supportThreads").doc();
         await targetThreadRef.set({
@@ -1694,7 +1738,8 @@ export function createApiApp(): express.Express {
           code: matchedCode,
           status: "open",
           source: "email",
-          unreadAdmin: true,
+          spam: inboundBlocked,
+          unreadAdmin: !inboundBlocked,
           unreadUser: false,
           lastMessageAt: now,
           lastMessagePreview: cleanBody.slice(0, 140),
@@ -1704,7 +1749,8 @@ export function createApiApp(): express.Express {
       } else {
         await targetThreadRef.update({
           status: "open",
-          unreadAdmin: true,
+          unreadAdmin: !inboundBlocked,
+          ...(inboundBlocked ? { spam: true } : {}),
           lastMessageAt: now,
           lastMessagePreview: cleanBody.slice(0, 140),
           updatedAt: FieldValue.serverTimestamp(),
@@ -1730,11 +1776,18 @@ export function createApiApp(): express.Express {
         ts: now,
       });
 
+      if (inboundBlocked) {
+        res.json({ ok: true, spam: true });
+        return;
+      }
+
       void notifyAdmins({
         title: `Email from ${fromName || fromEmail}`,
         body: cleanBody.slice(0, 140),
         url: `/thread/${targetThreadRef.id}`,
+        webmailUrl: `/?thread=${targetThreadRef.id}`,
         tag: `thread-${targetThreadRef.id}`,
+        audience: "team",
       });
 
       await dispatchTransactionalEmail(
